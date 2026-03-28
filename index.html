@@ -217,6 +217,24 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .add-wp-mode-btn:hover{background:rgba(16,185,129,.18)}
 .add-wp-mode-btn.active{background:rgba(245,158,11,.15);border-color:var(--gold);color:var(--gold);animation:blink .8s infinite}
 
+/* ── PHASE 2 IMPORT/EXPORT ── */
+.p2-group-lbl{font-family:var(--mono);font-size:8px;letter-spacing:2px;color:var(--text-dim);text-transform:uppercase;margin-bottom:5px}
+.p2-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.p2-btn{padding:7px 4px;background:rgba(33,150,243,.08);border:1px solid var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:9px;cursor:pointer;border-radius:2px;letter-spacing:1px;text-transform:uppercase;transition:all .15s;text-align:center}
+.p2-btn:hover:not(:disabled){background:rgba(33,150,243,.18);border-color:var(--accent-l);color:var(--accent-l)}
+.p2-btn:disabled{opacity:.35;cursor:not-allowed}
+.p2-btn.p2-import{border-color:var(--border2);color:var(--text-dim)}
+.p2-btn.p2-import:hover{background:rgba(16,185,129,.12);border-color:var(--green);color:var(--green)}
+/* Comparison grid */
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:4px}
+.cmp-col{background:var(--panel2);border:1px solid var(--border2);border-radius:2px;padding:7px 6px;text-align:center}
+.cmp-hdr{font-family:var(--mono);font-size:8px;letter-spacing:1px;margin-bottom:6px;text-transform:uppercase}
+.cmp-val{font-family:var(--head);font-weight:800;font-size:16px;color:var(--text-bright);line-height:1}
+.cmp-val.ec{color:var(--eca)}
+.cmp-unit{font-family:var(--mono);font-size:7px;color:var(--text-dim);letter-spacing:1px;margin-bottom:6px}
+.cmp-diff-col .cmp-val{font-size:13px}
+.imp-route-line{stroke:#f97316;stroke-dasharray:8 5;stroke-width:2}
+
 
 .hidden{display:none!important}
 </style>
@@ -418,12 +436,70 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     </div>
   </div>
 
+  <!-- PHASE 2 — IMPORT / EXPORT / COMPARE -->
+  <div class="sb-sec" id="p2Sec">
+    <div class="sec-lbl">📂 Import / Export</div>
+
+    <!-- Export -->
+    <div class="p2-group-lbl">EXPORT ROUTE</div>
+    <div class="p2-btn-row">
+      <button class="p2-btn" id="exportRtzBtn" onclick="exportRTZ()" disabled>⬇ RTZ</button>
+      <button class="p2-btn" id="exportCsvBtn" onclick="exportCSV()" disabled>⬇ CSV</button>
+    </div>
+
+    <!-- Import -->
+    <div class="p2-group-lbl" style="margin-top:10px">IMPORT ROUTE (COMPARE)</div>
+    <div class="p2-btn-row">
+      <button class="p2-btn p2-import" onclick="document.getElementById('importRtz').click()">⬆ RTZ</button>
+      <button class="p2-btn p2-import" onclick="document.getElementById('importCsv').click()">⬆ CSV</button>
+    </div>
+    <input type="file" id="importRtz" accept=".rtz,.xml" style="display:none" onchange="importRTZ(this)">
+    <input type="file" id="importCsv" accept=".csv,.txt" style="display:none" onchange="importCSV(this)">
+
+    <!-- Comparison panel — shown when an imported route exists -->
+    <div id="cmpPanel" style="display:none;margin-top:10px">
+      <div class="p2-group-lbl">ROUTE COMPARISON</div>
+      <div class="cmp-grid">
+        <div class="cmp-col">
+          <div class="cmp-hdr" style="color:var(--accent-l)">● CALCULATED</div>
+          <div class="cmp-val" id="cmpCalcNm">—</div>
+          <div class="cmp-unit">TOTAL NM</div>
+          <div class="cmp-val ec" id="cmpCalcEca">—</div>
+          <div class="cmp-unit">ECA NM</div>
+          <div class="cmp-val" id="cmpCalcWp">—</div>
+          <div class="cmp-unit">WAYPOINTS</div>
+        </div>
+        <div class="cmp-col">
+          <div class="cmp-hdr" style="color:#f97316">● IMPORTED</div>
+          <div class="cmp-val" id="cmpImpNm">—</div>
+          <div class="cmp-unit">TOTAL NM</div>
+          <div class="cmp-val ec" id="cmpImpEca">—</div>
+          <div class="cmp-unit">ECA NM</div>
+          <div class="cmp-val" id="cmpImpWp">—</div>
+          <div class="cmp-unit">WAYPOINTS</div>
+        </div>
+        <div class="cmp-col cmp-diff-col">
+          <div class="cmp-hdr" style="color:var(--text-dim)">DIFF</div>
+          <div class="cmp-val" id="cmpDiffNm">—</div>
+          <div class="cmp-unit">NM</div>
+          <div class="cmp-val" id="cmpDiffEca">—</div>
+          <div class="cmp-unit">ECA NM</div>
+          <div class="cmp-val" id="cmpDiffWp">—</div>
+          <div class="cmp-unit">WPS</div>
+        </div>
+      </div>
+      <div id="cmpName" style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:6px"></div>
+      <button class="clear-btn" style="margin-top:6px" onclick="clearImport()">✕ CLEAR IMPORTED ROUTE</button>
+    </div>
+  </div>
+
   <!-- ABOUT -->
   <div class="sb-sec">
     <div class="notice">
       <strong>Engine:</strong> Eurostat MARNET / Oak Ridge National Labs.<br><br>
-      <strong>Phase 1:</strong> Interactive waypoints — drag any waypoint on the map to reroute. Click a waypoint in the list to highlight it. Delete waypoints to simplify route.<br><br>
-      <strong>Coming soon:</strong> Weather overlay · RTZ/CSV import/export · HRA zones · Bunker cost estimator
+      <strong>Phase 1:</strong> Interactive waypoints — drag, add, delete.<br>
+      <strong>Phase 2:</strong> RTZ &amp; CSV import/export, route comparison.<br><br>
+      <strong>Coming soon:</strong> Weather overlay · HRA/piracy zones · Bunker cost estimator
     </div>
   </div>
 
@@ -926,6 +1002,7 @@ function onWpDragEnd(idx,newLat,newLon){
   const ecaTrans=findECATransitions(wpCoords);
   buildWpPanel(wpCoords,ecaTrans);
   document.getElementById('bWp').textContent=wpCoords.length;
+  if(importedRoute) updateComparison();
 }
 
 function setAddWpMode(on){
@@ -1220,6 +1297,8 @@ function renderRoute(fitBounds=true){
   document.getElementById('resSec').style.display='block';
   document.getElementById('etaSec').style.display='block';
   document.getElementById('addWpSec').style.display='block';
+  updateExportBtns();
+  if(importedRoute) updateComparison();
 
   document.getElementById('rNm').textContent=Math.round(totalNm).toLocaleString()+' NM';
   document.getElementById('rEca').textContent=ecaNm>0?Math.round(ecaNm).toLocaleString()+' NM':'0 NM';
@@ -1339,6 +1418,235 @@ function highlightWp(idx){
   }
 }
 
+// ── PHASE 2 — IMPORT / EXPORT / COMPARE ──────────────────────────────────────
+
+// State
+let importedRoute=null; // {coords:[[lon,lat],...], name:'', distNm, ecaNm}
+let importPolyline=null;
+
+// Enable/disable export buttons when route exists
+function updateExportBtns(){
+  const has=!!(routeData&&wpCoords.length>1);
+  document.getElementById('exportRtzBtn').disabled=!has;
+  document.getElementById('exportCsvBtn').disabled=!has;
+}
+
+// ── RTZ EXPORT ────────────────────────────────────────────────────────────────
+// RTZ is the IEC 61174 standard route exchange format used by all major ECDIS
+function exportRTZ(){
+  if(!routeData||wpCoords.length<2) return;
+  const name=`${routeData.oName} – ${routeData.dName}`;
+  const now=new Date().toISOString();
+
+  const waypoints=wpCoords.map(([lon,lat],i)=>`
+    <waypoint id="${i+1}" name="WP${String(i+1).padStart(3,'0')}">
+      <position lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"/>
+    </waypoint>`).join('');
+
+  const legs=wpCoords.slice(0,-1).map((_,i)=>`
+    <leg waypointStart="${i+1}" waypointEnd="${i+2}" geometryType="Loxodrome"/>`).join('');
+
+  const rtz=`<?xml version="1.0" encoding="UTF-8"?>
+<route xmlns="http://www.cirm.org/RTZ/1/1" version="1.1">
+  <routeInfo routeName="${escXml(name)}" vesselVoyage="" routeAuthor="RoutePlannerPro"
+    routeStatus="1" validityPeriodStart="${now}" optimizationMethod="Distance">
+  </routeInfo>
+  <waypoints>${waypoints}
+  </waypoints>
+  <schedule>
+    <schedules>
+      <schedule id="1" name="Primary">
+        <calculated>${legs}
+        </calculated>
+      </schedule>
+    </schedules>
+  </schedule>
+</route>`;
+
+  downloadFile(`${safeName(name)}.rtz`, rtz, 'application/xml');
+}
+
+// ── CSV EXPORT ────────────────────────────────────────────────────────────────
+function exportCSV(){
+  if(!routeData||wpCoords.length<2) return;
+  const name=`${routeData.oName} – ${routeData.dName}`;
+  const rows=['WP,Name,Latitude,Longitude,Bearing_GC,Dist_NM_GC'];
+  wpCoords.forEach(([lon,lat],i)=>{
+    let brg='',dist='';
+    if(i>0){
+      const [pLon,pLat]=wpCoords[i-1];
+      brg=GEO.gcBearing(pLat,pLon,lat,lon).toFixed(1);
+      dist=GEO.kmToNm(GEO.gcDistKm(pLat,pLon,lat,lon)).toFixed(2);
+    }
+    const wpName=i===0?routeData.oName:i===wpCoords.length-1?routeData.dName:`WP${String(i+1).padStart(3,'0')}`;
+    rows.push(`${i+1},"${wpName}",${lat.toFixed(6)},${lon.toFixed(6)},${brg},${dist}`);
+  });
+  downloadFile(`${safeName(name)}.csv`, rows.join('\n'), 'text/csv');
+}
+
+// ── RTZ IMPORT ────────────────────────────────────────────────────────────────
+function importRTZ(input){
+  const file=input.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const parser=new DOMParser();
+      const xml=parser.parseFromString(e.target.result,'application/xml');
+      if(xml.querySelector('parsererror')) throw new Error('Invalid XML');
+
+      const wps=[...xml.querySelectorAll('waypoint')];
+      if(!wps.length) throw new Error('No waypoints found in RTZ file');
+
+      const coords=wps.map(wp=>{
+        const pos=wp.querySelector('position');
+        const lat=parseFloat(pos.getAttribute('lat'));
+        const lon=parseFloat(pos.getAttribute('lon'));
+        if(isNaN(lat)||isNaN(lon)) throw new Error('Invalid coordinates in RTZ');
+        return [lon,lat];
+      });
+
+      const routeInfo=xml.querySelector('routeInfo');
+      const name=routeInfo?.getAttribute('routeName')||file.name.replace(/\.[^.]+$/,'');
+      loadImportedRoute(coords, name);
+    } catch(err){
+      showErr(`RTZ import failed: ${err.message}`);
+    }
+  };
+  reader.readAsText(file);
+  input.value=''; // reset so same file can be re-imported
+}
+
+// ── CSV IMPORT ────────────────────────────────────────────────────────────────
+function importCSV(input){
+  const file=input.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const lines=e.target.result.trim().split(/\r?\n/);
+      const coords=[];
+      for(let i=0;i<lines.length;i++){
+        const line=lines[i].trim();
+        if(!line||line.startsWith('#')) continue;
+        // Skip header row if present
+        if(i===0&&isNaN(parseFloat(line.split(',')[0]))) continue;
+        const parts=line.split(',').map(p=>p.replace(/"/g,'').trim());
+        // Support formats: lat,lon OR wp,name,lat,lon OR wp,name,lat,lon,brg,dist
+        let lat,lon;
+        if(parts.length===2){ lat=parseFloat(parts[0]); lon=parseFloat(parts[1]); }
+        else if(parts.length>=4){ lat=parseFloat(parts[2]); lon=parseFloat(parts[3]); }
+        else continue;
+        if(!isNaN(lat)&&!isNaN(lon)&&lat>=-90&&lat<=90&&lon>=-180&&lon<=180){
+          coords.push([lon,lat]);
+        }
+      }
+      if(coords.length<2) throw new Error('Need at least 2 valid waypoints');
+      const name=file.name.replace(/\.[^.]+$/,'');
+      loadImportedRoute(coords, name);
+    } catch(err){
+      showErr(`CSV import failed: ${err.message}`);
+    }
+  };
+  reader.readAsText(file);
+  input.value='';
+}
+
+// ── LOAD IMPORTED ROUTE ───────────────────────────────────────────────────────
+function loadImportedRoute(coords, name){
+  // Clear previous import
+  if(importPolyline){map.removeLayer(importPolyline);importPolyline=null;}
+
+  // Calculate metrics
+  let distNm=0;
+  for(let i=0;i<coords.length-1;i++){
+    const [lo1,la1]=coords[i],[lo2,la2]=coords[i+1];
+    distNm+=GEO.kmToNm(GEO.gcDistKm(la1,lo1,la2,lo2));
+  }
+  const ecaNm=calcECAMiles(coords);
+
+  importedRoute={coords,name,distNm,ecaNm};
+
+  // Draw imported route — orange dashed
+  const lls=coords.map(c=>[c[1],c[0]]);
+  importPolyline=L.polyline(lls,{
+    color:'#f97316',weight:2,opacity:.85,dashArray:'6 5',
+  }).addTo(map);
+  importPolyline.bindTooltip(
+    `<div style="font-family:monospace;font-size:10px;color:#f97316"><b>IMPORTED:</b> ${escHtml(name)}<br>${Math.round(distNm).toLocaleString()} NM · ${Math.round(ecaNm)} NM ECA</div>`,
+    {sticky:true,opacity:.9}
+  );
+
+  // Fit map to show both routes
+  if(mainPolyline){
+    const allBounds=L.latLngBounds([...lls,...wpCoords.map(c=>[c[1],c[0]])]);
+    map.fitBounds(allBounds,{padding:[50,60]});
+  } else {
+    map.fitBounds(importPolyline.getBounds(),{padding:[50,60]});
+  }
+
+  // Show comparison panel
+  updateComparison();
+  document.getElementById('cmpPanel').style.display='block';
+  document.getElementById('cmpName').textContent=`Imported: "${name}" · ${coords.length} waypoints`;
+}
+
+function updateComparison(){
+  if(!importedRoute) return;
+
+  // Calculated route metrics (use current wpCoords if available, else routeData)
+  const calcNm = wpCoords.length>1 ? calcTotalDistNm() : (routeData?routeData.distance_nm:0);
+  const calcEca= wpCoords.length>1 ? calcECAMiles(wpCoords) : 0;
+  const calcWp = wpCoords.length||0;
+
+  const impNm  = importedRoute.distNm;
+  const impEca = importedRoute.ecaNm;
+  const impWp  = importedRoute.coords.length;
+
+  const diffNm  = Math.round(calcNm - impNm);
+  const diffEca = Math.round(calcEca - impEca);
+  const diffWp  = calcWp - impWp;
+
+  const fmt=n=>n.toLocaleString();
+  const fmtDiff=(n,unit='')=>{
+    if(n===0) return `0${unit}`;
+    return `${n>0?'+':''}${fmt(n)}${unit}`;
+  };
+
+  document.getElementById('cmpCalcNm').textContent=fmt(Math.round(calcNm))+' NM';
+  document.getElementById('cmpCalcEca').textContent=fmt(Math.round(calcEca))+' NM';
+  document.getElementById('cmpCalcWp').textContent=fmt(calcWp);
+  document.getElementById('cmpImpNm').textContent=fmt(Math.round(impNm))+' NM';
+  document.getElementById('cmpImpEca').textContent=fmt(Math.round(impEca))+' NM';
+  document.getElementById('cmpImpWp').textContent=fmt(impWp);
+
+  const nmEl=document.getElementById('cmpDiffNm');
+  nmEl.textContent=fmtDiff(diffNm,' NM');
+  nmEl.style.color=diffNm>0?'var(--eca)':diffNm<0?'var(--green)':'var(--text-bright)';
+
+  const ecaEl=document.getElementById('cmpDiffEca');
+  ecaEl.textContent=fmtDiff(diffEca,' NM');
+  ecaEl.style.color=diffEca>0?'var(--eca)':diffEca<0?'var(--green)':'var(--text-bright)';
+
+  document.getElementById('cmpDiffWp').textContent=fmtDiff(diffWp);
+}
+
+function clearImport(){
+  if(importPolyline){map.removeLayer(importPolyline);importPolyline=null;}
+  importedRoute=null;
+  document.getElementById('cmpPanel').style.display='none';
+}
+
+// ── UTILITIES ─────────────────────────────────────────────────────────────────
+function downloadFile(filename, content, mimeType){
+  const blob=new Blob([content],{type:mimeType});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function safeName(s){ return s.replace(/[^a-zA-Z0-9_\-. ]/g,'_').trim().slice(0,60); }
+function escXml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
 // ── ETA / SPEED ───────────────────────────────────────────────────────────────
 function setSM(m){
   speedMode=m;
@@ -1403,6 +1711,8 @@ function clearAll(){
   document.getElementById('etaSec').style.display='none';
   document.getElementById('addWpSec').style.display='none';
   setAddWpMode(false);
+  clearImport();
+  updateExportBtns();
   document.getElementById('mapOv').style.display='none';
   document.getElementById('rBar').classList.remove('show');
   document.getElementById('wpLegend').classList.remove('show');
