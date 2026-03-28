@@ -632,8 +632,30 @@ map.on('mousemove',e=>{
   document.getElementById('hLon').textContent=e.latlng.lng.toFixed(4);
 });
 map.on('click',e=>{
-  if(inputMode!=='coord') return;
   const {lat,lng}=e.latlng;
+
+  // Check if click is near the route line (within ~15px / ~5km at typical zoom)
+  if(routeData && wpCoords.length>1){
+    const zoom=map.getZoom();
+    // Threshold in km: roughly 15 screen pixels at current zoom
+    const threshKm=40000/(Math.pow(2,zoom)*256)*15;
+    let bestIdx=-1, bestDist=Infinity;
+    for(let i=0;i<wpCoords.length-1;i++){
+      const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
+      // Distance to segment midpoint
+      const mLat=(la1+la2)/2, mLon=(lo1+lo2)/2;
+      const d=GEO.gcDistKm(lat,lng,mLat,mLon);
+      if(d<bestDist){bestDist=d;bestIdx=i;}
+    }
+    if(bestIdx>=0 && bestDist<threshKm){
+      console.log('Route clicked at',lat.toFixed(4),lng.toFixed(4),'dist',bestDist.toFixed(2),'km thresh',threshKm.toFixed(2));
+      showAddWpPopup(e.originalEvent.clientX,e.originalEvent.clientY,bestIdx,lat,lng);
+      return; // don't fall through to coord input
+    }
+  }
+
+  // Normal coord input mode
+  if(inputMode!=='coord') return;
   if(mapClick==='o'){
     document.getElementById('oLat').value=lat.toFixed(4);
     document.getElementById('oLon').value=lng.toFixed(4);
@@ -1008,21 +1030,7 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape')hideAddWpPopup();});
 
-// ── ADD WAYPOINT (left-click on route line) ───────────────────────────────────
-function onPolylineClick(e){
-  if(!routeData)return;
-  L.DomEvent.stopPropagation(e);
-  console.log('Route clicked at', e.latlng.lat.toFixed(4), e.latlng.lng.toFixed(4));
-  const clickLat=e.latlng.lat,clickLon=e.latlng.lng;
-  // Find nearest segment by midpoint distance
-  let bestIdx=0,bestDist=Infinity;
-  for(let i=0;i<wpCoords.length-1;i++){
-    const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
-    const d=GEO.gcDistKm(clickLat,clickLon,(la1+la2)/2,(lo1+lo2)/2);
-    if(d<bestDist){bestDist=d;bestIdx=i;}
-  }
-  showAddWpPopup(e.originalEvent.clientX,e.originalEvent.clientY,bestIdx,clickLat,clickLon);
-}
+// Route clicks handled by map click handler above
 
 function confirmAddWaypoint(){
   hideAddWpPopup();
@@ -1047,7 +1055,6 @@ function refreshPolylineAndMarkers(){
   // Redraw MARNET polyline from updated wpCoords
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
-  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   clearGCSegments();
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
@@ -1062,25 +1069,8 @@ function refreshPolylineAndMarkers(){
 
 // Attach right-click to the main polyline
 // Also add a wide transparent hit-target polyline for easy clicking
-let hitPolyline=null;
-function attachPolylineContextMenu(){
-  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
-  if(!mainPolyline) return;
-
-  // Wide hit-target polyline — must have a real color/opacity for SVG mouse detection
-  const lls=wpCoords.map(c=>[c[1],c[0]]);
-  hitPolyline=L.polyline(lls,{
-    color:'#ffffff',
-    weight:20,
-    opacity:0.01,  // nearly invisible but SVG still registers mouse events
-    interactive:true,
-    bubblingMouseEvents:false,
-  }).addTo(map);
-
-  // Left-click handler on hit target and visible line
-  hitPolyline.on('click', onPolylineClick);
-  mainPolyline.on('click', onPolylineClick);
-}
+// No hitPolyline needed — we use map click + proximity check instead
+function attachPolylineContextMenu(){ /* handled by map click listener */ }
 
 // Rebuild markers without resetting wpCoords/wpDragged
 function rebuildMarkersFromState(ecaTrans){
@@ -1211,7 +1201,6 @@ function renderRoute(fitBounds=true){
   // Clear old layers
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
-  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   clearGCSegments();
 
   // Build markers first — this populates wpCoords from d.coordinates
@@ -1394,7 +1383,6 @@ function clearAll(){
   ['oLat','oLon','dLat','dLon'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
-  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   clearGCSegments();
   if(oMark){map.removeLayer(oMark);oMark=null;}
   if(dMark){map.removeLayer(dMark);dMark=null;}
