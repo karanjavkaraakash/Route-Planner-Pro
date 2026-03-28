@@ -428,7 +428,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 </div><!-- /sidebar -->
 
 <!-- ════ MAP ════ -->
-<div id="map">
+<div id="map" oncontextmenu="return false">
   <div class="map-ov" id="mapOv">
     <div class="ov-row"><span>FROM</span><b id="ovFrom">—</b></div>
     <div class="ov-row"><span>TO</span><b id="ovTo">—</b></div>
@@ -607,7 +607,8 @@ let wpCoords=[];
 let wpDragged=new Set();
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
-const map=L.map('map',{center:[20,10],zoom:2,zoomControl:true,attributionControl:true});
+const map=L.map('map',{center:[20,10],zoom:2,zoomControl:true,attributionControl:true,
+  contextmenu:false}); // suppress default context menu via Leaflet option
 const tileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
   subdomains:'abcd',maxZoom:19,
   attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a> © <a href="https://carto.com">CARTO</a>'
@@ -616,6 +617,9 @@ tileLayer.on('tileerror',()=>{
   if(!window._fb){window._fb=true;map.removeLayer(tileLayer);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);}
 });
+
+// Suppress browser right-click context menu on the entire map container
+map.getContainer().addEventListener('contextmenu', e => e.preventDefault());
 
 map.on('mousemove',e=>{
   document.getElementById('hLat').textContent=e.latlng.lat.toFixed(4);
@@ -1054,6 +1058,7 @@ function refreshPolylineAndMarkers(){
   // Redraw MARNET polyline from updated wpCoords
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
+  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   clearGCSegments();
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
@@ -1067,8 +1072,30 @@ function refreshPolylineAndMarkers(){
 }
 
 // Attach right-click to the main polyline
+// Also add a wide transparent hit-target polyline for easy clicking
+let hitPolyline=null;
 function attachPolylineContextMenu(){
-  if(mainPolyline) mainPolyline.on('contextmenu',onPolylineRightClick);
+  // Remove old hit target
+  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
+  if(!mainPolyline) return;
+
+  // Wide invisible polyline — same coords, 20px wide, catches right-clicks easily
+  const lls=wpCoords.map(c=>[c[1],c[0]]);
+  hitPolyline=L.polyline(lls,{
+    color:'transparent',
+    weight:20,       // wide click target
+    opacity:0,
+    interactive:true,
+  }).addTo(map);
+
+  // Both the visible line and the hit target trigger the context menu
+  hitPolyline.on('contextmenu', onPolylineRightClick);
+  mainPolyline.on('contextmenu', onPolylineRightClick);
+
+  // Suppress browser default context menu on both
+  const suppress = e => { e.originalEvent.preventDefault(); };
+  hitPolyline.on('contextmenu', suppress);
+  mainPolyline.on('contextmenu', suppress);
 }
 
 // Rebuild markers without resetting wpCoords/wpDragged
@@ -1203,7 +1230,7 @@ function renderRoute(fitBounds=true){
   clearGCSegments();
 
   // Draw MARNET polyline — single connected line, all coords, stays in water
-  const lls=d.coordinates.map(c=>[c[1],c[0]]);
+  const lls=wpCoords.map(c=>[c[1],c[0]]);
   shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
   mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4'}).addTo(map);
 
@@ -1381,6 +1408,7 @@ function clearAll(){
   ['oLat','oLon','dLat','dLon'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
+  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   clearGCSegments();
   if(oMark){map.removeLayer(oMark);oMark=null;}
   if(dMark){map.removeLayer(dMark);dMark=null;}
