@@ -909,7 +909,7 @@ function buildAllWpMarkers(coords,ecaTrans){
     const isOrigin=idx===0;
     const isDest=idx===coords.length-1;
     const ecaType=ecaIdxMap.get(idx);
-    const type=isOrigin?'origin':isDest?'dest':ecaType?`eca-${ecaType}`:\'normal\';
+    const type=isOrigin?'origin':isDest?'dest':ecaType?`eca-${ecaType}`:'normal';
     const locked=isOrigin||isDest;
 
     const marker=L.marker([lat,lon],{
