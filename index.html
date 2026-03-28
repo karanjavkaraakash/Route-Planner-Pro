@@ -213,6 +213,18 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 }
 .wp-leg{font-family:var(--mono);font-size:8px;color:var(--accent-l);margin-top:1px;letter-spacing:.5px}
 .wp-row.dragged{border-left:2px solid var(--gold)}
+
+/* ── CONTEXT MENU ── */
+.ctx-menu{position:fixed;background:var(--panel);border:1px solid var(--border2);
+  border-radius:3px;padding:4px 0;z-index:9999;min-width:170px;
+  box-shadow:0 8px 24px rgba(0,0,0,.5);display:none}
+.ctx-menu.show{display:block}
+.ctx-item{padding:8px 14px;font-family:var(--mono);font-size:10px;color:var(--text);
+  cursor:pointer;display:flex;align-items:center;gap:8px;letter-spacing:.5px;
+  text-transform:uppercase;transition:background .12s;white-space:nowrap}
+.ctx-item:hover{background:rgba(33,150,243,.12);color:var(--accent-l)}
+.ctx-item.danger:hover{background:rgba(239,68,68,.1);color:var(--red)}
+.ctx-sep{height:1px;background:var(--border2);margin:3px 0}
 .hidden{display:none!important}
 </style>
 </head>
@@ -445,6 +457,13 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div class="eca-row"><div class="eca-swatch" style="background:#1e8449"></div>N. America ECA</div>
     <div class="eca-row"><div class="eca-swatch" style="background:#148f77"></div>US Caribbean ECA</div>
     <div class="eca-row"><div class="eca-swatch" style="background:#117a65"></div>Hawaii ECA</div>
+  </div>
+
+  <!-- Context menu for route line + markers -->
+  <div class="ctx-menu" id="ctxMenu">
+    <div class="ctx-item" id="ctxAdd" onclick="ctxAddWaypoint()">＋ Add Waypoint Here</div>
+    <div class="ctx-sep" id="ctxSep"></div>
+    <div class="ctx-item danger" id="ctxDel" onclick="ctxDeleteWaypoint()">✕ Delete Waypoint</div>
   </div>
 
   <!-- Bottom bar -->
@@ -951,6 +970,149 @@ function buildAllWpMarkers(coords,ecaTrans){
     marker.addTo(map);
     wpMarkers.push(marker);
   });
+  // Attach right-click on polyline for adding waypoints
+  attachPolylineContextMenu();
+}
+
+// ── CONTEXT MENU ──────────────────────────────────────────────────────────────
+let ctxState={mode:null,insertIdx:null,deleteIdx:null,lat:null,lon:null};
+
+function showCtxMenu(x,y,showAdd,showDel){
+  const menu=document.getElementById('ctxMenu');
+  const addItem=document.getElementById('ctxAdd');
+  const delItem=document.getElementById('ctxDel');
+  const sep=document.getElementById('ctxSep');
+  addItem.style.display=showAdd?'flex':'none';
+  delItem.style.display=showDel?'flex':'none';
+  sep.style.display=(showAdd&&showDel)?'block':'none';
+  const vw=window.innerWidth,vh=window.innerHeight;
+  menu.style.left=Math.min(x,vw-190)+'px';
+  menu.style.top=Math.min(y,vh-90)+'px';
+  menu.classList.add('show');
+}
+
+function hideCtxMenu(){
+  document.getElementById('ctxMenu').classList.remove('show');
+  ctxState={mode:null,insertIdx:null,deleteIdx:null,lat:null,lon:null};
+}
+
+document.addEventListener('click',e=>{if(!e.target.closest('#ctxMenu'))hideCtxMenu();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')hideCtxMenu();});
+
+// ── ADD WAYPOINT (right-click on route line) ──────────────────────────────────
+function onPolylineRightClick(e){
+  if(!routeData)return;
+  L.DomEvent.stopPropagation(e);
+  L.DomEvent.preventDefault(e);
+  const clickLat=e.latlng.lat, clickLon=e.latlng.lng;
+  // Find nearest segment midpoint
+  let bestIdx=0,bestDist=Infinity;
+  for(let i=0;i<wpCoords.length-1;i++){
+    const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
+    const d=GEO.gcDistKm(clickLat,clickLon,(la1+la2)/2,(lo1+lo2)/2);
+    if(d<bestDist){bestDist=d;bestIdx=i;}
+  }
+  ctxState={mode:'add',insertIdx:bestIdx,lat:clickLat,lon:clickLon};
+  showCtxMenu(e.originalEvent.clientX,e.originalEvent.clientY,true,false);
+}
+
+function ctxAddWaypoint(){
+  hideCtxMenu();
+  if(ctxState.mode!=='add')return;
+  wpCoords.splice(ctxState.insertIdx+1,0,[ctxState.lon,ctxState.lat]);
+  wpDragged.add(ctxState.insertIdx+1);
+  refreshPolylineAndMarkers();
+}
+
+// ── DELETE WAYPOINT (right-click on marker OR ✕ in panel) ────────────────────
+function onMarkerRightClick(e,idx){
+  L.DomEvent.stopPropagation(e);
+  L.DomEvent.preventDefault(e);
+  if(idx===0||idx===wpCoords.length-1)return;
+  ctxState={mode:'delete',deleteIdx:idx};
+  showCtxMenu(e.originalEvent.clientX,e.originalEvent.clientY,false,true);
+}
+
+function ctxDeleteWaypoint(){
+  hideCtxMenu();
+  if(ctxState.mode!=='delete')return;
+  deleteWaypointAt(ctxState.deleteIdx);
+}
+
+function deleteWaypointAt(idx){
+  if(idx<=0||idx>=wpCoords.length-1)return;
+  wpCoords.splice(idx,1);
+  // Shift dragged indices
+  const nd=new Set();
+  wpDragged.forEach(i=>{if(i<idx)nd.add(i);else if(i>idx)nd.add(i-1);});
+  wpDragged=nd;
+  refreshPolylineAndMarkers();
+}
+
+// ── SHARED REFRESH after add/delete ──────────────────────────────────────────
+function refreshPolylineAndMarkers(){
+  // Redraw MARNET polyline from updated wpCoords
+  if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
+  if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
+  clearGCSegments();
+  const lls=wpCoords.map(c=>[c[1],c[0]]);
+  shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
+  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4'}).addTo(map);
+  // Rebuild markers
+  const ecaTrans=findECATransitions(wpCoords);
+  rebuildMarkersFromState(ecaTrans);
+  updateMetricsLive();
+  buildWpPanel(wpCoords,ecaTrans);
+  document.getElementById('bWp').textContent=wpCoords.length;
+}
+
+// Attach right-click to the main polyline
+function attachPolylineContextMenu(){
+  if(mainPolyline) mainPolyline.on('contextmenu',onPolylineRightClick);
+}
+
+// Rebuild markers without resetting wpCoords/wpDragged
+function rebuildMarkersFromState(ecaTrans){
+  clearWpMarkers();
+  const ecaIdxMap=new Map(ecaTrans.map(t=>[t.idx,t.type]));
+  wpCoords.forEach(([lon,lat],idx)=>{
+    const isOrigin=idx===0, isDest=idx===wpCoords.length-1;
+    const ecaType=ecaIdxMap.get(idx);
+    const type=isOrigin?'origin':isDest?'dest':ecaType?`eca-${ecaType}`:'normal';
+    const locked=isOrigin||isDest;
+    const marker=L.marker([lat,lon],{
+      icon:wpIcon(type),draggable:!locked,
+      zIndexOffset:locked?1000:200,
+    });
+    marker._wpIdx=idx;
+    if(!locked){
+      marker.on('drag',e=>{const{lat:la,lng:lo}=e.target.getLatLng();onWpDrag(idx,la,lo);});
+      marker.on('dragend',e=>{const{lat:la,lng:lo}=e.target.getLatLng();onWpDragEnd(idx,la,lo);});
+      marker.on('contextmenu',e=>onMarkerRightClick(e,idx));
+    }
+    marker.on('mouseover',()=>{
+      let tip=`<div style="font-family:monospace;font-size:10px;line-height:1.6">`;
+      if(isOrigin) tip+=`<b style="color:#10b981">${routeData.oName}</b><br>`;
+      else if(isDest) tip+=`<b style="color:#f59e0b">${routeData.dName}</b><br>`;
+      else if(ecaType) tip+=`<b style="color:${ecaType==='entry'?'#f97316':'#10b981'}">ECA ${ecaType.toUpperCase()}</b><br>`;
+      else if(wpDragged.has(idx)) tip+=`<b style="color:#f59e0b">USER WP ${idx+1}</b><br>`;
+      else tip+=`<b style="color:#2196f3">WP ${idx+1}</b><br>`;
+      tip+=`${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+      if(idx>0){
+        const[pLon,pLat]=wpCoords[idx-1];
+        const distNm=Math.round(GEO.kmToNm(GEO.gcDistKm(pLat,pLon,lat,lon)));
+        const brg=Math.round(GEO.gcBearing(pLat,pLon,lat,lon));
+        tip+=`<br>${distNm} NM · ${brg}° (GC)`;
+      }
+      if(!locked) tip+=`<br><span style="color:var(--text-dim)">right-click to delete</span>`;
+      tip+=`</div>`;
+      marker.setTooltipContent(tip);
+    });
+    marker.bindTooltip('',{direction:'top',offset:[0,-6],opacity:.95});
+    marker.addTo(map);
+    wpMarkers.push(marker);
+  });
+  attachPolylineContextMenu();
 }
 
 
@@ -1093,7 +1255,7 @@ function renderRoute(fitBounds=true){
 
   document.getElementById('wpLegend').classList.add('show');
   document.getElementById('dragHint').classList.add('show');
-  document.getElementById('dragHint').textContent='🖱 DRAG ANY WAYPOINT TO ADJUST · ADJACENT SEGMENTS RECALCULATE AS GC · DISTANCE UPDATES LIVE';
+  document.getElementById('dragHint').textContent='🖱 DRAG to move · RIGHT-CLICK route line to add waypoint · RIGHT-CLICK waypoint to delete';
 
   document.getElementById('etaBox').classList.remove('show');
   document.getElementById('spdBox').classList.remove('show');
@@ -1141,7 +1303,8 @@ function buildWpPanel(coords,ecaTrans){
         <div class="wp-name">${name}${ecaTag}${dragTag}</div>
         <div class="wp-coords">${lat.toFixed(4)}°, ${lon.toFixed(4)}°</div>
         ${legInfo}
-      </div>`;
+      </div>
+      ${!isOrigin&&!isDest?`<button class="wp-del" onclick="event.stopPropagation();deleteWaypointAt(${idx})" title="Delete waypoint">✕</button>`:''}`;
     frag.appendChild(row);
   });
   panel.innerHTML='';
