@@ -3,17 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SeaRoute — Maritime Voyage Planner</title>
+<title>RoutePlannerPro — Professional Voyage Planning</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-:root {
-  --bg:#0d1117; --panel:#111820; --panel2:#161f2b; --border:#1e2d3d; --border2:#26384d;
-  --accent:#1a6fc4; --accent-light:#2d8de0; --gold:#e8a020; --green:#1a9e5c;
-  --red:#c0392b; --eca:#e67e22; --text:#b8ccd8; --text-dim:#4a6a80;
-  --text-bright:#ddeeff; --sea:#d4e8f5; --land:#c8b89a;
-  --mono:'Share Tech Mono',monospace; --head:'Barlow Condensed',sans-serif; --body:'Barlow',sans-serif;
+:root{
+  --bg:#0a0f18;--panel:#0f1825;--panel2:#141e2c;--border:#1a2a3d;--border2:#223348;
+  --accent:#1565c0;--accent-l:#2196f3;--gold:#f59e0b;--green:#10b981;--red:#ef4444;
+  --eca:#f97316;--purple:#8b5cf6;--teal:#06b6d4;
+  --text:#b0c4d8;--text-dim:#456070;--text-bright:#e8f0fe;
+  --mono:'Share Tech Mono',monospace;--head:'Barlow Condensed',sans-serif;--body:'Barlow',sans-serif;
+  --wp-normal:#2196f3;--wp-eca-entry:#f97316;--wp-eca-exit:#10b981;--wp-drag:#f59e0b;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
@@ -22,13 +23,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--body);display:flex
 /* ── HEADER ── */
 header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 18px;height:52px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;z-index:1000}
 .logo{display:flex;align-items:center;gap:10px}
-.logo-anchor{font-size:18px;color:var(--accent-light)}
-.logo-text{font-family:var(--head);font-weight:800;font-size:20px;letter-spacing:3px;color:var(--text-bright);text-transform:uppercase}
-.logo-text span{color:var(--accent-light)}
+.logo-icon{font-size:20px;color:var(--accent-l)}
+.logo-text{font-family:var(--head);font-weight:800;font-size:19px;letter-spacing:2px;color:var(--text-bright);text-transform:uppercase}
+.logo-text span{color:var(--accent-l)}
 .logo-sub{font-family:var(--mono);font-size:8px;color:var(--text-dim);letter-spacing:2px;margin-top:1px}
 .hdr-right{display:flex;align-items:center;gap:14px}
 .coord-hdr{font-family:var(--mono);font-size:10px;color:var(--text-dim)}
-.coord-hdr b{color:var(--accent-light)}
+.coord-hdr b{color:var(--accent-l)}
 .pill{font-family:var(--mono);font-size:9px;padding:3px 9px;border:1px solid var(--border2);color:var(--text-dim);letter-spacing:1px;text-transform:uppercase;border-radius:2px}
 .pill.ready{border-color:var(--green);color:var(--green)}
 .pill.loading{border-color:var(--gold);color:var(--gold);animation:blink 1.2s infinite}
@@ -39,209 +40,201 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .main{display:flex;flex:1;overflow:hidden;min-height:0}
 
 /* ── SIDEBAR ── */
-.sidebar{width:300px;background:var(--panel);border-right:2px solid var(--border2);display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;flex-shrink:0;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+.sidebar{width:310px;background:var(--panel);border-right:2px solid var(--border2);display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;flex-shrink:0;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2)}
-
 .sb-sec{border-bottom:1px solid var(--border);padding:13px 14px}
-.sec-lbl{font-family:var(--head);font-weight:700;font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--accent-light);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.sec-lbl{font-family:var(--head);font-weight:700;font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--accent-l);margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .sec-lbl::after{content:'';flex:1;height:1px;background:var(--border2)}
 
-/* inputs */
+/* Inputs */
 .blk{margin-bottom:10px}
 .inp-lbl{font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--text-dim);text-transform:uppercase;margin-bottom:5px;display:flex;align-items:center;gap:5px}
 .dot-o{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 5px var(--green)}
 .dot-d{width:7px;height:7px;border-radius:50%;background:var(--gold);box-shadow:0 0 5px var(--gold)}
 .inp-wrap{position:relative}
 .inp{width:100%;background:var(--panel2);border:1px solid var(--border2);color:var(--text-bright);font-family:var(--mono);font-size:11px;padding:8px 10px;outline:none;transition:border-color .2s;border-radius:2px}
-.inp:focus{border-color:var(--accent)}
+.inp:focus{border-color:var(--accent-l)}
 .inp::placeholder{color:var(--text-dim)}
-.ac{position:absolute;top:100%;left:0;right:0;background:var(--panel2);border:1px solid var(--border2);border-top:none;z-index:400;max-height:190px;overflow-y:auto;display:none;border-radius:0 0 2px 2px}
+.ac{position:absolute;top:100%;left:0;right:0;background:var(--panel2);border:1px solid var(--border2);border-top:none;z-index:500;max-height:190px;overflow-y:auto;display:none;border-radius:0 0 2px 2px}
 .ac.show{display:block}
 .ac-item{padding:7px 10px;cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--text);border-bottom:1px solid var(--border);transition:background .1s;display:flex;flex-direction:column;gap:1px}
-.ac-item:hover,.ac-item.sel{background:rgba(29,111,196,.15);color:var(--accent-light)}
+.ac-item:hover{background:rgba(33,150,243,.12);color:var(--accent-l)}
 .ac-sub{font-size:8px;color:var(--text-dim);letter-spacing:1px}
 
 .mode-tog{display:flex;margin-bottom:12px;border:1px solid var(--border2);border-radius:2px;overflow:hidden}
 .mode-btn{flex:1;padding:5px;background:transparent;border:none;color:var(--text-dim);font-family:var(--mono);font-size:9px;letter-spacing:1px;cursor:pointer;text-transform:uppercase;transition:all .15s}
-.mode-btn.active{background:rgba(29,111,196,.2);color:var(--accent-light)}
-
+.mode-btn.active{background:rgba(33,150,243,.18);color:var(--accent-l)}
 .ll-row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .swap-btn{width:100%;margin:3px 0 9px;padding:6px;background:transparent;border:1px dashed var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:9px;cursor:pointer;letter-spacing:2px;text-transform:uppercase;transition:all .15s;border-radius:2px}
-.swap-btn:hover{border-color:var(--accent);color:var(--accent-light)}
+.swap-btn:hover{border-color:var(--accent-l);color:var(--accent-l)}
 
-/* options */
+/* Options */
 .opt-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .opt-lbl{font-family:var(--mono);font-size:10px;color:var(--text-dim);letter-spacing:.5px}
 .tog{display:flex;gap:2px}
 .tb{padding:3px 8px;background:transparent;border:1px solid var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:9px;cursor:pointer;transition:all .12s;border-radius:2px}
-.tb.active{background:rgba(29,111,196,.18);border-color:var(--accent);color:var(--accent-light)}
+.tb.active{background:rgba(33,150,243,.18);border-color:var(--accent-l);color:var(--accent-l)}
 
-/* via points */
+/* Via grid */
 .via-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px}
 .via-btn{padding:5px 4px;background:transparent;border:1px solid var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:8px;cursor:pointer;letter-spacing:.5px;text-align:center;transition:all .12s;border-radius:2px;line-height:1.3}
-.via-btn.active{background:rgba(232,160,32,.15);border-color:var(--gold);color:var(--gold)}
+.via-btn.active{background:rgba(245,158,11,.15);border-color:var(--gold);color:var(--gold)}
 
-/* buttons */
-.calc-btn{width:100%;padding:12px;background:linear-gradient(135deg,rgba(29,111,196,.15),rgba(29,111,196,.08));border:1px solid var(--accent);color:var(--accent-light);font-family:var(--head);font-weight:700;font-size:13px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:all .2s;border-radius:2px;margin-top:4px}
-.calc-btn:hover{background:rgba(29,111,196,.25);box-shadow:0 0 16px rgba(29,111,196,.3)}
+/* Buttons */
+.calc-btn{width:100%;padding:12px;background:linear-gradient(135deg,rgba(21,101,192,.2),rgba(21,101,192,.1));border:1px solid var(--accent-l);color:var(--accent-l);font-family:var(--head);font-weight:700;font-size:13px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:all .2s;border-radius:2px;margin-top:4px}
+.calc-btn:hover{background:rgba(33,150,243,.25);box-shadow:0 0 16px rgba(33,150,243,.25)}
 .calc-btn.loading{opacity:.6;animation:blink .8s infinite;cursor:wait}
 .clear-btn{width:100%;margin-top:6px;padding:6px;background:transparent;border:1px solid var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:9px;cursor:pointer;letter-spacing:2px;text-transform:uppercase;transition:all .15s;border-radius:2px}
 .clear-btn:hover{border-color:var(--red);color:var(--red)}
 
-/* results */
+/* Results */
 .res-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
 .res-card{background:var(--panel2);border:1px solid var(--border2);padding:10px 8px;text-align:center;border-radius:2px}
 .res-card.full{grid-column:1/-1}
 .res-val{font-family:var(--head);font-weight:800;font-size:22px;color:var(--text-bright);line-height:1;margin-bottom:3px}
-.res-val.ac{color:var(--accent-light)}.res-val.go{color:var(--gold)}.res-val.gr{color:var(--green)}.res-val.ec{color:var(--eca)}
+.res-val.ac{color:var(--accent-l)}.res-val.go{color:var(--gold)}.res-val.gr{color:var(--green)}.res-val.ec{color:var(--eca)}
 .res-unit{font-family:var(--mono);font-size:8px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase}
-.passage-tags{margin-bottom:6px;font-family:var(--mono);font-size:9px}
-.ptag{display:inline-block;padding:2px 6px;border:1px solid var(--accent);color:var(--accent-light);margin:2px 2px 0 0;font-size:8px;letter-spacing:1px;text-transform:uppercase;border-radius:2px}
+.ptag{display:inline-block;padding:2px 6px;border:1px solid var(--accent-l);color:var(--accent-l);margin:2px 2px 0 0;font-size:8px;letter-spacing:1px;text-transform:uppercase;border-radius:2px}
 .ptag.eca{border-color:var(--eca);color:var(--eca)}
-.wp-tog{font-family:var(--mono);font-size:9px;color:var(--accent);cursor:pointer;letter-spacing:1px;margin-top:2px;display:inline-block}
-.wp-list{max-height:130px;overflow-y:auto;margin-top:6px;display:none}
-.wp-item{display:flex;gap:6px;padding:4px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;color:var(--text-dim)}
-.wp-n{color:var(--accent);min-width:20px}
 
-/* speed/eta */
+/* ── WAYPOINT PANEL ── */
+.wp-panel{margin-top:8px}
+.wp-panel-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.wp-panel-title{font-family:var(--mono);font-size:9px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase}
+.wp-count{font-family:var(--mono);font-size:9px;color:var(--accent-l)}
+.wp-list-panel{max-height:220px;overflow-y:auto;border:1px solid var(--border2);border-radius:2px}
+.wp-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .1s;position:relative}
+.wp-row:last-child{border-bottom:none}
+.wp-row:hover{background:rgba(33,150,243,.06)}
+.wp-row.selected{background:rgba(33,150,243,.12);border-left:2px solid var(--accent-l)}
+.wp-row.eca-entry{border-left:2px solid var(--eca)}
+.wp-row.eca-exit{border-left:2px solid var(--green)}
+.wp-row.dragging{opacity:.5}
+.wp-num{font-family:var(--mono);font-size:9px;color:var(--text-dim);min-width:22px}
+.wp-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.wp-dot.normal{background:var(--wp-normal)}
+.wp-dot.origin{background:var(--green);box-shadow:0 0 4px var(--green)}
+.wp-dot.dest{background:var(--gold);box-shadow:0 0 4px var(--gold)}
+.wp-dot.eca-entry{background:var(--eca);box-shadow:0 0 4px var(--eca)}
+.wp-dot.eca-exit{background:var(--green);box-shadow:0 0 4px var(--green)}
+.wp-dot.user{background:var(--gold);border:1px solid #fff}
+.wp-info{flex:1;min-width:0}
+.wp-name{font-family:var(--mono);font-size:10px;color:var(--text-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wp-coords{font-family:var(--mono);font-size:8px;color:var(--text-dim)}
+.wp-tag{font-family:var(--mono);font-size:7px;padding:1px 4px;border-radius:2px;font-weight:bold;margin-left:4px}
+.wp-tag.entry{background:rgba(249,115,22,.2);color:var(--eca);border:1px solid var(--eca)}
+.wp-tag.exit{background:rgba(16,185,129,.2);color:var(--green);border:1px solid var(--green)}
+.wp-tag.user{background:rgba(245,158,11,.2);color:var(--gold);border:1px solid var(--gold)}
+.wp-del{background:transparent;border:none;color:var(--text-dim);font-size:12px;cursor:pointer;padding:2px 4px;border-radius:2px;transition:all .15s;flex-shrink:0}
+.wp-del:hover{color:var(--red);background:rgba(239,68,68,.1)}
+.wp-drag-handle{color:var(--text-dim);font-size:12px;cursor:grab;padding:2px 4px;flex-shrink:0;user-select:none}
+.wp-drag-handle:active{cursor:grabbing}
+
+/* Drag mode hint */
+.drag-hint{background:rgba(245,158,11,.1);border:1px solid var(--gold);color:var(--gold);font-family:var(--mono);font-size:9px;padding:6px 10px;border-radius:2px;margin-top:6px;display:none;text-align:center;letter-spacing:.5px}
+.drag-hint.show{display:block}
+
+/* Speed/eta */
 .sm-row{display:flex;gap:6px;margin-bottom:8px}
 .sm-btn{flex:1;padding:5px;background:transparent;border:1px solid var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:9px;cursor:pointer;text-transform:uppercase;letter-spacing:1px;transition:all .12s;text-align:center;border-radius:2px}
-.sm-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(232,160,32,.1)}
+.sm-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(245,158,11,.1)}
+.calc-row{display:flex;gap:6px;align-items:center;margin-bottom:7px}
 .num-inp{width:100%;background:var(--panel2);border:1px solid var(--border2);color:var(--text-bright);font-family:var(--mono);font-size:12px;padding:7px 9px;outline:none;border-radius:2px;transition:border-color .2s}
-.num-inp:focus{border-color:var(--accent)}
+.num-inp:focus{border-color:var(--accent-l)}
 .num-inp::placeholder{color:var(--text-dim)}
 .sfx{font-family:var(--mono);font-size:9px;color:var(--text-dim);white-space:nowrap;padding:0 4px}
-.calc-row{display:flex;gap:6px;align-items:center;margin-bottom:7px}
 .dt-inp{width:100%;background:var(--panel2);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:10px;padding:7px 9px;outline:none;border-radius:2px;color-scheme:dark;margin-bottom:7px}
-.dt-inp:focus{border-color:var(--accent)}
-.eta-box{background:rgba(29,111,196,.06);border:1px solid var(--accent);padding:9px 11px;font-family:var(--mono);font-size:11px;margin-top:6px;display:none;border-radius:2px}
+.dt-inp:focus{border-color:var(--accent-l)}
+.eta-box{background:rgba(33,150,243,.06);border:1px solid var(--accent-l);padding:9px 11px;font-family:var(--mono);font-size:11px;margin-top:6px;display:none;border-radius:2px}
 .eta-box.show{display:block}
 .eta-lbl{color:var(--text-dim);font-size:8px;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px}
-.eta-val{color:var(--accent-light);font-size:13px;font-weight:bold}
+.eta-val{color:var(--accent-l);font-size:13px;font-weight:bold}
 .eta-arr{color:var(--green);font-size:10px;margin-top:3px}
 
-/* error */
-.err{background:rgba(192,57,43,.08);border:1px solid var(--red);color:var(--red);font-family:var(--mono);font-size:10px;padding:8px 10px;margin-top:8px;display:none;line-height:1.5;border-radius:2px}
+/* Error / notice */
+.err{background:rgba(239,68,68,.08);border:1px solid var(--red);color:var(--red);font-family:var(--mono);font-size:10px;padding:8px 10px;margin-top:8px;display:none;line-height:1.5;border-radius:2px}
 .err.show{display:block}
-
-/* notice */
 .notice{font-family:var(--mono);font-size:9px;color:var(--text-dim);padding:8px 10px;background:var(--panel2);border-left:2px solid var(--border2);line-height:1.6;border-radius:0 2px 2px 0}
-.notice a{color:var(--accent);text-decoration:none}
+.notice a{color:var(--accent-l);text-decoration:none}
 .notice strong{color:var(--text)}
 
 /* ── MAP ── */
 #map{flex:1;position:relative;z-index:1;min-width:0}
-/* Positron-style: land=warm beige, sea=powder blue — via CartoDB Positron */
 .leaflet-container{background:#c9dff0!important}
+.leaflet-control-attribution{font-size:8px;opacity:.6}
+
+/* ECA legend */
+.eca-legend{position:absolute;bottom:50px;right:14px;background:rgba(10,15,24,.9);border:1px solid var(--border2);padding:8px 11px;z-index:600;font-family:var(--mono);font-size:8px;display:none;border-radius:3px;backdrop-filter:blur(4px)}
+.eca-legend.show{display:block}
+.eca-legend-title{color:var(--eca);letter-spacing:2px;text-transform:uppercase;margin-bottom:5px}
+.eca-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;color:var(--text-dim)}
+.eca-swatch{width:14px;height:8px;border-radius:1px;opacity:.6}
+
+/* Waypoint legend */
+.wp-legend{position:absolute;bottom:50px;left:14px;background:rgba(10,15,24,.9);border:1px solid var(--border2);padding:8px 11px;z-index:600;font-family:var(--mono);font-size:8px;display:none;border-radius:3px;backdrop-filter:blur(4px)}
+.wp-legend.show{display:block}
+.wp-legend-title{color:var(--accent-l);letter-spacing:2px;text-transform:uppercase;margin-bottom:5px}
+.wpl-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;color:var(--text-dim)}
+.wpl-dot{width:10px;height:10px;border-radius:50%}
+
+/* Map overlay */
+.map-ov{position:absolute;top:14px;right:14px;background:rgba(10,15,24,.92);border:1px solid var(--border2);padding:10px 13px;z-index:600;display:none;border-radius:3px;min-width:175px;backdrop-filter:blur(4px)}
+.ov-row{font-family:var(--mono);font-size:9px;color:var(--text-dim);display:flex;justify-content:space-between;gap:10px;margin-bottom:3px}
+.ov-row b{color:var(--text-bright)}
+
+/* Map hint */
+.map-hint{position:absolute;bottom:48px;left:50%;transform:translateX(-50%);background:rgba(10,15,24,.85);border:1px solid var(--border2);padding:5px 14px;font-family:var(--mono);font-size:9px;color:var(--text-dim);z-index:600;pointer-events:none;letter-spacing:1px;opacity:0;transition:opacity .3s;border-radius:3px}
+.map-hint.show{opacity:1}
+
+/* Drag mode cursor on map */
+.map-dragging .leaflet-grab{cursor:crosshair!important}
 
 /* Bottom bar */
-.route-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(13,17,23,.96);border-top:2px solid var(--accent);padding:0;display:none;align-items:stretch;z-index:600;backdrop-filter:blur(6px);overflow:hidden}
+.route-bar{position:absolute;bottom:0;left:0;right:0;background:rgba(10,15,24,.96);border-top:2px solid var(--accent-l);padding:0;display:none;align-items:stretch;z-index:600;backdrop-filter:blur(6px);overflow:hidden}
 .route-bar.show{display:flex}
 .rb-divider{width:1px;background:var(--border2);flex-shrink:0;margin:6px 0}
 .rb-item{display:flex;flex-direction:column;gap:2px;padding:8px 16px;flex-shrink:0;justify-content:center}
 .rb-lbl{font-family:var(--mono);font-size:8px;letter-spacing:2px;color:var(--text-dim);text-transform:uppercase;white-space:nowrap}
 .rb-val{font-family:var(--head);font-weight:800;font-size:16px;color:var(--text-bright);white-space:nowrap}
-.rb-val.ac{color:var(--accent-light)}.rb-val.go{color:var(--gold)}.rb-val.gr{color:var(--green)}.rb-val.ec{color:var(--eca)}
-/* Map overlay */
-.map-ov{position:absolute;top:14px;right:14px;background:rgba(13,17,23,.9);border:1px solid var(--border2);padding:9px 12px;z-index:600;backdrop-filter:blur(4px);display:none;border-radius:3px;min-width:180px}
-.ov-row{font-family:var(--mono);font-size:9px;color:var(--text-dim);display:flex;justify-content:space-between;gap:10px;margin-bottom:2px}
-.ov-row b{color:var(--text-bright)}
+.rb-val.ac{color:var(--accent-l)}.rb-val.go{color:var(--gold)}.rb-val.gr{color:var(--green)}.rb-val.ec{color:var(--eca)}
 
-/* ECA legend */
-.eca-legend{position:absolute;bottom:50px;right:14px;background:rgba(13,17,23,.88);border:1px solid var(--border2);padding:8px 11px;z-index:600;font-family:var(--mono);font-size:8px;display:none;border-radius:3px}
-.eca-legend.show{display:block}
-.eca-legend-title{color:var(--eca);letter-spacing:2px;text-transform:uppercase;margin-bottom:5px;font-size:8px}
-.eca-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;color:var(--text-dim)}
-.eca-swatch{width:14px;height:8px;border-radius:1px;opacity:.55}
-
-/* Map hint */
-.map-hint{position:absolute;bottom:48px;left:50%;transform:translateX(-50%);background:rgba(13,17,23,.85);border:1px solid var(--border2);padding:5px 14px;font-family:var(--mono);font-size:9px;color:var(--text-dim);z-index:600;pointer-events:none;letter-spacing:1px;opacity:0;transition:opacity .3s;border-radius:3px}
-.map-hint.show{opacity:1}
-.compass{position:absolute;bottom:54px;right:14px;z-index:600;pointer-events:none;opacity:.6}
-
-.hidden{display:none!important}
-.leaflet-tooltip.eca-tip{background:rgba(13,17,23,.88);border:1px solid #333;color:#ccc;font-size:10px;padding:3px 7px;border-radius:2px;box-shadow:none}
-
-/* ── MOBILE RESPONSIVE ── */
-.mob-toggle{display:none;position:fixed;bottom:20px;right:20px;z-index:2000;
-  width:48px;height:48px;border-radius:50%;background:var(--accent);
-  border:none;color:#fff;font-size:20px;cursor:pointer;
-  box-shadow:0 4px 16px rgba(0,0,0,.4);align-items:center;justify-content:center}
-
-@media (max-width: 768px) {
-  header{height:46px;padding:0 12px}
-  .logo-text{font-size:16px;letter-spacing:2px}
-  .logo-sub{display:none}
-  .coord-hdr{display:none}
-  .pill{font-size:8px;padding:2px 7px}
-
-  .main{flex-direction:column;position:relative}
-
-  /* Sidebar slides in from left on mobile */
-  .sidebar{
-    position:fixed;top:46px;left:0;bottom:0;
-    width:280px;z-index:1500;
-    transform:translateX(-100%);
-    transition:transform .3s ease;
-    overflow-y:auto;
-  }
+/* Mobile */
+.mob-toggle{display:none;position:fixed;bottom:20px;right:20px;z-index:2000;width:48px;height:48px;border-radius:50%;background:var(--accent-l);border:none;color:#fff;font-size:20px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4);align-items:center;justify-content:center}
+@media(max-width:768px){
+  .sidebar{position:fixed;top:52px;left:0;bottom:0;width:285px;z-index:1500;transform:translateX(-100%);transition:transform .3s ease}
   .sidebar.mob-open{transform:translateX(0)}
-
-  /* Map takes full screen */
-  #map{height:calc(100vh - 46px);width:100%}
-
-  /* Bottom bar wraps on mobile */
+  #map{height:calc(100vh - 52px);width:100%}
+  .mob-toggle{display:flex}
   .route-bar{flex-wrap:wrap}
   .rb-item{padding:5px 10px}
   .rb-val{font-size:13px}
   .rb-lbl{font-size:7px}
-
-  /* Map overlay smaller on mobile */
-  .map-ov{top:8px;right:8px;padding:7px 10px;min-width:140px}
-  .ov-row{font-size:8px}
-
-  /* ECA legend smaller */
-  .eca-legend{bottom:90px;right:8px;font-size:7px;padding:6px 8px}
-
-  /* Via grid 3 cols on mobile */
-  .via-grid{grid-template-columns:1fr 1fr 1fr}
-  .via-btn{font-size:7px;padding:4px 2px}
-
-  /* Hamburger visible */
-  .mob-toggle{display:flex}
-
-  /* Compass hidden on mobile */
-  .compass{display:none}
+  .eca-legend,.wp-legend{display:none!important}
 }
-
-@media (max-width: 480px) {
-  .sidebar{width:100%;max-width:100%}
-  .route-bar{display:none!important} /* use map overlay instead on very small screens */
-  .map-ov{display:block!important;top:8px;right:8px}
-}
+.hidden{display:none!important}
 </style>
 </head>
 <body>
 
 <header>
   <div class="logo">
-    <span class="logo-anchor">⚓</span>
+    <span class="logo-icon">⚓</span>
     <div>
-      <div class="logo-text">SEA<span>ROUTE</span></div>
-      <div class="logo-sub">MARITIME VOYAGE PLANNER · MARNET ENGINE</div>
+      <div class="logo-text">ROUTE<span>PLANNER</span>PRO</div>
+      <div class="logo-sub">PROFESSIONAL VOYAGE PLANNING PLATFORM</div>
     </div>
   </div>
   <div class="hdr-right">
-    <div class="coord-hdr">LAT <b id="hLat">---.----</b> &nbsp; LON <b id="hLon">---.----</b></div>
+    <div class="coord-hdr">LAT <b id="hLat">---.-</b> &nbsp; LON <b id="hLon">---.-</b></div>
     <div class="pill loading" id="engPill">⬡ CONNECTING</div>
   </div>
 </header>
 
 <div class="main">
-<!-- Mobile sidebar toggle button -->
-<button class="mob-toggle" id="mobToggle" onclick="toggleMobSidebar()" title="Toggle menu">☰</button>
+<button class="mob-toggle" id="mobToggle" onclick="toggleMob()">☰</button>
+
 <!-- ════ SIDEBAR ════ -->
-<div class="sidebar">
+<div class="sidebar" id="sidebar">
 
   <!-- VOYAGE INPUTS -->
   <div class="sb-sec">
@@ -250,13 +243,11 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       <button class="mode-btn active" id="mPort" onclick="setMode('port')">PORT NAME</button>
       <button class="mode-btn" id="mCoord" onclick="setMode('coord')">COORDINATES</button>
     </div>
-
-    <!-- Port mode -->
     <div id="portMode">
       <div class="blk">
         <div class="inp-lbl"><div class="dot-o"></div> ORIGIN PORT</div>
         <div class="inp-wrap">
-          <input class="inp" id="oInp" type="text" placeholder="Search port name or country…" autocomplete="off"
+          <input class="inp" id="oInp" type="text" placeholder="Search port…" autocomplete="off"
             oninput="psearch(this,'oAC','o')"
             onfocus="if(this.value)document.getElementById('oAC').classList.add('show')"
             onblur="setTimeout(()=>document.getElementById('oAC').classList.remove('show'),200)">
@@ -267,7 +258,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       <div class="blk">
         <div class="inp-lbl"><div class="dot-d"></div> DESTINATION PORT</div>
         <div class="inp-wrap">
-          <input class="inp" id="dInp" type="text" placeholder="Search port name or country…" autocomplete="off"
+          <input class="inp" id="dInp" type="text" placeholder="Search port…" autocomplete="off"
             oninput="psearch(this,'dAC','d')"
             onfocus="if(this.value)document.getElementById('dAC').classList.add('show')"
             onblur="setTimeout(()=>document.getElementById('dAC').classList.remove('show'),200)">
@@ -275,11 +266,9 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
         </div>
       </div>
     </div>
-
-    <!-- Coord mode -->
     <div id="coordMode" class="hidden">
       <div class="blk">
-        <div class="inp-lbl"><div class="dot-o"></div> ORIGIN (click map or type)</div>
+        <div class="inp-lbl"><div class="dot-o"></div> ORIGIN (click map)</div>
         <div class="ll-row">
           <input class="inp" id="oLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
           <input class="inp" id="oLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
@@ -287,7 +276,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       </div>
       <button class="swap-btn" onclick="swapPorts()">⇅ SWAP</button>
       <div class="blk">
-        <div class="inp-lbl"><div class="dot-d"></div> DESTINATION (click map or type)</div>
+        <div class="inp-lbl"><div class="dot-d"></div> DESTINATION (click map)</div>
         <div class="ll-row">
           <input class="inp" id="dLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
           <input class="inp" id="dLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
@@ -301,32 +290,22 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div class="sec-lbl">⚙ Routing Options</div>
     <div class="opt-row">
       <span class="opt-lbl">SUEZ CANAL</span>
-      <div class="tog">
-        <button class="tb active" id="suezY" onclick="setTog('suez',true)">ALLOW</button>
-        <button class="tb" id="suezN" onclick="setTog('suez',false)">AVOID</button>
-      </div>
+      <div class="tog"><button class="tb active" id="suezY" onclick="setTog('suez',true)">ALLOW</button><button class="tb" id="suezN" onclick="setTog('suez',false)">AVOID</button></div>
     </div>
     <div class="opt-row">
       <span class="opt-lbl">PANAMA CANAL</span>
-      <div class="tog">
-        <button class="tb active" id="panaY" onclick="setTog('panama',true)">ALLOW</button>
-        <button class="tb" id="panaN" onclick="setTog('panama',false)">AVOID</button>
-      </div>
+      <div class="tog"><button class="tb active" id="panaY" onclick="setTog('panama',true)">ALLOW</button><button class="tb" id="panaN" onclick="setTog('panama',false)">AVOID</button></div>
     </div>
     <div class="opt-row" style="margin-bottom:2px">
       <span class="opt-lbl">KIEL CANAL</span>
-      <div class="tog">
-        <button class="tb active" id="kielY" onclick="setTog('kiel',true)">ALLOW</button>
-        <button class="tb" id="kielN" onclick="setTog('kiel',false)">AVOID</button>
-      </div>
+      <div class="tog"><button class="tb active" id="kielY" onclick="setTog('kiel',true)">ALLOW</button><button class="tb" id="kielN" onclick="setTog('kiel',false)">AVOID</button></div>
     </div>
   </div>
 
-  <!-- VIA WAYPOINTS -->
+  <!-- FORCE VIA -->
   <div class="sb-sec">
-    <div class="sec-lbl">📍 Force Via (Deviation Points)</div>
-    <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-bottom:7px;letter-spacing:.5px">Select to force route through specific waypoint</div>
-    <div class="via-grid" id="viaGrid">
+    <div class="sec-lbl">📍 Force Via</div>
+    <div class="via-grid">
       <button class="via-btn" data-via="cape_good_hope" onclick="toggleVia(this)">CAPE OF<br>GOOD HOPE</button>
       <button class="via-btn" data-via="cape_horn" onclick="toggleVia(this)">CAPE<br>HORN</button>
       <button class="via-btn" data-via="malacca" onclick="toggleVia(this)">MALACCA<br>STRAIT</button>
@@ -336,7 +315,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       <button class="via-btn" data-via="babalmandab" onclick="toggleVia(this)">BAB-EL<br>MANDEB</button>
       <button class="via-btn" data-via="sunda" onclick="toggleVia(this)">SUNDA<br>STRAIT</button>
       <button class="via-btn" data-via="lombok" onclick="toggleVia(this)">LOMBOK<br>STRAIT</button>
-      <button class="via-btn" data-via="hormuz" onclick="toggleVia(this)">STRAIT OF<br>HORMUZ</button>
+      <button class="via-btn" data-via="hormuz" onclick="toggleVia(this)">HORMUZ<br>STRAIT</button>
       <button class="via-btn" data-via="dover" onclick="toggleVia(this)">DOVER<br>STRAIT</button>
       <button class="via-btn" data-via="bering" onclick="toggleVia(this)">BERING<br>STRAIT</button>
     </div>
@@ -347,10 +326,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div class="sec-lbl">🗂 Map Layers</div>
     <div class="opt-row">
       <span class="opt-lbl">ECA REGIONS</span>
-      <div class="tog">
-        <button class="tb active" id="ecaOn" onclick="setECA(true)">SHOW</button>
-        <button class="tb" id="ecaOff" onclick="setECA(false)">HIDE</button>
-      </div>
+      <div class="tog"><button class="tb active" id="ecaOn" onclick="setECA(true)">SHOW</button><button class="tb" id="ecaOff" onclick="setECA(false)">HIDE</button></div>
     </div>
   </div>
 
@@ -361,11 +337,11 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <button class="clear-btn" onclick="clearAll()">✕ CLEAR ALL</button>
   </div>
 
-  <!-- RESULTS -->
+  <!-- ROUTE METRICS -->
   <div class="sb-sec" id="resSec" style="display:none">
     <div class="sec-lbl">📐 Route Metrics</div>
     <div class="res-grid">
-      <div class="res-card"><div class="res-val" id="rNm" style="color:#ffffff;font-size:22px;display:block;visibility:visible;opacity:1"></div><div class="res-unit">TOTAL DIST (NM)</div></div>
+      <div class="res-card"><div class="res-val" id="rNm" style="color:#fff">—</div><div class="res-unit">TOTAL DIST (NM)</div></div>
       <div class="res-card"><div class="res-val ec" id="rEca">—</div><div class="res-unit">ECA MILES (NM)</div></div>
       <div class="res-card full"><div class="res-val go" id="rRoute" style="font-size:15px">—</div><div class="res-unit">ROUTE TYPE</div></div>
       <div class="res-card full" id="rEcaBar" style="display:none;padding:8px 10px">
@@ -379,8 +355,16 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       </div>
     </div>
     <div class="passage-tags" id="pTags"></div>
-    <div class="wp-tog" id="wpTog" onclick="toggleWP()">▶ SHOW WAYPOINTS</div>
-    <div class="wp-list" id="wpList"></div>
+
+    <!-- ── INTERACTIVE WAYPOINT PANEL ── -->
+    <div class="wp-panel">
+      <div class="wp-panel-hdr">
+        <span class="wp-panel-title">WAYPOINTS</span>
+        <span class="wp-count" id="wpCount">—</span>
+      </div>
+      <div class="drag-hint" id="dragHint">🖱 DRAG WAYPOINTS ON MAP TO REROUTE</div>
+      <div class="wp-list-panel" id="wpListPanel"></div>
+    </div>
   </div>
 
   <!-- SPEED / ETA -->
@@ -420,9 +404,9 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   <!-- ABOUT -->
   <div class="sb-sec">
     <div class="notice">
-      <strong>Engine:</strong> <a href="https://github.com/genthalili/searoute-py" target="_blank">searoute-py</a> (Eurostat MARNET / Oak Ridge National Labs Global Shipping Lane Network). Dijkstra shortest path on 10,000+ verified sea nodes.<br><br>
-      <strong>ECA Regions:</strong> North Sea, Baltic, North America (200nm), US Caribbean, Hong Kong (2015 boundaries).<br><br>
-      <em>For voyage planning reference only. Not for navigation.</em>
+      <strong>Engine:</strong> Eurostat MARNET / Oak Ridge National Labs.<br><br>
+      <strong>Phase 1:</strong> Interactive waypoints — drag any waypoint on the map to reroute. Click a waypoint in the list to highlight it. Delete waypoints to simplify route.<br><br>
+      <strong>Coming soon:</strong> Weather overlay · RTZ/CSV import/export · HRA zones · Bunker cost estimator
     </div>
   </div>
 
@@ -433,24 +417,39 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   <div class="map-ov" id="mapOv">
     <div class="ov-row"><span>FROM</span><b id="ovFrom">—</b></div>
     <div class="ov-row"><span>TO</span><b id="ovTo">—</b></div>
-    <div class="ov-row"><span>DIST</span><b id="ovDist">— NM</b></div>
-    <div class="ov-row"><span>ECA</span><b id="ovEca" style="color:var(--eca)">— NM</b></div>
+    <div class="ov-row"><span>DIST</span><b id="ovDist">—</b></div>
+    <div class="ov-row"><span>ECA</span><b id="ovEca" style="color:var(--eca)">—</b></div>
   </div>
-  <div class="map-hint" id="mapHint">CLICK TO SET ORIGIN COORDINATES</div>
+  <div class="map-hint" id="mapHint">CLICK TO SET COORDINATES</div>
+
+  <!-- Waypoint legend -->
+  <div class="wp-legend" id="wpLegend">
+    <div class="wp-legend-title">WAYPOINTS</div>
+    <div class="wpl-row"><div class="wpl-dot" style="background:var(--green)"></div>Origin</div>
+    <div class="wpl-row"><div class="wpl-dot" style="background:var(--gold)"></div>Destination</div>
+    <div class="wpl-row"><div class="wpl-dot" style="background:var(--wp-normal)"></div>Route waypoint</div>
+    <div class="wpl-row"><div class="wpl-dot" style="background:var(--eca);border:1px solid #fff"></div>ECA entry</div>
+    <div class="wpl-row"><div class="wpl-dot" style="background:var(--green);border:1px solid #fff"></div>ECA exit</div>
+    <div class="wpl-row"><div class="wpl-dot" style="background:var(--gold);border:2px solid #fff"></div>User-added</div>
+  </div>
+
+  <!-- ECA legend -->
   <div class="eca-legend" id="ecaLegend">
     <div class="eca-legend-title">ECA / SECA ZONES</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#2471a3"></div>North Sea ECA</div>
+    <div class="eca-row"><div class="eca-swatch" style="background:#2e86c1"></div>North Sea ECA</div>
     <div class="eca-row"><div class="eca-swatch" style="background:#1a5276"></div>Baltic Sea ECA</div>
     <div class="eca-row"><div class="eca-swatch" style="background:#7d3c98"></div>Mediterranean SECA</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#1e8449"></div>N. America ECA (200nm)</div>
+    <div class="eca-row"><div class="eca-swatch" style="background:#1e8449"></div>N. America ECA</div>
     <div class="eca-row"><div class="eca-swatch" style="background:#148f77"></div>US Caribbean ECA</div>
     <div class="eca-row"><div class="eca-swatch" style="background:#117a65"></div>Hawaii ECA</div>
   </div>
+
+  <!-- Bottom bar -->
   <div class="route-bar" id="rBar">
     <div class="rb-item"><div class="rb-lbl">FROM</div><div class="rb-val" id="bFrom" style="font-size:12px">—</div></div>
     <div class="rb-item"><div class="rb-lbl">TO</div><div class="rb-val" id="bTo" style="font-size:12px">—</div></div>
     <div class="rb-divider"></div>
-    <div class="rb-item"><div class="rb-lbl">TOTAL DIST (NM)</div><div class="rb-val" id="bNm" style="color:#ffffff;white-space:nowrap"></div></div>
+    <div class="rb-item"><div class="rb-lbl">TOTAL DIST (NM)</div><div class="rb-val" id="bNm" style="color:#fff">—</div></div>
     <div class="rb-item"><div class="rb-lbl">ECA MILES</div><div class="rb-val ec" id="bEca">—</div></div>
     <div class="rb-item"><div class="rb-lbl">WAYPOINTS</div><div class="rb-val go" id="bWp">—</div></div>
     <div class="rb-item" id="bEtaItem" style="display:none"><div class="rb-lbl">ETA (UTC)</div><div class="rb-val gr" id="bEta">—</div></div>
@@ -459,308 +458,137 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 </div><!-- /main -->
 
 <script>
-// SeaRoute v3.0 — API auto-detection
-// API endpoint — works locally AND on Render/cloud deployments
-const API = window.location.origin;
-console.log('SeaRoute v3.0 — API:', API);
+// ══════════════════════════════════════════════════════════════════════════════
+// RoutePlannerPro — Phase 1: Interactive Waypoints
+// ══════════════════════════════════════════════════════════════════════════════
 
-// ══ PORT DATABASE (200+ major world ports) ════════════════════════════════════
-const PORTS = [
-  // ASIA - CHINA
-  {n:"Shanghai",c:"CN",la:31.2304,lo:121.4737},{n:"Ningbo-Zhoushan",c:"CN",la:29.8683,lo:121.5440},
+const API = window.location.origin;
+
+// ── PORT DATABASE ─────────────────────────────────────────────────────────────
+const PORTS=[
+  {n:"Singapore",c:"SG",la:1.2897,lo:103.8501},{n:"Rotterdam",c:"NL",la:51.9054,lo:4.4822},
+  {n:"Shanghai",c:"CN",la:31.2304,lo:121.4737},{n:"Ningbo-Zhoushan",c:"CN",la:29.8683,lo:121.544},
   {n:"Shenzhen (Yantian)",c:"CN",la:22.5631,lo:114.2599},{n:"Guangzhou (Nansha)",c:"CN",la:22.7478,lo:113.6006},
   {n:"Qingdao",c:"CN",la:36.0671,lo:120.3826},{n:"Tianjin (Xingang)",c:"CN",la:38.9875,lo:117.7214},
-  {n:"Dalian",c:"CN",la:38.9140,lo:121.6147},{n:"Xiamen",c:"CN",la:24.4798,lo:118.0894},
-  {n:"Lianyungang",c:"CN",la:34.7500,lo:119.4500},{n:"Nanjing",c:"CN",la:32.1000,lo:118.7800},
-  {n:"Wuhan",c:"CN",la:30.5928,lo:114.3055},{n:"Chongqing",c:"CN",la:29.5630,lo:106.5516},
-  {n:"Fuzhou",c:"CN",la:26.0614,lo:119.3061},{n:"Zhoushan",c:"CN",la:30.0160,lo:122.1060},
-  {n:"Tianjin",c:"CN",la:39.1422,lo:117.2008},{n:"Yantai",c:"CN",la:37.5403,lo:121.3914},
-  // ASIA - KOREA/JAPAN/TAIWAN
+  {n:"Dalian",c:"CN",la:38.914,lo:121.6147},{n:"Xiamen",c:"CN",la:24.4798,lo:118.0894},
   {n:"Hong Kong",c:"HK",la:22.3193,lo:114.1694},{n:"Busan",c:"KR",la:35.0796,lo:129.0672},
-  {n:"Incheon",c:"KR",la:37.4563,lo:126.7052},{n:"Gwangyang",c:"KR",la:34.9333,lo:127.7000},
-  {n:"Ulsan",c:"KR",la:35.5044,lo:129.4144},{n:"Kaohsiung",c:"TW",la:22.6163,lo:120.2648},
-  {n:"Taipei (Keelung)",c:"TW",la:25.1333,lo:121.7333},{n:"Taichung",c:"TW",la:24.2811,lo:120.5239},
-  {n:"Yokohama",c:"JP",la:35.4437,lo:139.6380},{n:"Tokyo",c:"JP",la:35.6222,lo:139.7744},
-  {n:"Nagoya",c:"JP",la:35.0687,lo:136.8839},{n:"Osaka / Kobe",c:"JP",la:34.6937,lo:135.5023},
-  {n:"Kobe",c:"JP",la:34.6901,lo:135.1956},{n:"Kitakyushu",c:"JP",la:33.8833,lo:130.8833},
-  {n:"Hakata (Fukuoka)",c:"JP",la:33.5903,lo:130.4017},{n:"Chiba",c:"JP",la:35.6000,lo:140.1167},
-  // ASIA - SE ASIA
-  {n:"Singapore",c:"SG",la:1.2897,lo:103.8501},{n:"Port Klang",c:"MY",la:3.0000,lo:101.4000},
+  {n:"Incheon",c:"KR",la:37.4563,lo:126.7052},{n:"Gwangyang",c:"KR",la:34.9333,lo:127.7},
+  {n:"Kaohsiung",c:"TW",la:22.6163,lo:120.2648},{n:"Yokohama",c:"JP",la:35.4437,lo:139.638},
+  {n:"Tokyo",c:"JP",la:35.6222,lo:139.7744},{n:"Nagoya",c:"JP",la:35.0687,lo:136.8839},
+  {n:"Kobe / Osaka",c:"JP",la:34.6901,lo:135.1956},{n:"Port Klang",c:"MY",la:3.0,lo:101.4},
   {n:"Tanjung Pelepas",c:"MY",la:1.3656,lo:103.5507},{n:"Penang",c:"MY",la:5.4164,lo:100.3327},
-  {n:"Laem Chabang",c:"TH",la:13.0896,lo:100.8829},{n:"Bangkok (Klong Toey)",c:"TH",la:13.7275,lo:100.5196},
-  {n:"Ho Chi Minh City (Cat Lai)",c:"VN",la:10.7580,lo:106.7261},{n:"Hai Phong",c:"VN",la:20.8449,lo:106.6881},
-  {n:"Da Nang",c:"VN",la:16.0544,lo:108.2022},{n:"Manila",c:"PH",la:14.5995,lo:120.9842},
-  {n:"Cebu",c:"PH",la:10.3157,lo:123.8854},{n:"Subic Bay",c:"PH",la:14.7928,lo:120.2719},
+  {n:"Laem Chabang",c:"TH",la:13.0896,lo:100.8829},{n:"Ho Chi Minh City",c:"VN",la:10.758,lo:106.7261},
+  {n:"Hai Phong",c:"VN",la:20.8449,lo:106.6881},{n:"Manila",c:"PH",la:14.5995,lo:120.9842},
   {n:"Jakarta (Tanjung Priok)",c:"ID",la:-6.1027,lo:106.8811},{n:"Surabaya",c:"ID",la:-7.2458,lo:112.7378},
-  {n:"Belawan (Medan)",c:"ID",la:3.7833,lo:98.6833},{n:"Semarang",c:"ID",la:-6.9667,lo:110.4167},
-  {n:"Makassar",c:"ID",la:-5.1477,lo:119.4327},{n:"Banjarmasin",c:"ID",la:-3.3167,lo:114.5833},
-  // ASIA - SOUTH ASIA
-  {n:"Colombo",c:"LK",la:6.9271,lo:79.8612},{n:"Hambantota",c:"LK",la:6.1241,lo:81.1185},
-  {n:"Chennai (Madras)",c:"IN",la:13.0827,lo:80.2707},{n:"Mumbai (JNPT)",c:"IN",la:18.9388,lo:72.9463},
-  {n:"Mundra",c:"IN",la:22.8389,lo:69.7228},{n:"Kandla",c:"IN",la:23.0333,lo:70.2167},
+  {n:"Colombo",c:"LK",la:6.9271,lo:79.8612},{n:"Chennai",c:"IN",la:13.0827,lo:80.2707},
+  {n:"Mumbai (JNPT)",c:"IN",la:18.9388,lo:72.9463},{n:"Mundra",c:"IN",la:22.8389,lo:69.7228},
   {n:"Kolkata (Haldia)",c:"IN",la:21.9563,lo:88.0764},{n:"Visakhapatnam",c:"IN",la:17.6868,lo:83.2185},
-  {n:"Cochin (Kochi)",c:"IN",la:9.9312,lo:76.2673},{n:"Tuticorin",c:"IN",la:8.7642,lo:78.1348},
-  {n:"New Mangalore",c:"IN",la:12.9141,lo:74.8560},{n:"Paradip",c:"IN",la:20.3167,lo:86.6167},
-  {n:"Karachi",c:"PK",la:24.8860,lo:67.0011},{n:"Port Qasim",c:"PK",la:24.7833,lo:67.3500},
-  {n:"Chittagong",c:"BD",la:22.3419,lo:91.8257},{n:"Mongla",c:"BD",la:22.4750,lo:89.5833},
-  {n:"Yangon (Thilawa)",c:"MM",la:16.5167,lo:96.2333},{n:"Sihanoukville",c:"KH",la:10.6167,lo:103.5000},
-  // MIDDLE EAST
-  {n:"Dubai (Jebel Ali)",c:"AE",la:24.9984,lo:55.0620},{n:"Abu Dhabi (Khalifa)",c:"AE",la:24.8028,lo:54.6403},
-  {n:"Sharjah",c:"AE",la:25.3667,lo:55.3833},{n:"Bandar Abbas",c:"IR",la:27.2000,lo:56.2672},
-  {n:"Salalah",c:"OM",la:17.0204,lo:54.0790},{n:"Muscat",c:"OM",la:23.6139,lo:58.5922},
-  {n:"Kuwait",c:"KW",la:29.3833,lo:47.9500},{n:"Dammam (King Abdulaziz)",c:"SA",la:26.4333,lo:50.1000},
-  {n:"Jubail",c:"SA",la:27.0167,lo:49.6500},{n:"Jeddah",c:"SA",la:21.4858,lo:39.1925},
-  {n:"Aqaba",c:"JO",la:29.5167,lo:35.0000},{n:"Aden",c:"YE",la:12.7797,lo:45.0306},
-  {n:"Djibouti",c:"DJ",la:11.5886,lo:43.1451},{n:"Berbera",c:"SO",la:10.4333,lo:45.0167},
-  // RED SEA / SUEZ
-  {n:"Port Said",c:"EG",la:31.2565,lo:32.2842},{n:"Suez",c:"EG",la:29.9737,lo:32.5506},
-  {n:"Alexandria",c:"EG",la:31.2001,lo:29.9187},{n:"Damietta",c:"EG",la:31.4167,lo:31.8167},
-  // AFRICA - EAST
+  {n:"Cochin (Kochi)",c:"IN",la:9.9312,lo:76.2673},{n:"Karachi",c:"PK",la:24.886,lo:67.0011},
+  {n:"Chittagong",c:"BD",la:22.3419,lo:91.8257},{n:"Yangon",c:"MM",la:16.5167,lo:96.2333},
+  {n:"Dubai (Jebel Ali)",c:"AE",la:24.9984,lo:55.062},{n:"Abu Dhabi",c:"AE",la:24.8028,lo:54.6403},
+  {n:"Bandar Abbas",c:"IR",la:27.2,lo:56.2672},{n:"Salalah",c:"OM",la:17.0204,lo:54.079},
+  {n:"Muscat",c:"OM",la:23.6139,lo:58.5922},{n:"Kuwait",c:"KW",la:29.3833,lo:47.95},
+  {n:"Dammam",c:"SA",la:26.4333,lo:50.1},{n:"Jeddah",c:"SA",la:21.4858,lo:39.1925},
+  {n:"Aqaba",c:"JO",la:29.5167,lo:35.0},{n:"Aden",c:"YE",la:12.7797,lo:45.0306},
+  {n:"Djibouti",c:"DJ",la:11.5886,lo:43.1451},{n:"Port Said",c:"EG",la:31.2565,lo:32.2842},
+  {n:"Suez",c:"EG",la:29.9737,lo:32.5506},{n:"Alexandria",c:"EG",la:31.2001,lo:29.9187},
   {n:"Mombasa",c:"KE",la:-4.0435,lo:39.6682},{n:"Dar es Salaam",c:"TZ",la:-6.8235,lo:39.2895},
-  {n:"Maputo",c:"MZ",la:-25.9653,lo:32.5892},{n:"Beira",c:"MZ",la:-19.8333,lo:34.8667},
-  {n:"Nacala",c:"MZ",la:-14.5333,lo:40.6833},{n:"Toamasina (Tamatave)",c:"MG",la:-18.1500,lo:49.4000},
-  {n:"Durban",c:"ZA",la:-29.8587,lo:31.0218},{n:"Port Elizabeth",c:"ZA",la:-33.9608,lo:25.6022},
-  {n:"East London",c:"ZA",la:-33.0152,lo:27.9116},{n:"Richards Bay",c:"ZA",la:-28.8000,lo:32.0667},
-  // AFRICA - WEST & SOUTH
-  {n:"Cape Town",c:"ZA",la:-33.9249,lo:18.4241},{n:"Saldanha Bay",c:"ZA",la:-33.0167,lo:17.9500},
-  {n:"Walvis Bay",c:"NA",la:-22.9575,lo:14.5053},{n:"Luanda",c:"AO",la:-8.8383,lo:13.2344},
-  {n:"Pointe-Noire",c:"CG",la:-4.7692,lo:11.8631},{n:"Lagos (Apapa)",c:"NG",la:6.4474,lo:3.3903},
-  {n:"Lagos (Tin Can)",c:"NG",la:6.4321,lo:3.3500},{n:"Port Harcourt",c:"NG",la:4.7167,lo:7.0667},
+  {n:"Durban",c:"ZA",la:-29.8587,lo:31.0218},{n:"Cape Town",c:"ZA",la:-33.9249,lo:18.4241},
+  {n:"Richards Bay",c:"ZA",la:-28.8,lo:32.0667},{n:"Lagos (Apapa)",c:"NG",la:6.4474,lo:3.3903},
   {n:"Tema",c:"GH",la:5.6167,lo:-0.0167},{n:"Abidjan",c:"CI",la:5.3167,lo:-4.0167},
-  {n:"Dakar",c:"SN",la:14.6928,lo:-17.4467},{n:"Conakry",c:"GN",la:9.5369,lo:-13.6773},
-  {n:"Freetown",c:"SL",la:8.4897,lo:-13.2344},{n:"Libreville",c:"GA",la:0.3901,lo:9.4544},
-  {n:"Douala",c:"CM",la:4.0500,lo:9.7000},{n:"Mombasa North",c:"KE",la:-3.9667,lo:39.7333},
-  // EUROPE - N & W
-  {n:"Rotterdam",c:"NL",la:51.9054,lo:4.4822},{n:"Antwerp",c:"BE",la:51.2601,lo:4.3818},
-  {n:"Zeebrugge",c:"BE",la:51.3333,lo:3.2000},{n:"Hamburg",c:"DE",la:53.5753,lo:9.9920},
-  {n:"Bremerhaven",c:"DE",la:53.5390,lo:8.5820},{n:"Bremen",c:"DE",la:53.0758,lo:8.8072},
-  {n:"Felixstowe",c:"GB",la:51.9590,lo:1.3310},{n:"London (Tilbury)",c:"GB",la:51.4600,lo:0.3550},
-  {n:"Southampton",c:"GB",la:50.9000,lo:-1.4000},{n:"Liverpool",c:"GB",la:53.4500,lo:-3.0167},
-  {n:"Glasgow (Greenock)",c:"GB",la:55.9561,lo:-4.7553},{n:"Aberdeen",c:"GB",la:57.1444,lo:-2.0769},
-  {n:"Hull",c:"GB",la:53.7167,lo:-0.3333},{n:"Le Havre",c:"FR",la:49.4938,lo:0.1079},
-  {n:"Marseille",c:"FR",la:43.2965,lo:5.3698},{n:"Bordeaux",c:"FR",la:44.8378,lo:-0.5792},
-  {n:"Nantes / St-Nazaire",c:"FR",la:47.2000,lo:-1.5500},{n:"Dunkirk",c:"FR",la:51.0333,lo:2.3667},
-  {n:"Rouen",c:"FR",la:49.4333,lo:1.0833},{n:"Fos-sur-Mer",c:"FR",la:43.4333,lo:4.9500},
-  {n:"Barcelona",c:"ES",la:41.3851,lo:2.1734},{n:"Valencia",c:"ES",la:39.4699,lo:-0.3763},
-  {n:"Algeciras",c:"ES",la:36.1408,lo:-5.4547},{n:"Bilbao",c:"ES",la:43.3500,lo:-3.0500},
-  {n:"Las Palmas",c:"ES",la:28.1235,lo:-15.4363},{n:"Santa Cruz de Tenerife",c:"ES",la:28.4636,lo:-16.2518},
-  {n:"Vigo",c:"ES",la:42.2333,lo:-8.7167},{n:"Lisbon",c:"PT",la:38.7223,lo:-9.1393},
-  {n:"Sines",c:"PT",la:37.9500,lo:-8.8833},{n:"Leixões (Porto)",c:"PT",la:41.1833,lo:-8.7000},
-  {n:"Genoa",c:"IT",la:44.4056,lo:8.9463},{n:"La Spezia",c:"IT",la:44.1032,lo:9.8178},
-  {n:"Livorno",c:"IT",la:43.5500,lo:10.3167},{n:"Civitavecchia",c:"IT",la:42.0922,lo:11.7972},
-  {n:"Naples",c:"IT",la:40.8389,lo:14.2544},{n:"Taranto",c:"IT",la:40.4667,lo:17.2333},
-  {n:"Gioia Tauro",c:"IT",la:38.4256,lo:15.8983},{n:"Palermo",c:"IT",la:38.1356,lo:13.3758},
-  {n:"Venice (Marghera)",c:"IT",la:45.4564,lo:12.2831},{n:"Trieste",c:"IT",la:45.6494,lo:13.7770},
+  {n:"Dakar",c:"SN",la:14.6928,lo:-17.4467},{n:"Luanda",c:"AO",la:-8.8383,lo:13.2344},
+  {n:"Antwerp",c:"BE",la:51.2601,lo:4.3818},{n:"Hamburg",c:"DE",la:53.5753,lo:9.992},
+  {n:"Bremerhaven",c:"DE",la:53.539,lo:8.582},{n:"Felixstowe",c:"GB",la:51.959,lo:1.331},
+  {n:"London (Tilbury)",c:"GB",la:51.46,lo:0.355},{n:"Southampton",c:"GB",la:50.9,lo:-1.4},
+  {n:"Liverpool",c:"GB",la:53.45,lo:-3.0167},{n:"Le Havre",c:"FR",la:49.4938,lo:0.1079},
+  {n:"Marseille",c:"FR",la:43.2965,lo:5.3698},{n:"Barcelona",c:"ES",la:41.3851,lo:2.1734},
+  {n:"Valencia",c:"ES",la:39.4699,lo:-0.3763},{n:"Algeciras",c:"ES",la:36.1408,lo:-5.4547},
+  {n:"Las Palmas",c:"ES",la:28.1235,lo:-15.4363},{n:"Sines",c:"PT",la:37.95,lo:-8.8833},
+  {n:"Lisbon",c:"PT",la:38.7223,lo:-9.1393},{n:"Genoa",c:"IT",la:44.4056,lo:8.9463},
+  {n:"La Spezia",c:"IT",la:44.1032,lo:9.8178},{n:"Gioia Tauro",c:"IT",la:38.4256,lo:15.8983},
+  {n:"Naples",c:"IT",la:40.8389,lo:14.2544},{n:"Trieste",c:"IT",la:45.6494,lo:13.777},
   {n:"Piraeus",c:"GR",la:37.9416,lo:23.6467},{n:"Thessaloniki",c:"GR",la:40.6403,lo:22.9439},
-  {n:"Patras",c:"GR",la:38.2500,lo:21.7333},{n:"Volos",c:"GR",la:39.3611,lo:22.9417},
-  {n:"Istanbul",c:"TR",la:41.0082,lo:28.9784},{n:"Ambarli",c:"TR",la:40.9667,lo:28.6833},
-  {n:"Izmir",c:"TR",la:38.4128,lo:27.1384},{n:"Mersin",c:"TR",la:36.8000,lo:34.6333},
-  {n:"Iskenderun",c:"TR",la:36.5833,lo:36.1667},{n:"Haydarpasa",c:"TR",la:40.9917,lo:29.0167},
-  {n:"Gdansk",c:"PL",la:54.3520,lo:18.6466},{n:"Gdynia",c:"PL",la:54.5333,lo:18.5333},
-  {n:"Szczecin",c:"PL",la:53.4339,lo:14.5503},{n:"Gothenburg",c:"SE",la:57.7089,lo:11.9746},
-  {n:"Stockholm",c:"SE",la:59.3293,lo:18.0686},{n:"Helsingborg",c:"SE",la:56.0465,lo:12.6900},
-  {n:"Malmo",c:"SE",la:55.6050,lo:13.0038},{n:"Oslo",c:"NO",la:59.9139,lo:10.7522},
-  {n:"Bergen",c:"NO",la:60.3913,lo:5.3221},{n:"Stavanger",c:"NO",la:58.9700,lo:5.7328},
-  {n:"Narvik",c:"NO",la:68.4370,lo:17.4270},{n:"Copenhagen",c:"DK",la:55.6761,lo:12.5683},
-  {n:"Aarhus",c:"DK",la:56.1629,lo:10.2039},{n:"Esbjerg",c:"DK",la:55.4667,lo:8.4500},
-  {n:"Helsinki",c:"FI",la:60.1699,lo:24.9384},{n:"Kotka",c:"FI",la:60.4667,lo:26.9500},
-  {n:"Rauma",c:"FI",la:61.1333,lo:21.5167},{n:"St. Petersburg",c:"RU",la:59.9343,lo:30.3351},
-  {n:"Novorossiysk",c:"RU",la:44.7233,lo:37.7689},{n:"Vladivostok",c:"RU",la:43.1155,lo:131.8872},
-  {n:"Tallinn",c:"EE",la:59.4372,lo:24.7539},{n:"Riga",c:"LV",la:56.9460,lo:24.1059},
-  {n:"Klaipeda",c:"LT",la:55.7033,lo:21.1319},{n:"Koper",c:"SI",la:45.5467,lo:13.7303},
-  {n:"Rijeka",c:"HR",la:45.3272,lo:14.4411},{n:"Split",c:"HR",la:43.5081,lo:16.4402},
-  {n:"Constanta",c:"RO",la:44.1736,lo:28.6514},{n:"Odessa",c:"UA",la:46.4775,lo:30.7326},
-  {n:"Limassol",c:"CY",la:34.6786,lo:33.0431},{n:"Beirut",c:"LB",la:33.8886,lo:35.4955},
-  {n:"Haifa",c:"IL",la:32.8191,lo:34.9983},{n:"Ashdod",c:"IL",la:31.8167,lo:34.6500},
-  {n:"Tartus",c:"SY",la:34.8903,lo:35.8867},{n:"Casablanca",c:"MA",la:33.6000,lo:-7.6167},
-  {n:"Tangier Med",c:"MA",la:35.8667,lo:-5.5000},{n:"Tunis (La Goulette)",c:"TN",la:36.8167,lo:10.3000},
-  {n:"Sfax",c:"TN",la:34.7400,lo:10.7600},{n:"Tripoli",c:"LY",la:32.9000,lo:13.2000},
-  {n:"Algiers",c:"DZ",la:36.7372,lo:3.0878},{n:"Oran",c:"DZ",la:35.7000,lo:-0.6333},
-  // AMERICAS - NORTH
-  {n:"New York (NYNJ)",c:"US",la:40.6643,lo:-74.0440},{n:"Los Angeles",c:"US",la:33.7361,lo:-118.2639},
+  {n:"Istanbul",c:"TR",la:41.0082,lo:28.9784},{n:"Izmir",c:"TR",la:38.4128,lo:27.1384},
+  {n:"Mersin",c:"TR",la:36.8,lo:34.6333},{n:"Gdansk",c:"PL",la:54.352,lo:18.6466},
+  {n:"Gothenburg",c:"SE",la:57.7089,lo:11.9746},{n:"Oslo",c:"NO",la:59.9139,lo:10.7522},
+  {n:"Copenhagen",c:"DK",la:55.6761,lo:12.5683},{n:"Helsinki",c:"FI",la:60.1699,lo:24.9384},
+  {n:"St. Petersburg",c:"RU",la:59.9343,lo:30.3351},{n:"Novorossiysk",c:"RU",la:44.7233,lo:37.7689},
+  {n:"Constanta",c:"RO",la:44.1736,lo:28.6514},{n:"Limassol",c:"CY",la:34.6786,lo:33.0431},
+  {n:"Beirut",c:"LB",la:33.8886,lo:35.4955},{n:"Haifa",c:"IL",la:32.8191,lo:34.9983},
+  {n:"Casablanca",c:"MA",la:33.6,lo:-7.6167},{n:"Tangier Med",c:"MA",la:35.8667,lo:-5.5},
+  {n:"New York (NYNJ)",c:"US",la:40.6643,lo:-74.044},{n:"Los Angeles",c:"US",la:33.7361,lo:-118.2639},
   {n:"Long Beach",c:"US",la:33.7542,lo:-118.2166},{n:"Houston",c:"US",la:29.7604,lo:-95.3698},
   {n:"Savannah",c:"US",la:32.0835,lo:-81.0998},{n:"Charleston",c:"US",la:32.7765,lo:-79.9311},
-  {n:"Baltimore",c:"US",la:39.2904,lo:-76.6122},{n:"Norfolk (Hampton Roads)",c:"US",la:36.8468,lo:-76.2951},
-  {n:"Philadelphia",c:"US",la:39.9526,lo:-75.1652},{n:"Boston",c:"US",la:42.3601,lo:-71.0589},
-  {n:"Jacksonville",c:"US",la:30.3322,lo:-81.6557},{n:"Tampa",c:"US",la:27.9506,lo:-82.4572},
+  {n:"Baltimore",c:"US",la:39.2904,lo:-76.6122},{n:"Norfolk",c:"US",la:36.8468,lo:-76.2951},
+  {n:"Seattle (Tacoma)",c:"US",la:47.6062,lo:-122.3321},{n:"Oakland",c:"US",la:37.8044,lo:-122.2712},
   {n:"Miami",c:"US",la:25.7617,lo:-80.1918},{n:"New Orleans",c:"US",la:29.9511,lo:-90.0715},
-  {n:"Corpus Christi",c:"US",la:27.8006,lo:-97.3964},{n:"Seattle (Tacoma)",c:"US",la:47.6062,lo:-122.3321},
-  {n:"Portland (OR)",c:"US",la:45.5231,lo:-122.6765},{n:"Oakland",c:"US",la:37.8044,lo:-122.2712},
-  {n:"San Francisco",c:"US",la:37.7749,lo:-122.4194},{n:"Anchorage",c:"US",la:61.2181,lo:-149.9003},
-  {n:"Honolulu",c:"US",la:21.3069,lo:-157.8583},{n:"Vancouver",c:"CA",la:49.2827,lo:-123.1207},
-  {n:"Prince Rupert",c:"CA",la:54.3150,lo:-130.3208},{n:"Montreal",c:"CA",la:45.5017,lo:-73.5673},
-  {n:"Halifax",c:"CA",la:44.6488,lo:-63.5752},{n:"Saint John",c:"CA",la:45.2733,lo:-66.0633},
-  {n:"Quebec City",c:"CA",la:46.8139,lo:-71.2082},
-  // AMERICAS - CENTRAL & CARIBBEAN
-  {n:"Balboa (Panama)",c:"PA",la:8.9943,lo:-79.5663},{n:"Colón (Panama)",c:"PA",la:9.3547,lo:-79.8929},
-  {n:"Manzanillo (Mexico)",c:"MX",la:19.0522,lo:-104.3220},{n:"Veracruz",c:"MX",la:19.1903,lo:-96.1533},
-  {n:"Altamira",c:"MX",la:22.4019,lo:-97.9269},{n:"Lazaro Cardenas",c:"MX",la:17.9167,lo:-102.2000},
-  {n:"Puerto Cortes",c:"HN",la:15.8500,lo:-87.9500},{n:"Kingston",c:"JM",la:17.9970,lo:-76.7936},
-  {n:"Freeport",c:"BS",la:26.5333,lo:-78.7000},{n:"San Juan",c:"PR",la:18.4655,lo:-66.1057},
-  {n:"Bridgetown",c:"BB",la:13.1132,lo:-59.6198},{n:"Port of Spain",c:"TT",la:10.6500,lo:-61.5167},
-  {n:"Cartagena",c:"CO",la:10.3997,lo:-75.5144},{n:"Barranquilla",c:"CO",la:11.0041,lo:-74.8070},
-  {n:"Buenaventura",c:"CO",la:3.8800,lo:-77.0319},
-  // AMERICAS - SOUTH
-  {n:"Guayaquil",c:"EC",la:-2.1894,lo:-79.8890},{n:"Callao (Lima)",c:"PE",la:-12.0464,lo:-77.1428},
-  {n:"Iquique",c:"CL",la:-20.2208,lo:-70.1431},{n:"Antofagasta",c:"CL",la:-23.6500,lo:-70.4000},
-  {n:"Valparaíso",c:"CL",la:-33.0472,lo:-71.6127},{n:"San Antonio",c:"CL",la:-33.5833,lo:-71.6167},
-  {n:"Santos",c:"BR",la:-23.9535,lo:-46.3354},{n:"Rio de Janeiro",c:"BR",la:-22.9068,lo:-43.1729},
-  {n:"Paranaguá",c:"BR",la:-25.5278,lo:-48.5183},{n:"Itajaí",c:"BR",la:-26.9083,lo:-48.6667},
-  {n:"Salvador (Bahia)",c:"BR",la:-12.9714,lo:-38.5014},{n:"Recife",c:"BR",la:-8.0539,lo:-34.8811},
-  {n:"Fortaleza",c:"BR",la:-3.7172,lo:-38.5433},{n:"Belém",c:"BR",la:-1.4558,lo:-48.5044},
-  {n:"Manaus",c:"BR",la:-3.1190,lo:-60.0217},{n:"Buenos Aires",c:"AR",la:-34.6037,lo:-58.3816},
-  {n:"Rosario",c:"AR",la:-32.9587,lo:-60.6931},{n:"Bahia Blanca",c:"AR",la:-38.7196,lo:-62.2724},
-  {n:"Montevideo",c:"UY",la:-34.9011,lo:-56.1645},{n:"Punta Arenas",c:"CL",la:-53.1638,lo:-70.9171},
-  // OCEANIA
-  {n:"Sydney",c:"AU",la:-33.8688,lo:151.2093},{n:"Melbourne",c:"AU",la:-37.8136,lo:144.9631},
-  {n:"Brisbane",c:"AU",la:-27.4698,lo:153.0251},{n:"Fremantle (Perth)",c:"AU",la:-32.0569,lo:115.7439},
-  {n:"Port Hedland",c:"AU",la:-20.3100,lo:118.5756},{n:"Dampier",c:"AU",la:-20.6578,lo:116.7183},
-  {n:"Gladstone",c:"AU",la:-23.8500,lo:151.2667},{n:"Newcastle (NSW)",c:"AU",la:-32.9167,lo:151.7667},
-  {n:"Port Kembla",c:"AU",la:-34.4833,lo:150.9000},{n:"Adelaide",c:"AU",la:-34.9285,lo:138.6007},
-  {n:"Darwin",c:"AU",la:-12.4634,lo:130.8456},{n:"Townsville",c:"AU",la:-19.2564,lo:146.8183},
-  {n:"Auckland",c:"NZ",la:-36.8485,lo:174.7633},{n:"Tauranga",c:"NZ",la:-37.6878,lo:176.1651},
-  {n:"Wellington",c:"NZ",la:-41.2865,lo:174.7762},{n:"Lyttelton (Christchurch)",c:"NZ",la:-43.6031,lo:172.7197},
-  {n:"Port Moresby",c:"PG",la:-9.4438,lo:147.1803},{n:"Lae",c:"PG",la:-6.7194,lo:146.9969},
-  {n:"Suva",c:"FJ",la:-18.1416,lo:178.4419},{n:"Noumea",c:"NC",la:-22.2763,lo:166.4580},
-  {n:"Papeete",c:"PF",la:-17.5334,lo:-149.5667},{n:"Guam (Apra Harbor)",c:"GU",la:13.4443,lo:144.6558},
+  {n:"Vancouver",c:"CA",la:49.2827,lo:-123.1207},{n:"Montreal",c:"CA",la:45.5017,lo:-73.5673},
+  {n:"Halifax",c:"CA",la:44.6488,lo:-63.5752},{n:"Santos",c:"BR",la:-23.9535,lo:-46.3354},
+  {n:"Rio de Janeiro",c:"BR",la:-22.9068,lo:-43.1729},{n:"Buenos Aires",c:"AR",la:-34.6037,lo:-58.3816},
+  {n:"Montevideo",c:"UY",la:-34.9011,lo:-56.1645},{n:"Callao (Lima)",c:"PE",la:-12.0464,lo:-77.1428},
+  {n:"Valparaíso",c:"CL",la:-33.0472,lo:-71.6127},{n:"Balboa (Panama)",c:"PA",la:8.9943,lo:-79.5663},
+  {n:"Colón (Panama)",c:"PA",la:9.3547,lo:-79.8929},{n:"Cartagena",c:"CO",la:10.3997,lo:-75.5144},
+  {n:"Kingston",c:"JM",la:17.997,lo:-76.7936},{n:"Sydney",c:"AU",la:-33.8688,lo:151.2093},
+  {n:"Melbourne",c:"AU",la:-37.8136,lo:144.9631},{n:"Brisbane",c:"AU",la:-27.4698,lo:153.0251},
+  {n:"Fremantle (Perth)",c:"AU",la:-32.0569,lo:115.7439},{n:"Port Hedland",c:"AU",la:-20.31,lo:118.5756},
+  {n:"Darwin",c:"AU",la:-12.4634,lo:130.8456},{n:"Auckland",c:"NZ",la:-36.8485,lo:174.7633},
+  {n:"Tauranga",c:"NZ",la:-37.6878,lo:176.1651},{n:"Port Moresby",c:"PG",la:-9.4438,lo:147.1803},
 ];
 
-// Open-water anchor points near each via waypoint — ensures routing approaches
-// from/to open sea rather than directly to/from the narrow waypoint coord.
-// This prevents U-turns (#1) and avoids routing over islands (#2).
-const VIA_SEA_ANCHORS = {
-  cape_good_hope: [{la:-36.5,lo:14.5},{la:-36.5,lo:20.5}],  // deep SW + SE approach
-  cape_horn:      [{la:-57.5,lo:-72.0},{la:-57.5,lo:-60.0}], // deep S approach
-  malacca:        [{la:4.0,lo:98.5},{la:1.5,lo:104.5}],      // NW + SE Malacca
-  suez:           [{la:32.5,lo:32.5},{la:27.5,lo:33.8}],     // N+S Red Sea approach
-  panama:         [{la:10.5,lo:-80.5},{la:7.0,lo:-78.5}],    // Caribbean + Pacific
-  gibraltar:      [{la:36.0,lo:-7.0},{la:36.5,lo:-1.5}],     // Atlantic + Med side
-  babalmandab:    [{la:11.5,lo:48.0},{la:13.5,lo:43.5}],     // E GoA + Red Sea
-  sunda:          [{la:-8.0,lo:104.0},{la:-8.0,lo:107.0}],   // Indian Ocean + Java Sea
-  lombok:         [{la:-9.5,lo:114.5},{la:-8.0,lo:117.0}],   // S Indian Ocean + Banda
-  hormuz:         [{la:23.5,lo:59.5},{la:26.5,lo:55.5}],     // Gulf of Oman approach
-  dover:          [{la:51.5,lo:-1.5},{la:51.5,lo:3.5}],      // W Channel + North Sea
-  bering:         [{la:63.0,lo:-173.0},{la:63.0,lo:-163.0}], // Pacific + Arctic
-};
-
-const VIA_COORDS = {
-  cape_good_hope: {la:-34.36,lo:18.48,label:"Cape of Good Hope"},
-  cape_horn:      {la:-55.98,lo:-67.27,label:"Cape Horn"},
-  malacca:        {la:2.50, lo:101.00,label:"Malacca Strait"},
-  suez:           {la:30.50,lo:32.35,label:"Suez Canal"},
-  panama:         {la:9.20, lo:-79.70,label:"Panama Canal"},
-  gibraltar:      {la:35.95,lo:-5.48,label:"Gibraltar"},
-  babalmandab:    {la:12.58,lo:43.32,label:"Bab-el-Mandeb"},
-  sunda:          {la:-6.00,lo:105.80,label:"Sunda Strait"},
-  lombok:         {la:-8.70,lo:115.75,label:"Lombok Strait"},
-  hormuz:         {la:26.57,lo:56.47,label:"Strait of Hormuz"},
-  dover:          {la:51.10,lo:1.40, label:"Dover Strait"},
-  bering:         {la:65.80,lo:-168.90,label:"Bering Strait"},
-};
-
-// ══ ECA ZONES (GeoJSON polygons) ══════════════════════════════════════════════
-// ECA zones: coords are [lon, lat] pairs.
-// Boundaries are SEA-ONLY approximations of official MARPOL Annex VI ECA zones.
-// Arabian Sea / Indian Ocean are NOT ECAs.
-// ECA / SECA zones — official MARPOL Annex VI boundaries.
-// These are regulatory zones; they include land areas as defined in the regulation.
-// Muted colours with very low fill opacity so they don't dominate the map.
-const ECA_ZONES = [
-  {
-    name:"North Sea ECA (MARPOL)",
-    color:"#2e86c1",
-    coords:[
-      [-5.0,48.0],[13.0,48.0],[13.0,62.0],
-      [10.0,62.0],[5.0,57.5],[0.0,61.0],
-      [-5.0,61.0],[-5.0,48.0]
-    ]
-  },
-  {
-    name:"Baltic Sea ECA (MARPOL)",
-    color:"#1a5276",
-    coords:[
-      [9.0,53.5],[30.5,53.5],[30.5,66.0],
-      [28.0,66.0],[22.0,65.5],[16.0,56.5],
-      [12.5,55.0],[9.0,55.0],[9.0,53.5]
-    ]
-  },
-  {
-    name:"Mediterranean SECA (EU Dir. 2005/33/EC)",
-    color:"#7d3c98",
-    coords:[
-      [-5.5,30.0],[42.0,30.0],[42.0,46.0],
-      [28.0,46.0],[20.0,46.0],[15.0,44.0],
-      [8.0,44.0],[3.0,43.5],[-2.0,37.5],
-      [-5.5,36.0],[-5.5,30.0]
-    ]
-  },
-  {
-    name:"N. America ECA — Atlantic (200nm)",
-    color:"#1e8449",
-    coords:[
-      [-42.0,47.5],[-42.0,23.0],[-60.0,23.0],
-      [-75.0,23.0],[-82.5,25.0],[-82.5,30.0],
-      [-78.0,35.0],[-72.0,40.0],[-67.0,44.0],
-      [-52.0,47.5],[-42.0,47.5]
-    ]
-  },
-  {
-    name:"N. America ECA — Pacific (200nm)",
-    color:"#1e8449",
-    coords:[
-      [-122.5,49.5],[-130.0,50.0],[-136.0,48.0],
-      [-136.0,38.0],[-122.0,33.0],[-117.0,30.0],
-      [-110.0,22.0],[-105.0,20.0],[-100.0,20.0],
-      [-100.0,22.0],[-110.0,24.0],[-120.0,32.0],
-      [-124.0,38.0],[-124.0,46.0],[-122.5,49.5]
-    ]
-  },
-  {
-    name:"US Caribbean ECA (MARPOL)",
-    color:"#148f77",
-    coords:[
-      [-98.0,10.0],[-60.0,10.0],[-60.0,26.0],
-      [-76.0,26.0],[-82.0,24.0],[-87.0,22.0],
-      [-90.0,18.0],[-98.0,18.0],[-98.0,10.0]
-    ]
-  },
-  {
-    name:"Hawaii ECA (50nm)",
-    color:"#117a65",
-    coords:[
-      [-162.0,22.5],[-154.0,22.5],[-154.0,18.5],
-      [-162.0,18.5],[-162.0,22.5]
-    ]
-  },
+// ── ECA ZONES ─────────────────────────────────────────────────────────────────
+const ECA_ZONES=[
+  {name:"North Sea ECA (MARPOL)",color:"#2e86c1",coords:[[-5,48],[13,48],[13,62],[10,62],[0,61],[-5,61],[-5,48]]},
+  {name:"Baltic Sea ECA (MARPOL)",color:"#1a5276",coords:[[9,53.5],[30.5,53.5],[30.5,66],[22,65.5],[16,56.5],[12.5,55],[9,55],[9,53.5]]},
+  {name:"Mediterranean SECA (EU)",color:"#7d3c98",coords:[[-5.5,30],[42,30],[42,46],[28,46],[20,46],[15,44],[8,44],[3,43.5],[-2,37.5],[-5.5,36],[-5.5,30]]},
+  {name:"N. America ECA — Atlantic",color:"#1e8449",coords:[[-42,47.5],[-42,23],[-75,23],[-82.5,25],[-82.5,30],[-78,35],[-72,40],[-67,44],[-52,47.5],[-42,47.5]]},
+  {name:"N. America ECA — Pacific",color:"#1e8449",coords:[[-122.5,49.5],[-130,50],[-136,48],[-136,38],[-122,33],[-117,30],[-110,22],[-100,20],[-100,22],[-110,24],[-120,32],[-124,38],[-124,46],[-122.5,49.5]]},
+  {name:"US Caribbean ECA",color:"#148f77",coords:[[-98,10],[-60,10],[-60,26],[-76,26],[-82,24],[-87,22],[-90,18],[-98,18],[-98,10]]},
+  {name:"Hawaii ECA",color:"#117a65",coords:[[-162,22.5],[-154,22.5],[-154,18.5],[-162,18.5],[-162,22.5]]},
 ];
 
+// ── VIA COORDS ────────────────────────────────────────────────────────────────
+const VIA_COORDS={
+  cape_good_hope:{la:-34.36,lo:18.48,label:"Cape of Good Hope"},
+  cape_horn:{la:-55.98,lo:-67.27,label:"Cape Horn"},
+  malacca:{la:2.5,lo:101.0,label:"Malacca Strait"},
+  suez:{la:30.5,lo:32.35,label:"Suez Canal"},
+  panama:{la:9.2,lo:-79.7,label:"Panama Canal"},
+  gibraltar:{la:35.95,lo:-5.48,label:"Gibraltar"},
+  babalmandab:{la:12.58,lo:43.32,label:"Bab-el-Mandeb"},
+  sunda:{la:-6.0,lo:105.8,label:"Sunda Strait"},
+  lombok:{la:-8.7,lo:115.75,label:"Lombok Strait"},
+  hormuz:{la:26.57,lo:56.47,label:"Strait of Hormuz"},
+  dover:{la:51.1,lo:1.4,label:"Dover Strait"},
+  bering:{la:65.8,lo:-168.9,label:"Bering Strait"},
+};
 
-// ══ STATE ══════════════════════════════════════════════════════════════════════
+const CAPE_GH_WP={la:-35.0,lo:17.5,name:'Cape of Good Hope approach'};
+const CAPE_HORN_WP={la:-57.0,lo:-68.0,name:'Cape Horn approach'};
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
 let inputMode='port', oPort=null, dPort=null, routeData=null;
 let suezOK=true, panamaOK=true, kielOK=true;
-let speedMode='speed', wpShown=false, mapClick='o';
+let speedMode='speed', mapClick='o';
 let activeVia=new Set();
-let routeLayer=null, shadowLayer=null, oMark=null, dMark=null, viaMark=[];
-let ecaLayers=[], ecaVisible=true;
+let ecaVisible=true;
 
-// ══ MAP INIT ══════════════════════════════════════════════════════════════════
-const map = L.map('map',{center:[20,10],zoom:2,zoomControl:true,attributionControl:false});
+// Map layers
+let routeLayer=null, shadowLayer=null;
+let oMark=null, dMark=null;
+let ecaLayers=[];
+let wpMarkers=[];      // all waypoint markers on map (draggable)
+let ecaMarkers=[];     // ECA entry/exit markers
+let userWaypoints=[];  // user-added / dragged waypoints [{la,lo,name,isUser}]
 
-// CartoDB Positron: English labels, light land, pale sea
-const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-  subdomains:'abcd', maxZoom:19,
+// ── MAP ───────────────────────────────────────────────────────────────────────
+const map=L.map('map',{center:[20,10],zoom:2,zoomControl:true,attributionControl:true});
+const tileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
+  subdomains:'abcd',maxZoom:19,
   attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a> © <a href="https://carto.com">CARTO</a>'
 }).addTo(map);
-
-// If CartoDB tiles fail to load, fall back to standard OSM
-tileLayer.on('tileerror', function(){
-  if(!window._fallbackApplied){
-    window._fallbackApplied = true;
-    map.removeLayer(tileLayer);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-      maxZoom:19, attribution:'© OpenStreetMap contributors'
-    }).addTo(map);
-  }
+tileLayer.on('tileerror',()=>{
+  if(!window._fb){window._fb=true;map.removeLayer(tileLayer);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);}
 });
 
 map.on('mousemove',e=>{
@@ -773,45 +601,53 @@ map.on('click',e=>{
   if(mapClick==='o'){
     document.getElementById('oLat').value=lat.toFixed(4);
     document.getElementById('oLon').value=lng.toFixed(4);
-    placeMarker('o',lat,lng,'ORIGIN'); mapClick='d';
+    placeEndMarker('o',lat,lng,'ORIGIN'); mapClick='d';
     showHint('CLICK TO SET DESTINATION');
   } else {
     document.getElementById('dLat').value=lat.toFixed(4);
     document.getElementById('dLon').value=lng.toFixed(4);
-    placeMarker('d',lat,lng,'DEST'); mapClick='o'; hideHint();
+    placeEndMarker('d',lat,lng,'DEST'); mapClick='o'; hideHint();
   }
 });
 
-function showHint(t){const h=document.getElementById('mapHint');h.textContent=t;h.classList.add('show')}
-function hideHint(){document.getElementById('mapHint').classList.remove('show')}
+// ── ENGINE STATUS ─────────────────────────────────────────────────────────────
+async function checkEngine(){
+  const p=document.getElementById('engPill');
+  let tries=0;
+  async function tryConnect(){
+    tries++;
+    try{
+      const r=await fetch(`${API}/api/status`,{signal:AbortSignal.timeout(60000)});
+      const d=await r.json();
+      if(d.status==='ready'){
+        p.textContent='⬡ MARNET READY'; p.className='pill ready';
+      } else {
+        p.textContent=`⬡ STARTING (${tries*5}s)`; p.className='pill loading';
+        setTimeout(tryConnect,5000);
+      }
+    } catch{
+      p.textContent=tries<20?`⬡ STARTING (${tries*5}s)`:'⬡ OFFLINE';
+      p.className=tries<20?'pill loading':'pill error';
+      setTimeout(tryConnect,tries<20?5000:30000);
+    }
+  }
+  tryConnect();
+}
+checkEngine();
 
-// ══ ECA LAYERS ════════════════════════════════════════════════════════════════
+// ── ECA LAYERS ────────────────────────────────────────────────────────────────
 function drawECA(){
-  ecaLayers.forEach(l=>map.removeLayer(l));
-  ecaLayers=[];
-  if(!ecaVisible) return;
+  ecaLayers.forEach(l=>map.removeLayer(l)); ecaLayers=[];
+  if(!ecaVisible){document.getElementById('ecaLegend').classList.remove('show');return;}
   ECA_ZONES.forEach(z=>{
-    const latlngs=z.coords.map(c=>[c[1],c[0]]); // [lat,lon] for Leaflet
-    // Subtle fill — very low opacity so sea colour still shows through
-    const poly=L.polygon(latlngs,{
-      color:z.color,
-      weight:1,
-      opacity:0.5,
-      fillColor:z.color,
-      fillOpacity:0.07,  // very subtle — just a tint over sea
-      dashArray:'4 6',
-      interactive:true,
-    }).addTo(map);
-    poly.bindTooltip(
-      `<div style="font-family:monospace;font-size:10px;color:${z.color};padding:2px 4px">${z.name}</div>`,
-      {sticky:true, opacity:0.92, className:'eca-tip'}
-    );
+    const lls=z.coords.map(c=>[c[1],c[0]]);
+    const poly=L.polygon(lls,{color:z.color,weight:1,opacity:.5,fillColor:z.color,fillOpacity:.07,dashArray:'4 6'}).addTo(map);
+    poly.bindTooltip(`<div style="font-family:monospace;font-size:10px;color:${z.color}">${z.name}</div>`,{sticky:true,opacity:.9});
     ecaLayers.push(poly);
   });
-  document.getElementById('ecaLegend').classList.toggle('show', ecaVisible);
+  document.getElementById('ecaLegend').classList.add('show');
 }
 drawECA();
-
 function setECA(v){
   ecaVisible=v;
   document.getElementById('ecaOn').classList.toggle('active',v);
@@ -819,133 +655,80 @@ function setECA(v){
   drawECA();
 }
 
-// ══ ECA DISTANCE CALCULATION ══════════════════════════════════════════════════
-function haversineKm(la1,lo1,la2,lo2){
-  const R=6371,r=Math.PI/180;
+// ── HAVERSINE / ECA ───────────────────────────────────────────────────────────
+function haversineNm(la1,lo1,la2,lo2){
+  const R=3440.065,r=Math.PI/180;
   const dlat=(la2-la1)*r,dlon=(lo2-lo1)*r;
   const a=Math.sin(dlat/2)**2+Math.cos(la1*r)*Math.cos(la2*r)*Math.sin(dlon/2)**2;
   return R*2*Math.asin(Math.sqrt(Math.max(0,a)));
 }
-
-// pointInPolygon: poly is array of [lon,lat], test point is (lon,lat)
-function pointInPolygon(lon,lat,poly){
+function ptInPoly(lon,lat,poly){
   let inside=false;
   for(let i=0,j=poly.length-1;i<poly.length;j=i++){
-    const xi=poly[i][0],yi=poly[i][1]; // lon,lat of vertex i
-    const xj=poly[j][0],yj=poly[j][1]; // lon,lat of vertex j
-    // ray casting — horizontal ray in lat direction
-    if(((yi>lat)!==(yj>lat))&&(lon<(xj-xi)*(lat-yi)/(yj-yi)+xi)) inside=!inside;
+    const xi=poly[i][0],yi=poly[i][1],xj=poly[j][0],yj=poly[j][1];
+    if(((yi>lat)!==(yj>lat))&&(lon<(xj-xi)*(lat-yi)/(yj-yi)+xi))inside=!inside;
   }
   return inside;
 }
-
-function isInECA(lat,lon){
-  return ECA_ZONES.some(z=>pointInPolygon(lon,lat,z.coords));
-}
-
+function isInECA(lat,lon){return ECA_ZONES.some(z=>ptInPoly(lon,lat,z.coords));}
 function calcECAMiles(coords){
-  let ecaKm=0;
+  let nm=0;
   for(let i=0;i<coords.length-1;i++){
     const [lo1,la1]=coords[i],[lo2,la2]=coords[i+1];
-    const midLa=(la1+la2)/2,midLo=(lo1+lo2)/2;
-    if(isInECA(midLa,midLo)){
-      ecaKm+=haversineKm(la1,lo1,la2,lo2);
-    }
+    if(isInECA((la1+la2)/2,(lo1+lo2)/2)) nm+=haversineNm(la1,lo1,la2,lo2);
   }
-  return ecaKm/1.852;
+  return nm;
 }
 
-// ══ ENGINE STATUS ════════════════════════════════════════════════════════════
-async function checkEngine(){
-  const p=document.getElementById('engPill');
-  let attempts=0;
-  async function tryConnect(){
-    attempts++;
-    try{
-      // Render free tier can take 50+ seconds to cold-start — use long timeout
-      const r=await fetch(`${API}/api/status`,{signal:AbortSignal.timeout(60000)});
-      const d=await r.json();
-      if(d.status==='ready'){
-        p.textContent=`⬡ MARNET READY`;
-        p.className='pill ready';
-      } else {
-        p.textContent='⬡ ENGINE LOADING…';
-        p.className='pill loading';
-        setTimeout(tryConnect,3000);
-      }
-    } catch(e){
-      if(attempts<20){
-        // Keep retrying — server may be cold-starting (Render free tier)
-        p.textContent=`⬡ STARTING UP… (${attempts*5}s)`;
-        p.className='pill loading';
-        setTimeout(tryConnect,5000);
-      } else {
-        p.textContent='⬡ SERVER OFFLINE';
-        p.className='pill error';
-        // Still keep trying every 30s in case it comes back
-        setTimeout(tryConnect,30000);
-      }
-    }
+// Find ECA entry/exit points along a coordinate array
+function findECATransitions(coords){
+  const transitions=[];
+  let inECA=false;
+  for(let i=0;i<coords.length;i++){
+    const [lon,lat]=coords[i];
+    const nowIn=isInECA(lat,lon);
+    if(nowIn&&!inECA){transitions.push({idx:i,type:'entry',lat,lon});inECA=true;}
+    else if(!nowIn&&inECA){transitions.push({idx:i,type:'exit',lat,lon});inECA=false;}
   }
-  tryConnect();
+  return transitions;
 }
-checkEngine();
 
-
-// ══ MOBILE SIDEBAR TOGGLE ════════════════════════════════════════════════════
-function toggleMobSidebar(){
-  const sb=document.querySelector('.sidebar');
-  const btn=document.getElementById('mobToggle');
-  const open=sb.classList.toggle('mob-open');
-  btn.textContent=open?'✕':'☰';
-}
-// Close sidebar when user taps the map on mobile
-map.on('click',()=>{
-  const sb=document.querySelector('.sidebar');
-  if(sb.classList.contains('mob-open') && window.innerWidth<=768){
-    sb.classList.remove('mob-open');
-    document.getElementById('mobToggle').textContent='☰';
-  }
-});
-
+// ── INPUT MODE ────────────────────────────────────────────────────────────────
 function setMode(m){
   inputMode=m;
   document.getElementById('portMode').classList.toggle('hidden',m!=='port');
   document.getElementById('coordMode').classList.toggle('hidden',m!=='coord');
   document.getElementById('mPort').classList.toggle('active',m==='port');
   document.getElementById('mCoord').classList.toggle('active',m==='coord');
-  if(m==='coord'){showHint('CLICK TO SET ORIGIN COORDINATES');mapClick='o';}
+  if(m==='coord'){showHint('CLICK TO SET ORIGIN');mapClick='o';}
   else hideHint();
 }
+function showHint(t){const h=document.getElementById('mapHint');h.textContent=t;h.classList.add('show');}
+function hideHint(){document.getElementById('mapHint').classList.remove('show');}
 
-// ══ PORT AUTOCOMPLETE ═════════════════════════════════════════════════════════
+// ── PORT AUTOCOMPLETE ─────────────────────────────────────────────────────────
 function psearch(inp,lid,which){
   const q=inp.value.toLowerCase().trim();
   const list=document.getElementById(lid);
   if(!q){list.classList.remove('show');return;}
   const hits=PORTS.filter(p=>p.n.toLowerCase().includes(q)||p.c.toLowerCase().includes(q)).slice(0,10);
   if(!hits.length){list.classList.remove('show');return;}
-  list.innerHTML=hits.map(p=>`
-    <div class="ac-item" onmousedown="selPort('${p.n.replace(/'/g,"\\'")}','${p.c}',${p.la},${p.lo},'${which}')">
-      <span>${p.n}</span><span class="ac-sub">${p.c} · ${p.la.toFixed(2)}°, ${p.lo.toFixed(2)}°</span>
-    </div>`).join('');
+  list.innerHTML=hits.map(p=>`<div class="ac-item" onmousedown="selPort('${p.n.replace(/'/g,"\\'")}','${p.c}',${p.la},${p.lo},'${which}')"><span>${p.n}</span><span class="ac-sub">${p.c} · ${p.la.toFixed(2)}°, ${p.lo.toFixed(2)}°</span></div>`).join('');
   list.classList.add('show');
 }
-
-function selPort(name,country,la,lo,which){
-  if(which==='o'){oPort={name,country,la,lo};document.getElementById('oInp').value=name;placeMarker('o',la,lo,name);}
-  else{dPort={name,country,la,lo};document.getElementById('dInp').value=name;placeMarker('d',la,lo,name);}
+function selPort(name,c,la,lo,which){
+  if(which==='o'){oPort={name,c,la,lo};document.getElementById('oInp').value=name;placeEndMarker('o',la,lo,name);}
+  else{dPort={name,c,la,lo};document.getElementById('dInp').value=name;placeEndMarker('d',la,lo,name);}
   document.getElementById(which==='o'?'oAC':'dAC').classList.remove('show');
-  if(oPort&&dPort)fitMap();
+  if(oPort&&dPort)fitEnds();
 }
-
 function swapPorts(){
   if(inputMode==='port'){
     [oPort,dPort]=[dPort,oPort];
     document.getElementById('oInp').value=oPort?oPort.name:'';
     document.getElementById('dInp').value=dPort?dPort.name:'';
-    if(oPort)placeMarker('o',oPort.la,oPort.lo,oPort.name);
-    if(dPort)placeMarker('d',dPort.la,dPort.lo,dPort.name);
+    if(oPort)placeEndMarker('o',oPort.la,oPort.lo,oPort.name);
+    if(dPort)placeEndMarker('d',dPort.la,dPort.lo,dPort.name);
   } else {
     const tmp=[document.getElementById('oLat').value,document.getElementById('oLon').value];
     document.getElementById('oLat').value=document.getElementById('dLat').value;
@@ -955,38 +738,175 @@ function swapPorts(){
   if(routeData)calcRoute();
 }
 
-// ══ MARKERS ═══════════════════════════════════════════════════════════════════
-function mkIcon(color,label){
+// ── MARKERS ───────────────────────────────────────────────────────────────────
+function endIcon(color,label){
   return L.divIcon({className:'',iconSize:[12,12],iconAnchor:[6,6],
     html:`<div style="background:${color};border:2px solid #fff;width:12px;height:12px;border-radius:50%;box-shadow:0 0 8px ${color}">
-      <div style="position:absolute;top:-20px;left:50%;transform:translateX(-50%);background:rgba(13,17,23,.92);border:1px solid ${color};color:${color};font-family:monospace;font-size:8px;padding:1px 5px;white-space:nowrap">${label}</div>
+      <div style="position:absolute;top:-20px;left:50%;transform:translateX(-50%);background:rgba(10,15,24,.92);border:1px solid ${color};color:${color};font-family:monospace;font-size:8px;padding:1px 5px;white-space:nowrap">${label}</div>
     </div>`});
 }
-function placeMarker(which,la,lo,lbl){
-  if(which==='o'){if(oMark)map.removeLayer(oMark);oMark=L.marker([la,lo],{icon:mkIcon('#1a9e5c',lbl)}).addTo(map);}
-  else{if(dMark)map.removeLayer(dMark);dMark=L.marker([la,lo],{icon:mkIcon('#e8a020',lbl)}).addTo(map);}
+function placeEndMarker(which,la,lo,lbl){
+  if(which==='o'){if(oMark)map.removeLayer(oMark);oMark=L.marker([la,lo],{icon:endIcon('#10b981',lbl||'ORIGIN'),zIndexOffset:1000}).addTo(map);}
+  else{if(dMark)map.removeLayer(dMark);dMark=L.marker([la,lo],{icon:endIcon('#f59e0b',lbl||'DEST'),zIndexOffset:1000}).addTo(map);}
 }
-function fitMap(){
+function fitEnds(){
   const pts=[];
   if(oMark)pts.push(oMark.getLatLng());
   if(dMark)pts.push(dMark.getLatLng());
   if(pts.length===2)map.fitBounds(L.latLngBounds(pts),{padding:[70,70]});
 }
 
-// ══ TOGGLES ═══════════════════════════════════════════════════════════════════
+// ── DRAGGABLE WAYPOINT MARKERS ────────────────────────────────────────────────
+function wpIcon(type){
+  const colors={normal:['#2196f3','#fff'],origin:['#10b981','#fff'],dest:['#f59e0b','#fff'],
+                'eca-entry':['#f97316','#fff'],'eca-exit':['#10b981','#fff'],user:['#f59e0b','#1a1a1a']};
+  const [bg,border]=colors[type]||colors.normal;
+  const size=type==='origin'||type==='dest'?14:type==='eca-entry'||type==='eca-exit'?12:9;
+  const shape=type==='eca-entry'||type==='eca-exit'?'4px':'50%';
+  return L.divIcon({className:'',iconSize:[size,size],iconAnchor:[size/2,size/2],
+    html:`<div style="background:${bg};border:2px solid ${border};width:${size}px;height:${size}px;border-radius:${shape};box-shadow:0 0 6px ${bg};cursor:grab"></div>`});
+}
+
+function clearWpMarkers(){
+  wpMarkers.forEach(m=>map.removeLayer(m));wpMarkers=[];
+  ecaMarkers.forEach(m=>map.removeLayer(m));ecaMarkers=[];
+}
+
+function buildDraggableWaypoints(coords){
+  clearWpMarkers();
+  // Thin out waypoints for performance — show every Nth point as draggable
+  // We keep: first, last, every ~20th intermediate, ECA transitions, user-added
+  const ecaTrans=findECATransitions(coords);
+  const ecaIdxs=new Set(ecaTrans.map(t=>t.idx));
+
+  // Select waypoint indices to place markers on
+  const step=Math.max(5,Math.floor(coords.length/25)); // ~25 drag handles max
+  const selectedIdxs=new Set([0,coords.length-1]);
+  for(let i=step;i<coords.length-1;i+=step)selectedIdxs.add(i);
+  ecaIdxs.forEach(i=>selectedIdxs.add(i));
+
+  // Build ordered waypoint list for the panel
+  const orderedIdxs=[...selectedIdxs].sort((a,b)=>a-b);
+
+  orderedIdxs.forEach((idx,panelPos)=>{
+    const [lon,lat]=coords[idx];
+    const isOrigin=idx===0;
+    const isDest=idx===coords.length-1;
+    const ecaT=ecaTrans.find(t=>t.idx===idx);
+    const type=isOrigin?'origin':isDest?'dest':ecaT?ecaT.type:'normal';
+
+    const marker=L.marker([lat,lon],{
+      icon:wpIcon(type),
+      draggable:!isOrigin&&!isDest, // origin/dest not draggable (use port search)
+      zIndexOffset:500,
+    });
+
+    marker._wpIdx=idx;
+    marker._wpType=type;
+    marker._panelPos=panelPos;
+    marker._coordIdx=idx;
+
+    if(!isOrigin&&!isDest){
+      marker.on('dragstart',()=>marker.getElement()?.classList.add('dragging'));
+      marker.on('dragend',e=>{
+        const {lat:nla,lng:nlo}=e.target.getLatLng();
+        onWaypointDragged(panelPos,nla,nlo,orderedIdxs,coords);
+      });
+    }
+
+    // Tooltip
+    const label=isOrigin?'Origin':isDest?'Destination':
+      ecaT?(ecaT.type==='entry'?'⚠ ECA ENTRY':'✓ ECA EXIT'):`WP ${panelPos+1}`;
+    marker.bindTooltip(`<span style="font-family:monospace;font-size:10px">${label}<br>${lat.toFixed(3)}°, ${lon.toFixed(3)}°</span>`,
+      {direction:'top',offset:[0,-8],opacity:.9});
+
+    marker.addTo(map);
+    wpMarkers.push(marker);
+
+    // Special ECA entry/exit markers (diamond shape, prominent)
+    if(ecaT){
+      const ecaMark=L.marker([lat,lon],{
+        icon:L.divIcon({className:'',iconSize:[20,20],iconAnchor:[10,10],
+          html:`<div style="width:14px;height:14px;background:${ecaT.type==='entry'?'#f97316':'#10b981'};transform:rotate(45deg);border:2px solid #fff;box-shadow:0 0 8px ${ecaT.type==='entry'?'#f97316':'#10b981'}"></div>`}),
+        zIndexOffset:900,interactive:false,
+      });
+      ecaMark.addTo(map);
+      ecaMarkers.push(ecaMark);
+    }
+  });
+
+  return{orderedIdxs, ecaTrans};
+}
+
+async function onWaypointDragged(panelPos,newLat,newLon,orderedIdxs,coords){
+  // The user dragged waypoint at panelPos to a new position.
+  // Re-route: origin → ... previous wps ... → newPos → ... remaining wps ... → dest
+  // We use the original coordinates and replace the dragged point.
+  if(!routeData)return;
+
+  showHint('RE-ROUTING VIA DRAGGED WAYPOINT…');
+
+  const oLa=routeData.oLa,oLo=routeData.oLo;
+  const dLa=routeData.dLa,dLo=routeData.dLo;
+
+  // Build new leg chain: use dragged wp as intermediate
+  const avoid=buildAvoidList();
+  const legs=[];
+
+  try{
+    // Leg 1: origin → dragged point
+    const r1=await fetchRoute(oLo,oLa,newLon,newLat,avoid);
+    if(r1.error){hideHint();showErr(r1.error);return;}
+    legs.push(r1);
+    // Leg 2: dragged point → destination
+    const r2=await fetchRoute(newLon,newLat,dLo,dLa,avoid);
+    if(r2.error){hideHint();showErr(r2.error);return;}
+    legs.push(r2);
+
+    // Stitch
+    let newCoords=legs[0].coordinates.slice();
+    for(let i=1;i<legs.length;i++)newCoords=newCoords.concat(legs[i].coordinates.slice(1));
+    const totalKm=legs.reduce((s,l)=>s+l.distance_km,0);
+    const totalNm=totalKm/1.852;
+    const passages=[...new Set(legs.flatMap(l=>l.passages||[]))];
+
+    routeData={...routeData,coordinates:newCoords,distance_km:totalKm,distance_nm:totalNm,passages,
+               route_name:legs[0].route_name};
+
+    renderRoute(false); // false = don't re-fit bounds
+    hideHint();
+  } catch(e){
+    hideHint();showErr('Re-routing failed. Try dragging closer to a sea lane.');
+  }
+}
+
+// ── TOGGLES ───────────────────────────────────────────────────────────────────
 function setTog(which,val){
   if(which==='suez'){suezOK=val;document.getElementById('suezY').classList.toggle('active',val);document.getElementById('suezN').classList.toggle('active',!val);}
   else if(which==='panama'){panamaOK=val;document.getElementById('panaY').classList.toggle('active',val);document.getElementById('panaN').classList.toggle('active',!val);}
   else{kielOK=val;document.getElementById('kielY').classList.toggle('active',val);document.getElementById('kielN').classList.toggle('active',!val);}
 }
-
 function toggleVia(btn){
   const key=btn.dataset.via;
   if(activeVia.has(key)){activeVia.delete(key);btn.classList.remove('active');}
   else{activeVia.add(key);btn.classList.add('active');}
 }
+function buildAvoidList(){
+  const avoid=[];
+  if(!suezOK)avoid.push('suez');
+  if(!panamaOK)avoid.push('panama');
+  if(!kielOK)avoid.push('kiel');
+  return avoid;
+}
 
-// ══ ROUTE CALCULATION ═════════════════════════════════════════════════════════
+// ── FETCH ROUTE ───────────────────────────────────────────────────────────────
+async function fetchRoute(olon,olat,dlon,dlat,avoid){
+  const url=`${API}/api/route?olon=${olon}&olat=${olat}&dlon=${dlon}&dlat=${dlat}&avoid=${avoid.join(',')}`;
+  const resp=await fetch(url,{signal:AbortSignal.timeout(30000)});
+  return resp.json();
+}
+
+// ── CALCULATE ROUTE ───────────────────────────────────────────────────────────
 async function calcRoute(){
   let oLa,oLo,dLa,dLo,oName,dName;
   if(inputMode==='port'){
@@ -996,145 +916,94 @@ async function calcRoute(){
     oLa=parseFloat(document.getElementById('oLat').value);oLo=parseFloat(document.getElementById('oLon').value);
     dLa=parseFloat(document.getElementById('dLat').value);dLo=parseFloat(document.getElementById('dLon').value);
     if([oLa,oLo,dLa,dLo].some(isNaN)){showErr('Enter valid coordinates.');return;}
-    oName=`${oLa.toFixed(3)}°N ${oLo.toFixed(3)}°E`;dName=`${dLa.toFixed(3)}°N ${dLo.toFixed(3)}°E`;
+    oName=`${oLa.toFixed(3)}°, ${oLo.toFixed(3)}°`;dName=`${dLa.toFixed(3)}°, ${dLo.toFixed(3)}°`;
   }
+  if(oLa===dLa&&oLo===dLo){showErr('Origin and destination are the same.');return;}
 
-  // Build avoid list from canal toggles
-  const avoid=[];
-  if(!suezOK)  avoid.push('suez');
-  if(!panamaOK) avoid.push('panama');
-  if(!kielOK)  avoid.push('kiel');
-
-  // Force Via logic:
-  // The ONLY reliable way to force a route through a passage without distortion
-  // is to remove that passage from the "avoid" list (already done above for canals),
-  // and for Cape GH / Cape Horn, route via a single well-chosen mid-ocean waypoint.
-  // We do NOT chain multiple routing legs for straits/canals — this causes distance
-  // inflation and V-shapes because each leg finds its own local optimum.
-
-  const viaKeys = [...activeVia];
-
-  // Cape of Good Hope: force by routing via a single S. Atlantic waypoint (-35°, 17°E)
-  // Cape Horn: force by routing via a single S. Pacific waypoint (-57°, -68°E)
-  // All other Force Via buttons: ensure the passage is NOT in the avoid list
-  // (the routing engine uses it naturally when it's the optimal path)
-
-  const CAPE_GH_WP   = {la:-35.0, lo:17.5,  name:'Cape of Good Hope approach'};
-  const CAPE_HORN_WP = {la:-57.0, lo:-68.0, name:'Cape Horn approach'};
-
-  let useCapGH   = viaKeys.includes('cape_good_hope');
-  let useCapHorn = viaKeys.includes('cape_horn');
-
-  // For passage-based via buttons, remove from avoid list if user forced them
-  const passageViaMap = {
-    'suez':'suez','panama':'panama','malacca':'malacca',
-    'gibraltar':'gibraltar','babalmandab':'babalmandab',
-    'sunda':'sunda','lombok':'lombok','hormuz':'hormuz',
-    'dover':'dover','bering':'bering',
-  };
-  for(const key of viaKeys){
-    const p=passageViaMap[key];
-    if(p){ const i=avoid.indexOf(p); if(i>-1) avoid.splice(i,1); }
-  }
+  const avoid=buildAvoidList();
+  const viaKeys=[...activeVia];
+  const useCapGH=viaKeys.includes('cape_good_hope');
+  const useCapHorn=viaKeys.includes('cape_horn');
+  const passageViaMap={suez:'suez',panama:'panama',malacca:'malacca',gibraltar:'gibraltar',
+    babalmandab:'babalmandab',sunda:'sunda',lombok:'lombok',hormuz:'hormuz',dover:'dover',bering:'bering'};
+  for(const key of viaKeys){const p=passageViaMap[key];if(p){const i=avoid.indexOf(p);if(i>-1)avoid.splice(i,1);}}
 
   hideErr();
   const btn=document.getElementById('calcBtn');
   btn.classList.add('loading');btn.textContent='⬡ ROUTING…';
 
-  try {
-    // Build leg points — only add intermediate waypoints for Cape GH / Cape Horn
-    const legPoints = [{la:oLa,lo:oLo,name:oName}];
-
-    if(useCapGH){
-      legPoints.push(CAPE_GH_WP);
-    }
-    if(useCapHorn){
-      legPoints.push(CAPE_HORN_WP);
-    }
-
+  try{
+    const legPoints=[{la:oLa,lo:oLo,name:oName}];
+    if(useCapGH)legPoints.push(CAPE_GH_WP);
+    if(useCapHorn)legPoints.push(CAPE_HORN_WP);
     legPoints.push({la:dLa,lo:dLo,name:dName});
     const legs=[];
-
     for(let i=0;i<legPoints.length-1;i++){
       const A=legPoints[i],B=legPoints[i+1];
-      const url=`${API}/api/route?olon=${A.lo}&olat=${A.la}&dlon=${B.lo}&dlat=${B.la}&avoid=${avoid.join(',')}`;
-      const resp=await fetch(url,{signal:AbortSignal.timeout(30000)});
-      const data=await resp.json();
+      const data=await fetchRoute(A.lo,A.la,B.lo,B.la,avoid);
       if(data.error){showErr(`Routing error: ${data.error}`);btn.classList.remove('loading');btn.textContent='⬡ CALCULATE ROUTE';return;}
       legs.push(data);
     }
-
-    // Stitch legs together
     let coords=legs[0].coordinates.slice();
-    for(let i=1;i<legs.length;i++) coords=coords.concat(legs[i].coordinates.slice(1));
+    for(let i=1;i<legs.length;i++)coords=coords.concat(legs[i].coordinates.slice(1));
     const totalKm=legs.reduce((s,l)=>s+l.distance_km,0);
-    const totalNm=totalKm/1.852;
     const passages=[...new Set(legs.flatMap(l=>l.passages||[]))];
-
-    routeData={coordinates:coords,distance_km:totalKm,distance_nm:totalNm,
+    routeData={coordinates:coords,distance_km:totalKm,distance_nm:totalKm/1.852,
                route_name:legs[0].route_name,passages,oName,dName,oLa,oLo,dLa,dLo};
-
-    renderRoute();
+    renderRoute(true);
   } catch(e){
-    showErr('Cannot reach routing server. Make sure server.py is running.');
+    showErr('Cannot reach routing server. Ensure server.py is running.');
   }
-
   btn.classList.remove('loading');btn.textContent='⬡ RECALCULATE';
 }
 
-function renderRoute(){
+// ── RENDER ROUTE ──────────────────────────────────────────────────────────────
+function renderRoute(fitBounds=true){
   const d=routeData;
   if(shadowLayer){map.removeLayer(shadowLayer);shadowLayer=null;}
   if(routeLayer){map.removeLayer(routeLayer);routeLayer=null;}
 
   const lls=d.coordinates.map(c=>[c[1],c[0]]);
+  shadowLayer=L.polyline(lls,{color:'#1565c0',weight:8,opacity:.1}).addTo(map);
+  routeLayer=L.polyline(lls,{color:'#0d47a1',weight:2.5,opacity:.95,dashArray:'10 5'}).addTo(map);
+  if(fitBounds)map.fitBounds(routeLayer.getBounds(),{padding:[60,80]});
 
-  // Shadow
-  shadowLayer=L.polyline(lls,{color:'#1a6fc4',weight:8,opacity:.1}).addTo(map);
-  // Main route — dark navy blue dashed
-  routeLayer=L.polyline(lls,{color:'#0a3d8f',weight:2.5,opacity:.95,dashArray:'10 5'}).addTo(map);
-  map.fitBounds(routeLayer.getBounds(),{padding:[60,80]});
+  // Build draggable waypoint markers + ECA entry/exit markers
+  const {orderedIdxs,ecaTrans}=buildDraggableWaypoints(d.coordinates);
 
-  // ECA calculation
+  // Metrics
   const ecaNm=calcECAMiles(d.coordinates);
+  const ecaPct=d.distance_nm>0?((ecaNm/d.distance_nm)*100):0;
 
-  // Show sections FIRST so browser renders them properly before values are set
+  // Show sections
   document.getElementById('resSec').style.display='block';
   document.getElementById('etaSec').style.display='block';
 
-  // Results — set AFTER section is visible
-  const nmVal = Math.round(d.distance_nm).toLocaleString()+' NM';
-  console.log('Setting rNm to:', nmVal, 'distance_nm=', d.distance_nm);
-  const rNmEl = document.getElementById('rNm');
-  rNmEl.textContent = nmVal;
-  rNmEl.style.cssText = 'color:#ffffff;font-size:22px;display:block;visibility:visible;opacity:1;line-height:1;margin-bottom:3px;font-family:"Barlow Condensed",sans-serif;font-weight:800';
-  document.getElementById('rRoute').textContent=d.route_name||'—';
+  // Sidebar metrics
+  document.getElementById('rNm').textContent=Math.round(d.distance_nm).toLocaleString()+' NM';
   document.getElementById('rEca').textContent=ecaNm>0?Math.round(ecaNm).toLocaleString()+' NM':'0 NM';
-
-  // ECA progress bar
-  const ecaPct=d.distance_nm>0?((ecaNm/d.distance_nm)*100):0;
+  document.getElementById('rRoute').textContent=d.route_name||'—';
   const ecaBar=document.getElementById('rEcaBar');
   if(ecaNm>0){
     ecaBar.style.display='block';
     document.getElementById('rEcaPctBar').textContent=ecaPct.toFixed(1)+'%';
     document.getElementById('rEcaBarFill').style.width=Math.min(100,ecaPct).toFixed(1)+'%';
-  } else {
-    ecaBar.style.display='none';
-  }
+  } else ecaBar.style.display='none';
 
-  // Passages
+  // Passage tags
   const tags=document.getElementById('pTags');
   tags.innerHTML=(d.passages||[]).map(p=>`<span class="ptag">${p.toUpperCase()}</span>`).join('');
-  if(ecaNm>5) tags.innerHTML+=`<span class="ptag eca">ECA: ${Math.round(ecaNm)} NM</span>`;
+  if(ecaNm>5)tags.innerHTML+=`<span class="ptag eca">ECA: ${Math.round(ecaNm)} NM</span>`;
 
-  // Waypoints sample
-  const wl=document.getElementById('wpList');
-  const coords=d.coordinates;
-  const step=Math.max(1,Math.floor(coords.length/35));
-  wl.innerHTML=coords.filter((_,i)=>i%step===0).map((c,i)=>`
-    <div class="wp-item"><span class="wp-n">${String(i+1).padStart(2,'0')}</span>
-    <span>${c[1].toFixed(3)}°, ${c[0].toFixed(3)}°</span></div>`).join('');
-  document.getElementById('wpTog').textContent=`▶ SHOW WAYPOINTS (${coords.length} pts)`;
+  // ECA entry/exit tags
+  ecaTrans.forEach(t=>{
+    const tag=`<span class="ptag ${t.type==='entry'?'eca':''}" style="border-color:${t.type==='entry'?'var(--eca)':'var(--green)'};color:${t.type==='entry'?'var(--eca)':'var(--green)'}">
+      ${t.type==='entry'?'⚠ ECA ENTRY':'✓ ECA EXIT'} ${t.lat.toFixed(2)}°,${t.lon.toFixed(2)}°</span>`;
+    tags.innerHTML+=tag;
+  });
+
+  // Waypoint panel
+  buildWpPanel(d.coordinates,orderedIdxs,ecaTrans);
 
   // Map overlay
   document.getElementById('ovFrom').textContent=d.oName.slice(0,18);
@@ -1144,23 +1013,122 @@ function renderRoute(){
   document.getElementById('mapOv').style.display='block';
 
   // Bottom bar
-  const bNmEl = document.getElementById('bNm');
-  bNmEl.textContent = Math.round(d.distance_nm).toLocaleString()+' NM';
-  bNmEl.style.cssText = 'color:#ffffff;white-space:nowrap;font-size:16px;font-weight:800';
-  console.log('bNm set to:', bNmEl.textContent);
   document.getElementById('bFrom').textContent=d.oName.slice(0,20);
   document.getElementById('bTo').textContent=d.dName.slice(0,20);
+  document.getElementById('bNm').textContent=Math.round(d.distance_nm).toLocaleString()+' NM';
   document.getElementById('bEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
-  document.getElementById('bWp').textContent=coords.length.toLocaleString();
+  document.getElementById('bWp').textContent=d.coordinates.length.toLocaleString();
   document.getElementById('rBar').classList.add('show');
 
+  // Waypoint legend + drag hint
+  document.getElementById('wpLegend').classList.add('show');
+  document.getElementById('dragHint').classList.add('show');
+
+  // Reset ETA
   document.getElementById('etaBox').classList.remove('show');
   document.getElementById('spdBox').classList.remove('show');
   document.getElementById('bEtaItem').style.display='none';
   document.getElementById('spdInp').value='';
 }
 
-// ══ ETA / SPEED ════════════════════════════════════════════════════════════════
+// ── WAYPOINT PANEL ────────────────────────────────────────────────────────────
+function buildWpPanel(coords,orderedIdxs,ecaTrans){
+  const ecaIdxMap=new Map(ecaTrans.map(t=>[t.idx,t.type]));
+  const panel=document.getElementById('wpListPanel');
+  document.getElementById('wpCount').textContent=`${coords.length} pts · ${orderedIdxs.length} shown`;
+
+  panel.innerHTML=orderedIdxs.map((cidx,pos)=>{
+    const [lon,lat]=coords[cidx];
+    const isOrigin=cidx===0;
+    const isDest=cidx===coords.length-1;
+    const ecaType=ecaIdxMap.get(cidx);
+    const dotClass=isOrigin?'origin':isDest?'dest':ecaType?`eca-${ecaType}`:'normal';
+    const rowClass=ecaType?`eca-${ecaType}`:'';
+    const tag=ecaType?`<span class="wp-tag ${ecaType}">${ecaType.toUpperCase()}</span>`:'';
+    const name=isOrigin?routeData.oName:isDest?routeData.dName:ecaType?`ECA ${ecaType.toUpperCase()}`:`WP ${pos+1}`;
+    const canDel=!isOrigin&&!isDest&&!ecaType;
+    return `<div class="wp-row ${rowClass}" id="wpr-${pos}" onclick="highlightWp(${pos},${lat},${lon})">
+      <span class="wp-num">${String(pos+1).padStart(2,'0')}</span>
+      <div class="wp-dot ${dotClass}"></div>
+      <div class="wp-info">
+        <div class="wp-name">${name}${tag}</div>
+        <div class="wp-coords">${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E</div>
+      </div>
+      ${canDel?`<button class="wp-del" onclick="event.stopPropagation();deleteWp(${pos},${cidx})" title="Remove waypoint">✕</button>`:''}
+    </div>`;
+  }).join('');
+}
+
+function highlightWp(pos,lat,lon){
+  document.querySelectorAll('.wp-row').forEach(r=>r.classList.remove('selected'));
+  const row=document.getElementById(`wpr-${pos}`);
+  if(row)row.classList.add('selected');
+  // Pan map to this waypoint
+  map.panTo([lat,lon],{animate:true,duration:0.5});
+  // Flash the corresponding marker
+  const marker=wpMarkers.find(m=>m._panelPos===pos);
+  if(marker){
+    const el=marker.getElement();
+    if(el){
+      el.style.transform='scale(2)';el.style.transition='transform .2s';
+      setTimeout(()=>{el.style.transform='scale(1)';},400);
+    }
+  }
+}
+
+async function deleteWp(panelPos,coordIdx){
+  if(!routeData)return;
+  // Remove this waypoint and re-route the adjacent legs
+  const coords=routeData.coordinates;
+  const [lon,lat]=coords[coordIdx];
+  // Find prev and next "key" waypoints
+  // Simple approach: re-route origin→dest directly (removing one intermediate)
+  // For a truly removed waypoint, we route the two surrounding segments without it
+  // Get the marker to find surrounding markers
+  const markers=wpMarkers.filter(m=>!m._wpType||m._wpType==='normal');
+  const thisMarker=wpMarkers.find(m=>m._panelPos===panelPos);
+  if(!thisMarker)return;
+
+  showHint('UPDATING ROUTE…');
+  const avoid=buildAvoidList();
+
+  try{
+    // Find the coords just before and after the deleted point
+    // Use the full coord array — find closest surrounding key waypoints
+    const step=Math.max(5,Math.floor(coords.length/25));
+    const keyIdxs=[0];
+    for(let i=step;i<coords.length-1;i+=step)keyIdxs.push(i);
+    keyIdxs.push(coords.length-1);
+
+    // Remove the key index corresponding to this panel position
+    const pos=keyIdxs.indexOf(coordIdx);
+    if(pos<=0||pos>=keyIdxs.length-1){hideHint();return;}// can't remove origin/dest
+
+    keyIdxs.splice(pos,1);// remove it
+
+    // Re-route through remaining key waypoints
+    const legs=[];
+    for(let i=0;i<keyIdxs.length-1;i++){
+      const [lo1,la1]=coords[keyIdxs[i]];
+      const [lo2,la2]=coords[keyIdxs[i+1]];
+      const data=await fetchRoute(lo1,la1,lo2,la2,avoid);
+      if(data.error){hideHint();showErr(data.error);return;}
+      legs.push(data);
+    }
+    let newCoords=legs[0].coordinates.slice();
+    for(let i=1;i<legs.length;i++)newCoords=newCoords.concat(legs[i].coordinates.slice(1));
+    const totalKm=legs.reduce((s,l)=>s+l.distance_km,0);
+    const passages=[...new Set(legs.flatMap(l=>l.passages||[]))];
+    routeData={...routeData,coordinates:newCoords,distance_km:totalKm,distance_nm:totalKm/1.852,
+               route_name:legs[0].route_name,passages};
+    renderRoute(false);
+    hideHint();
+  } catch(e){
+    hideHint();showErr('Failed to update route.');
+  }
+}
+
+// ── ETA / SPEED ───────────────────────────────────────────────────────────────
 function setSM(m){
   speedMode=m;
   document.getElementById('smS').classList.toggle('active',m==='speed');
@@ -1168,12 +1136,11 @@ function setSM(m){
   document.getElementById('mSE').style.display=m==='speed'?'block':'none';
   document.getElementById('mES').style.display=m==='eta'?'block':'none';
 }
-
 function calcETA(){
   if(!routeData)return;
   const spd=parseFloat(document.getElementById('spdInp').value);
   if(!spd||spd<=0)return;
-  const nm=routeData.distance_nm,hrs=nm/spd;
+  const hrs=routeData.distance_nm/spd;
   const d=Math.floor(hrs/24),h=Math.floor(hrs%24),m=Math.round((hrs*60)%60);
   let t='';if(d)t+=d+'d ';t+=h+'h '+m+'m';
   document.getElementById('etaTransit').textContent=t+` @ ${spd} kn`;
@@ -1186,7 +1153,6 @@ function calcETA(){
   }
   document.getElementById('etaBox').classList.add('show');
 }
-
 function calcReqSpd(){
   if(!routeData)return;
   const dep=document.getElementById('dep2').value,arr=document.getElementById('arr2').value;
@@ -1195,21 +1161,20 @@ function calcReqSpd(){
   if(hrs<=0){document.getElementById('reqSpd').textContent='INVALID';document.getElementById('spdBox').classList.add('show');return;}
   const spd=routeData.distance_nm/hrs;
   document.getElementById('reqSpd').textContent=spd.toFixed(1)+' KNOTS';
-  const note=spd>25?'⚠ Exceeds typical vessel max speed':spd>20?'⚡ High-speed service required':spd>14?'✓ Fast cargo speed':spd>10?'✓ Standard laden voyage':'✓ Slow steaming / eco mode';
+  const note=spd>25?'⚠ Exceeds typical max':spd>20?'⚡ High-speed service':spd>14?'✓ Fast cargo':spd>10?'✓ Standard laden':'✓ Slow steaming';
   document.getElementById('reqNote').textContent=note;
   document.getElementById('spdBox').classList.add('show');
 }
 
-// ══ MISC ══════════════════════════════════════════════════════════════════════
-function toggleWP(){
-  wpShown=!wpShown;
-  document.getElementById('wpList').style.display=wpShown?'block':'none';
-  const n=routeData?routeData.coordinates.length:0;
-  document.getElementById('wpTog').textContent=(wpShown?'▼':'▶')+` SHOW WAYPOINTS (${n} pts)`;
+// ── MISC ──────────────────────────────────────────────────────────────────────
+function showErr(m){const e=document.getElementById('errBox');e.textContent='⚠ '+m;e.classList.add('show');}
+function hideErr(){document.getElementById('errBox').classList.remove('show');}
+function toggleMob(){
+  const sb=document.getElementById('sidebar');
+  const btn=document.getElementById('mobToggle');
+  const open=sb.classList.toggle('mob-open');
+  btn.textContent=open?'✕':'☰';
 }
-
-function showErr(m){const e=document.getElementById('errBox');e.textContent='⚠ '+m;e.classList.add('show')}
-function hideErr(){document.getElementById('errBox').classList.remove('show')}
 
 function clearAll(){
   oPort=null;dPort=null;routeData=null;activeVia.clear();
@@ -1220,14 +1185,16 @@ function clearAll(){
   if(shadowLayer){map.removeLayer(shadowLayer);shadowLayer=null;}
   if(oMark){map.removeLayer(oMark);oMark=null;}
   if(dMark){map.removeLayer(dMark);dMark=null;}
-  viaMark.forEach(m=>map.removeLayer(m));viaMark=[];
+  clearWpMarkers();
   document.getElementById('resSec').style.display='none';
   document.getElementById('etaSec').style.display='none';
   document.getElementById('mapOv').style.display='none';
   document.getElementById('rBar').classList.remove('show');
+  document.getElementById('wpLegend').classList.remove('show');
+  document.getElementById('dragHint').classList.remove('show');
   document.getElementById('calcBtn').textContent='⬡ CALCULATE ROUTE';
   document.getElementById('bEtaItem').style.display='none';
-  hideErr();map.setView([20,10],2);
+  hideErr(); map.setView([20,10],2);
 }
 
 // Default times
