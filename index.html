@@ -428,7 +428,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 </div><!-- /sidebar -->
 
 <!-- ════ MAP ════ -->
-<div id="map" oncontextmenu="return false">
+<div id="map">
   <div class="map-ov" id="mapOv">
     <div class="ov-row"><span>FROM</span><b id="ovFrom">—</b></div>
     <div class="ov-row"><span>TO</span><b id="ovTo">—</b></div>
@@ -618,8 +618,15 @@ tileLayer.on('tileerror',()=>{
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);}
 });
 
-// Suppress browser right-click context menu on the entire map container
-map.getContainer().addEventListener('contextmenu', e => e.preventDefault());
+// Suppress browser right-click ONLY when Leaflet handles it
+// (done per-handler with e.originalEvent.preventDefault inside each contextmenu handler)
+// Do NOT suppress at container level — that blocks Leaflet layer events too
+
+// Tell Leaflet map to suppress its own default contextmenu behaviour
+// but still let layer contextmenu events fire
+map.on('contextmenu', e => {
+  e.originalEvent.preventDefault();
+});
 
 map.on('mousemove',e=>{
   document.getElementById('hLat').textContent=e.latlng.lat.toFixed(4);
@@ -1006,8 +1013,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')hideCtxMenu();});
 // ── ADD WAYPOINT (right-click on route line) ──────────────────────────────────
 function onPolylineRightClick(e){
   if(!routeData)return;
-  L.DomEvent.stopPropagation(e);
-  L.DomEvent.preventDefault(e);
+  e.originalEvent.preventDefault(); // stop browser context menu
+  e.originalEvent.stopPropagation();
   const clickLat=e.latlng.lat, clickLon=e.latlng.lng;
   // Find nearest segment midpoint
   let bestIdx=0,bestDist=Infinity;
@@ -1030,8 +1037,8 @@ function ctxAddWaypoint(){
 
 // ── DELETE WAYPOINT (right-click on marker OR ✕ in panel) ────────────────────
 function onMarkerRightClick(e,idx){
-  L.DomEvent.stopPropagation(e);
-  L.DomEvent.preventDefault(e);
+  e.originalEvent.preventDefault(); // stop browser context menu
+  e.originalEvent.stopPropagation();
   if(idx===0||idx===wpCoords.length-1)return;
   ctxState={mode:'delete',deleteIdx:idx};
   showCtxMenu(e.originalEvent.clientX,e.originalEvent.clientY,false,true);
@@ -1075,27 +1082,22 @@ function refreshPolylineAndMarkers(){
 // Also add a wide transparent hit-target polyline for easy clicking
 let hitPolyline=null;
 function attachPolylineContextMenu(){
-  // Remove old hit target
   if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   if(!mainPolyline) return;
 
-  // Wide invisible polyline — same coords, 20px wide, catches right-clicks easily
+  // Wide invisible polyline — 20px wide for easy right-clicking
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   hitPolyline=L.polyline(lls,{
     color:'transparent',
-    weight:20,       // wide click target
-    opacity:0,
+    weight:20,
+    opacity:0.001, // must be > 0 for Leaflet to register mouse events
     interactive:true,
   }).addTo(map);
 
-  // Both the visible line and the hit target trigger the context menu
+  // Single contextmenu handler on hit target — prevents browser menu, shows ours
   hitPolyline.on('contextmenu', onPolylineRightClick);
+  // Also on visible line as fallback
   mainPolyline.on('contextmenu', onPolylineRightClick);
-
-  // Suppress browser default context menu on both
-  const suppress = e => { e.originalEvent.preventDefault(); };
-  hitPolyline.on('contextmenu', suppress);
-  mainPolyline.on('contextmenu', suppress);
 }
 
 // Rebuild markers without resetting wpCoords/wpDragged
