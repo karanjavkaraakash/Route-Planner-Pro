@@ -211,6 +211,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   .rb-lbl{font-size:7px}
   .eca-legend,.wp-legend{display:none!important}
 }
+.wp-row.dragged{border-left:2px solid var(--gold)}
 .wp-leg{font-family:var(--mono);font-size:8px;color:var(--accent-l);margin-top:1px;letter-spacing:.5px}
 .hidden{display:none!important}
 </style>
@@ -328,16 +329,6 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div class="opt-row">
       <span class="opt-lbl">ECA REGIONS</span>
       <div class="tog"><button class="tb active" id="ecaOn" onclick="setECA(true)">SHOW</button><button class="tb" id="ecaOff" onclick="setECA(false)">HIDE</button></div>
-    </div>
-    <div class="opt-row" style="margin-top:6px">
-      <span class="opt-lbl">LINE MODE</span>
-      <div class="tog">
-        <button class="tb active" id="btnGC" onclick="setLineMode('gc')" title="Great Circle — shortest path on sphere, curves toward poles">GC</button>
-        <button class="tb" id="btnRhumb" onclick="setLineMode('rhumb')" title="Rhumb Line — constant bearing, straight on Mercator chart">RHUMB</button>
-      </div>
-    </div>
-    <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:5px;line-height:1.5">
-      GC = Great Circle (shortest distance)<br>RHUMB = Constant bearing (loxodrome)
     </div>
   </div>
 
@@ -584,12 +575,17 @@ let activeVia=new Set();
 let ecaVisible=true;
 
 // Map layers
-let routeLayer=null, shadowLayer=null;
+let mainPolyline=null;   // single MARNET polyline (all coords)
+let shadowPolyline=null; // glow behind main
+let gcSegments=[];       // GC lines for dragged legs [Leaflet polyline, ...]
 let oMark=null, dMark=null;
 let ecaLayers=[];
-let wpMarkers=[];      // all waypoint markers on map (draggable)
-let ecaMarkers=[];     // ECA entry/exit markers
-let userWaypoints=[];  // user-added / dragged waypoints [{la,lo,name,isUser}]
+let wpMarkers=[];        // one marker per MARNET coordinate
+let ecaMarkers=[];       // ECA entry/exit dot markers
+
+// Waypoint state — parallel arrays indexed by coordinate position
+let wpCoords=[];         // [[lon,lat], ...] — full MARNET coordinate list, mutable on drag
+let wpDragged=new Set(); // set of indices that have been manually dragged
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 const map=L.map('map',{center:[20,10],zoom:2,zoomControl:true,attributionControl:true});
@@ -847,285 +843,222 @@ const GEO = {
   nmToKm: nm => nm*1.852,
 };
 
-// ── WAYPOINT STATE ────────────────────────────────────────────────────────────
-// After initial MARNET route, we maintain an editable list of KEY waypoints.
-// Each is {lon, lat, name, type:'origin'|'dest'|'normal'|'eca-entry'|'eca-exit', locked}
-// The route between consecutive waypoints is drawn as GC or Rhumb segments.
-// Dragging a waypoint DIRECTLY moves it — no API call, instant elastic response.
-// "Reroute leg" sends just that leg back to MARNET for sea-lane snapping.
+// ── GEO ENGINE — Great Circle math (inline, no dependency) ───────────────────
+const GEO = {
+  R: 6371.0,
+  toRad: d => d * Math.PI / 180,
+  toDeg: r => r * 180 / Math.PI,
 
-let editWaypoints = []; // [{lon,lat,name,type,locked}]
-let lineMode = 'gc';    // 'gc' or 'rhumb' — user toggle
-let segmentLayers = []; // one polyline per leg
-let wpDragLines = [];   // live drag preview lines
+  // Haversine GC distance (km)
+  gcDistKm(la1,lo1,la2,lo2){
+    const r=this.toRad.bind(this);
+    const φ1=r(la1),φ2=r(la2),Δφ=r(la2-la1),Δλ=r(lo2-lo1);
+    const a=Math.sin(Δφ/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+    return this.R*2*Math.asin(Math.sqrt(Math.max(0,a)));
+  },
 
-function setLineMode(mode) {
-  lineMode = mode;
-  document.getElementById('btnGC').classList.toggle('active', mode==='gc');
-  document.getElementById('btnRhumb').classList.toggle('active', mode==='rhumb');
-  if(editWaypoints.length>=2) redrawSegments();
-}
+  // GC initial bearing (degrees)
+  gcBearing(la1,lo1,la2,lo2){
+    const r=this.toRad.bind(this);
+    const φ1=r(la1),φ2=r(la2),Δλ=r(lo2-lo1);
+    const y=Math.sin(Δλ)*Math.cos(φ2);
+    const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+    return (this.toDeg(Math.atan2(y,x))+360)%360;
+  },
 
-// Build editWaypoints from MARNET coordinate array (first call after calcRoute)
-function initEditWaypoints(coords, ecaTrans) {
-  editWaypoints = [];
-  const ecaIdxMap = new Map(ecaTrans.map(t=>[t.idx,t.type]));
+  // GC interpolation — returns N intermediate [lon,lat] points for curved arc display
+  gcArc(la1,lo1,la2,lo2,n=16){
+    const pts=[];
+    const r=this.toRad.bind(this),d=this.toDeg.bind(this);
+    const φ1=r(la1),λ1=r(lo1),φ2=r(la2),λ2=r(lo2);
+    const dist=2*Math.asin(Math.sqrt(Math.sin((φ2-φ1)/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin((λ2-λ1)/2)**2));
+    if(dist<1e-10) return [[lo1,la1],[lo2,la2]];
+    for(let i=0;i<=n;i++){
+      const f=i/n;
+      const A=Math.sin((1-f)*dist)/Math.sin(dist), B=Math.sin(f*dist)/Math.sin(dist);
+      const x=A*Math.cos(φ1)*Math.cos(λ1)+B*Math.cos(φ2)*Math.cos(λ2);
+      const y=A*Math.cos(φ1)*Math.sin(λ1)+B*Math.cos(φ2)*Math.sin(λ2);
+      const z=A*Math.sin(φ1)+B*Math.sin(φ2);
+      pts.push([d(Math.atan2(y,x)), d(Math.atan2(z,Math.sqrt(x*x+y*y)))]);
+    }
+    return pts; // [[lon,lat], ...]
+  },
 
-  // Origin
-  const [oLon,oLat] = coords[0];
-  editWaypoints.push({lon:oLon, lat:oLat, name:routeData.oName, type:'origin', locked:true});
+  kmToNm: km => km/1.852,
+};
 
-  // Intermediate key waypoints (~20 evenly spaced + ECA crossings)
-  const step = Math.max(5, Math.floor(coords.length/20));
-  const keyIdxs = new Set();
-  for(let i=step; i<coords.length-1; i+=step) keyIdxs.add(i);
-  ecaTrans.forEach(t => keyIdxs.add(t.idx));
-  [...keyIdxs].sort((a,b)=>a-b).forEach(idx => {
-    const [lon,lat] = coords[idx];
-    const ecaType = ecaIdxMap.get(idx);
-    editWaypoints.push({
-      lon, lat,
-      name: ecaType ? `ECA ${ecaType.toUpperCase()}` : `WP`,
-      type: ecaType ? `eca-${ecaType}` : 'normal',
-      locked: false,
-    });
-  });
-
-  // Destination
-  const [dLon,dLat] = coords[coords.length-1];
-  editWaypoints.push({lon:dLon, lat:dLat, name:routeData.dName, type:'dest', locked:true});
-}
-
-// Calculate total distance across all editWaypoints using GEO engine
-function calcEditDistance() {
-  let totalKm = 0;
-  for(let i=0; i<editWaypoints.length-1; i++) {
-    const A=editWaypoints[i], B=editWaypoints[i+1];
-    totalKm += lineMode==='gc'
-      ? GEO.gcDistKm(A.lat,A.lon,B.lat,B.lon)
-      : GEO.rhumbDistKm(A.lat,A.lon,B.lat,B.lon);
-  }
-  return totalKm;
-}
-
-// Generate display coords for a leg (GC arc or rhumb line segments)
-function legCoords(A, B) {
-  const distKm = GEO.gcDistKm(A.lat,A.lon,B.lat,B.lon);
-  if(lineMode==='gc' && distKm>200) {
-    // GC arc — interpolate points for curved display
-    const n = Math.min(40, Math.max(8, Math.floor(distKm/200)));
-    return GEO.gcInterpolate(A.lat,A.lon,B.lat,B.lon,n);
-  }
-  return [[A.lon,A.lat],[B.lon,B.lat]]; // straight rhumb segment
-}
-
-// Redraw all segment polylines from editWaypoints
-function redrawSegments(highlightIdx=-1) {
-  // Remove old segment layers
-  segmentLayers.forEach(l=>map.removeLayer(l));
-  segmentLayers=[];
-  if(shadowLayer){map.removeLayer(shadowLayer);shadowLayer=null;}
-
-  for(let i=0; i<editWaypoints.length-1; i++) {
-    const A=editWaypoints[i], B=editWaypoints[i+1];
-    const pts = legCoords(A,B).map(c=>[c[1],c[0]]); // [lat,lon] for Leaflet
-    const isHighlighted = (i===highlightIdx||i+1===highlightIdx);
-
-    // Shadow glow
-    const sh = L.polyline(pts,{color:'#1565c0',weight:10,opacity:.08}).addTo(map);
-    segmentLayers.push(sh);
-    // Main line
-    const line = L.polyline(pts,{
-      color: isHighlighted ? '#42a5f5' : '#0d47a1',
-      weight: isHighlighted ? 3.5 : 2.5,
-      opacity: .95,
-      dashArray:'10 5',
-    }).addTo(map);
-
-    // Right-click to reroute this leg via MARNET
-    line.on('contextmenu', (e) => { L.DomEvent.stopPropagation(e); rerouteLegViaMarnet(i); });
-    segmentLayers.push(line);
-  }
-}
-
-// ── WAYPOINT ICONS ────────────────────────────────────────────────────────────
-function wpIcon(type, size=10) {
-  const cfg = {
-    origin:     {bg:'#10b981', border:'#fff', r:'50%',    s:14},
-    dest:       {bg:'#f59e0b', border:'#fff', r:'50%',    s:14},
-    normal:     {bg:'#2196f3', border:'rgba(255,255,255,.6)', r:'50%', s:10},
-    'eca-entry':{bg:'#f97316', border:'#fff', r:'3px',    s:12},
-    'eca-exit': {bg:'#10b981', border:'#fff', r:'3px',    s:12},
+// ── WAYPOINT MARKERS ──────────────────────────────────────────────────────────
+function wpIcon(type){
+  // All markers same small size — ECA entry/exit use colour only, no diamond
+  const cfg={
+    origin:     {bg:'#10b981',bd:'#fff',s:11},
+    dest:       {bg:'#f59e0b',bd:'#fff',s:11},
+    normal:     {bg:'#2196f3',bd:'rgba(255,255,255,.5)',s:7},
+    'eca-entry':{bg:'#f97316',bd:'#fff',s:8},
+    'eca-exit': {bg:'#10b981',bd:'#fff',s:8},
   };
-  const c = cfg[type]||cfg.normal;
-  const s = c.s;
-  return L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],
-    html:`<div style="background:${c.bg};border:2px solid ${c.border};width:${s}px;height:${s}px;border-radius:${c.r};box-shadow:0 0 7px ${c.bg};cursor:grab;transition:transform .1s"></div>`});
+  const c=cfg[type]||cfg.normal;
+  return L.divIcon({className:'',iconSize:[c.s,c.s],iconAnchor:[c.s/2,c.s/2],
+    html:`<div style="background:${c.bg};border:2px solid ${c.bd};width:${c.s}px;height:${c.s}px;border-radius:50%;box-shadow:0 0 5px ${c.bg};cursor:${type==='origin'||type==='dest'?'default':'grab'}"></div>`});
 }
 
-function clearWpMarkers() {
+function clearWpMarkers(){
   wpMarkers.forEach(m=>map.removeLayer(m)); wpMarkers=[];
   ecaMarkers.forEach(m=>map.removeLayer(m)); ecaMarkers=[];
 }
 
-// Build draggable markers from editWaypoints — TRUE elastic drag using GEO engine
-function buildDraggableWaypoints(coords) {
-  clearWpMarkers();
-  const ecaTrans = findECATransitions(coords);
-  initEditWaypoints(coords, ecaTrans);
+// ── DRAG HELPERS ──────────────────────────────────────────────────────────────
+// For a dragged waypoint at index i, we need to redraw two GC segments:
+//   segment A: wpCoords[i-1] → new position
+//   segment B: new position → wpCoords[i+1]
+// The main MARNET polyline stays unchanged — we draw GC lines ON TOP.
 
-  editWaypoints.forEach((wp,idx) => {
-    const marker = L.marker([wp.lat,wp.lon],{
-      icon: wpIcon(wp.type),
-      draggable: !wp.locked,
-      zIndexOffset: wp.type==='origin'||wp.type==='dest' ? 1000 : 500,
-    });
-
-    marker._editIdx = idx;
-
-    if(!wp.locked) {
-      // ── DRAG: instant elastic rubber-band using GEO math, no API call ──
-      marker.on('drag', e => {
-        const {lat,lng} = e.target.getLatLng();
-        // Update editWaypoints position live
-        editWaypoints[idx] = {...editWaypoints[idx], lat, lon:lng};
-        // Redraw just the two adjacent segments live (fast)
-        redrawSegments(idx);
-        // Update distance live in UI
-        updateDistanceLive();
-      });
-
-      marker.on('dragend', e => {
-        const {lat,lng} = e.target.getLatLng();
-        editWaypoints[idx] = {...editWaypoints[idx], lat, lon:lng};
-        // Full re-render of panel + metrics (no API call)
-        finalizeWaypointDrag(idx);
-      });
-    }
-
-    // Tooltip showing mode + bearing + distance
-    const updateTooltip = () => {
-      const prev = editWaypoints[idx-1];
-      const next = editWaypoints[idx+1];
-      let info = `<b style="color:${wp.type==='origin'?'#10b981':wp.type==='dest'?'#f59e0b':'#2196f3'}">${wp.name||wp.type.toUpperCase()}</b><br>`;
-      info += `${wp.lat.toFixed(4)}°, ${wp.lon.toFixed(4)}°<br>`;
-      if(prev) {
-        const dist = lineMode==='gc' ? GEO.gcDistKm(prev.lat,prev.lon,wp.lat,wp.lon) : GEO.rhumbDistKm(prev.lat,prev.lon,wp.lat,wp.lon);
-        const brg  = lineMode==='gc' ? GEO.gcBearing(prev.lat,prev.lon,wp.lat,wp.lon) : GEO.rhumbBearing(prev.lat,prev.lon,wp.lat,wp.lon);
-        info += `From prev: ${Math.round(GEO.kmToNm(dist))} NM, ${Math.round(brg)}°`;
-      }
-      marker.setTooltipContent(`<div style="font-family:monospace;font-size:10px;line-height:1.5">${info}</div>`);
-    };
-    marker.bindTooltip('',{direction:'top',offset:[0,-8],opacity:.95});
-    marker.on('mouseover', updateTooltip);
-
-    marker.addTo(map);
-    wpMarkers.push(marker);
-
-    // ECA diamond markers
-    if(wp.type==='eca-entry'||wp.type==='eca-exit') {
-      const col = wp.type==='eca-entry'?'#f97316':'#10b981';
-      const ecaMark = L.marker([wp.lat,wp.lon],{
-        icon:L.divIcon({className:'',iconSize:[20,20],iconAnchor:[10,10],
-          html:`<div style="width:14px;height:14px;background:${col};transform:rotate(45deg);border:2px solid #fff;box-shadow:0 0 8px ${col}"></div>`}),
-        zIndexOffset:900, interactive:false,
-      });
-      ecaMark.addTo(map);
-      ecaMarkers.push(ecaMark);
-    }
-  });
-
-  // Draw initial segments
-  redrawSegments();
-
-  return { orderedIdxs: editWaypoints.map((_,i)=>i), ecaTrans };
+function clearGCSegments(){
+  gcSegments.forEach(l=>map.removeLayer(l)); gcSegments=[];
 }
 
-// Update distance display live during drag (fast, no render)
-function updateDistanceLive() {
-  const totalKm = calcEditDistance();
-  const totalNm = GEO.kmToNm(totalKm);
-  document.getElementById('rNm').textContent = Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('bNm').textContent = Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('ovDist').textContent = Math.round(totalNm).toLocaleString()+' NM';
+function drawGCSegment(la1,lo1,la2,lo2,highlight){
+  const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
+  const n=Math.max(4,Math.floor(distKm/300)); // 1 interpolated pt per 300km
+  const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]); // [lat,lon]
+  const line=L.polyline(pts,{
+    color: highlight?'#42a5f5':'#0d47a1',
+    weight:1.5,
+    opacity:.95,
+    dashArray:'8 4',
+  }).addTo(map);
+  gcSegments.push(line);
+  return line;
 }
 
-// Full update after drag ends (rebuild panel, ECA, metrics)
-function finalizeWaypointDrag(idx) {
-  // Rebuild coords array from editWaypoints
-  const coords = editWaypoints.map(wp=>[wp.lon,wp.lat]);
-  const totalKm = calcEditDistance();
-  const totalNm = GEO.kmToNm(totalKm);
+// Called on every pixel of drag — instant elastic update
+function onWpDrag(idx, newLat, newLon){
+  // Update coords in memory
+  wpCoords[idx]=[newLon,newLat];
+  // Remove old GC segments for this waypoint
+  // We tag segments with their index so we can remove just the right ones
+  gcSegments.filter(l=>l._wpIdx===idx).forEach(l=>map.removeLayer(l));
+  gcSegments=gcSegments.filter(l=>l._wpIdx!==idx);
 
-  routeData = {
-    ...routeData,
-    coordinates: coords,
-    distance_km: totalKm,
-    distance_nm: totalNm,
-  };
+  // Redraw the two adjacent GC segments
+  if(idx>0){
+    const [pLon,pLat]=wpCoords[idx-1];
+    const seg=drawGCSegment(pLat,pLon,newLat,newLon,true);
+    seg._wpIdx=idx;
+  }
+  if(idx<wpCoords.length-1){
+    const [nLon,nLat]=wpCoords[idx+1];
+    const seg=drawGCSegment(newLat,newLon,nLat,nLon,true);
+    seg._wpIdx=idx;
+  }
 
-  // Recalc ECA along new coords
-  const ecaNm = calcECAMiles(coords);
-  const ecaTrans = findECATransitions(coords);
-  const ecaPct = totalNm>0 ? (ecaNm/totalNm*100) : 0;
+  // Live distance update using GEO across entire wpCoords
+  updateMetricsLive();
+}
 
-  // Update metrics
-  document.getElementById('rNm').textContent = Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('rEca').textContent = ecaNm>0?Math.round(ecaNm).toLocaleString()+' NM':'0 NM';
-  document.getElementById('bNm').textContent = Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('bEca').textContent = Math.round(ecaNm).toLocaleString()+' NM';
-  document.getElementById('ovDist').textContent = Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('ovEca').textContent = Math.round(ecaNm).toLocaleString()+' NM';
-  document.getElementById('bWp').textContent = editWaypoints.length;
+// Called once on dragend — finalise position, update panel
+function onWpDragEnd(idx, newLat, newLon){
+  wpCoords[idx]=[newLon,newLat];
+  wpDragged.add(idx);
+  updateMetricsLive();
+  // Rebuild waypoint panel to reflect new coords
+  const ecaTrans=findECATransitions(wpCoords);
+  buildWpPanel(wpCoords,ecaTrans);
+  // Update waypoint count in bottom bar
+  document.getElementById('bWp').textContent=wpCoords.length;
+}
 
-  const ecaBar = document.getElementById('rEcaBar');
+// Recalculate total distance across wpCoords using GC between consecutive points
+function calcTotalDistNm(){
+  let nm=0;
+  for(let i=0;i<wpCoords.length-1;i++){
+    const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
+    nm+=GEO.kmToNm(GEO.gcDistKm(la1,lo1,la2,lo2));
+  }
+  return nm;
+}
+
+function updateMetricsLive(){
+  const totalNm=calcTotalDistNm();
+  const ecaNm=calcECAMiles(wpCoords);
+  const ecaPct=totalNm>0?(ecaNm/totalNm*100):0;
+
+  document.getElementById('rNm').textContent=Math.round(totalNm).toLocaleString()+' NM';
+  document.getElementById('rEca').textContent=ecaNm>0?Math.round(ecaNm).toLocaleString()+' NM':'0 NM';
+  document.getElementById('bNm').textContent=Math.round(totalNm).toLocaleString()+' NM';
+  document.getElementById('bEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
+  document.getElementById('ovDist').textContent=Math.round(totalNm).toLocaleString()+' NM';
+  document.getElementById('ovEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
   if(ecaNm>0){
-    ecaBar.style.display='block';
+    document.getElementById('rEcaBar').style.display='block';
     document.getElementById('rEcaPctBar').textContent=ecaPct.toFixed(1)+'%';
     document.getElementById('rEcaBarFill').style.width=Math.min(100,ecaPct).toFixed(1)+'%';
-  } else ecaBar.style.display='none';
-
-  // Rebuild waypoint panel
-  buildWpPanel(coords, editWaypoints.map((_,i)=>i), ecaTrans);
-
-  // Rebuild ECA markers
-  ecaMarkers.forEach(m=>map.removeLayer(m)); ecaMarkers=[];
-  ecaTrans.forEach(t=>{
-    const col=t.type==='entry'?'#f97316':'#10b981';
-    const m=L.marker([t.lat,t.lon],{
-      icon:L.divIcon({className:'',iconSize:[20,20],iconAnchor:[10,10],
-        html:`<div style="width:14px;height:14px;background:${col};transform:rotate(45deg);border:2px solid #fff;box-shadow:0 0 8px ${col}"></div>`}),
-      zIndexOffset:900,interactive:false,
-    });
-    m.addTo(map); ecaMarkers.push(m);
-  });
-}
-
-// Reroute a single leg via MARNET (right-click on segment)
-async function rerouteLegViaMarnet(legIdx) {
-  if(legIdx<0||legIdx>=editWaypoints.length-1) return;
-  const A=editWaypoints[legIdx], B=editWaypoints[legIdx+1];
-  showHint('SNAPPING LEG TO SEA LANES…');
-  try {
-    const avoid=buildAvoidList();
-    const data=await fetchRoute(A.lon,A.lat,B.lon,B.lat,avoid);
-    if(data.error){hideHint();showErr(data.error);return;}
-    // Insert intermediate MARNET waypoints between A and B
-    const newWps=data.coordinates.slice(1,-1).map(c=>({
-      lon:c[0],lat:c[1],name:'WP',type:'normal',locked:false
-    }));
-    editWaypoints.splice(legIdx+1, 0, ...newWps);
-    // Rebuild all markers
-    clearWpMarkers();
-    buildDraggableWaypoints(editWaypoints.map(wp=>[wp.lon,wp.lat]));
-    finalizeWaypointDrag(legIdx);
-    hideHint();
-  } catch(e){
-    hideHint();showErr('MARNET reroute failed.');
+  } else {
+    document.getElementById('rEcaBar').style.display='none';
   }
 }
 
-// rerouteLegViaMarnet is called directly from segment contextmenu handler above
+// ── BUILD ALL WAYPOINT MARKERS ────────────────────────────────────────────────
+function buildAllWpMarkers(coords, ecaTrans){
+  clearWpMarkers();
+  clearGCSegments();
+  wpCoords=[...coords]; // copy
+  wpDragged=new Set();
+
+  const ecaIdxMap=new Map(ecaTrans.map(t=>[t.idx,t.type]));
+
+  coords.forEach(([lon,lat],idx)=>{
+    const isOrigin=idx===0;
+    const isDest=idx===coords.length-1;
+    const ecaType=ecaIdxMap.get(idx);
+    const type=isOrigin?'origin':isDest?'dest':ecaType?`eca-${ecaType}`:'normal';
+    const locked=isOrigin||isDest;
+
+    const marker=L.marker([lat,lon],{
+      icon:wpIcon(type),
+      draggable:!locked,
+      zIndexOffset:locked?1000:200,
+    });
+
+    marker._wpIdx=idx;
+    marker._wpType=type;
+
+    if(!locked){
+      marker.on('drag',e=>{
+        const {lat:la,lng:lo}=e.target.getLatLng();
+        onWpDrag(idx,la,lo);
+      });
+      marker.on('dragend',e=>{
+        const {lat:la,lng:lo}=e.target.getLatLng();
+        onWpDragEnd(idx,la,lo);
+      });
+    }
+
+    // Tooltip: show coords + leg bearing/distance from previous
+    marker.on('mouseover',()=>{
+      let tip=`<div style="font-family:monospace;font-size:10px;line-height:1.6">`;
+      if(isOrigin) tip+=`<b style="color:#10b981">${routeData.oName}</b><br>`;
+      else if(isDest) tip+=`<b style="color:#f59e0b">${routeData.dName}</b><br>`;
+      else if(ecaType) tip+=`<b style="color:${ecaType==='entry'?'#f97316':'#10b981'}">ECA ${ecaType.toUpperCase()}</b><br>`;
+      else tip+=`<b style="color:#2196f3">WP ${idx+1}</b><br>`;
+      tip+=`${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+      if(idx>0){
+        const [pLon,pLat]=wpCoords[idx-1];
+        const d=GEO.kmToNm(GEO.gcDistKm(pLat,pLon,lat,lon));
+        const b=GEO.gcBearing(pLat,pLon,lat,lon);
+        tip+=`<br>${Math.round(d)} NM · ${Math.round(b)}° (GC)`;
+      }
+      tip+=`</div>`;
+      marker.setTooltipContent(tip);
+    });
+    marker.bindTooltip('',{direction:'top',offset:[0,-6],opacity:.95});
+
+    marker.addTo(map);
+    wpMarkers.push(marker);
+  });
+}
+
+// rerouteLegViaMarnet is available if needed in future
 
 // ── TOGGLES ───────────────────────────────────────────────────────────────────
 function setTog(which,val){
@@ -1208,22 +1141,26 @@ async function calcRoute(){
 function renderRoute(fitBounds=true){
   const d=routeData;
 
-  // Clear old layers
-  if(shadowLayer){map.removeLayer(shadowLayer);shadowLayer=null;}
-  if(routeLayer){map.removeLayer(routeLayer);routeLayer=null;}
-  segmentLayers.forEach(l=>map.removeLayer(l)); segmentLayers=[];
+  // Clear all old route layers
+  if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
+  if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
+  clearGCSegments();
 
-  // Build draggable waypoints and GC/Rhumb segment display
-  const {orderedIdxs,ecaTrans}=buildDraggableWaypoints(d.coordinates);
+  // Draw the MARNET polyline — single connected line, all coords, stays in water
+  const lls=d.coordinates.map(c=>[c[1],c[0]]);
+  shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:6,opacity:.08}).addTo(map);
+  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4'}).addTo(map);
 
-  if(fitBounds){
-    const bounds=L.latLngBounds(editWaypoints.map(wp=>[wp.lat,wp.lon]));
-    map.fitBounds(bounds,{padding:[60,80]});
-  }
+  if(fitBounds) map.fitBounds(mainPolyline.getBounds(),{padding:[60,80]});
 
-  // Metrics using GEO engine
-  const totalKm = calcEditDistance();
-  const totalNm = GEO.kmToNm(totalKm);
+  // ECA transitions
+  const ecaTrans=findECATransitions(d.coordinates);
+
+  // Build all waypoint markers (one per MARNET coord)
+  buildAllWpMarkers(d.coordinates, ecaTrans);
+
+  // Metrics (use GC distance across all MARNET coords for initial render)
+  const totalNm=calcTotalDistNm();
   const ecaNm=calcECAMiles(d.coordinates);
   const ecaPct=totalNm>0?((ecaNm/totalNm)*100):0;
 
@@ -1242,17 +1179,17 @@ function renderRoute(fitBounds=true){
     document.getElementById('rEcaBarFill').style.width=Math.min(100,ecaPct).toFixed(1)+'%';
   } else ecaBar.style.display='none';
 
-  // Passage tags
+  // Passage + ECA tags
   const tags=document.getElementById('pTags');
   tags.innerHTML=(d.passages||[]).map(p=>`<span class="ptag">${p.toUpperCase()}</span>`).join('');
-  if(ecaNm>5)tags.innerHTML+=`<span class="ptag eca">ECA: ${Math.round(ecaNm)} NM</span>`;
+  if(ecaNm>5) tags.innerHTML+=`<span class="ptag eca">ECA: ${Math.round(ecaNm)} NM</span>`;
   ecaTrans.forEach(t=>{
-    tags.innerHTML+=`<span class="ptag ${t.type==='entry'?'eca':''}" style="border-color:${t.type==='entry'?'var(--eca)':'var(--green)'};color:${t.type==='entry'?'var(--eca)':'var(--green)'}">
+    tags.innerHTML+=`<span class="ptag" style="border-color:${t.type==='entry'?'var(--eca)':'var(--green)'};color:${t.type==='entry'?'var(--eca)':'var(--green)'}">
       ${t.type==='entry'?'⚠ ECA ENTRY':'✓ ECA EXIT'} ${t.lat.toFixed(2)}°,${t.lon.toFixed(2)}°</span>`;
   });
 
   // Waypoint panel
-  buildWpPanel(d.coordinates, orderedIdxs, ecaTrans);
+  buildWpPanel(d.coordinates, ecaTrans);
 
   // Map overlay
   document.getElementById('ovFrom').textContent=d.oName.slice(0,18);
@@ -1266,14 +1203,13 @@ function renderRoute(fitBounds=true){
   document.getElementById('bTo').textContent=d.dName.slice(0,20);
   document.getElementById('bNm').textContent=Math.round(totalNm).toLocaleString()+' NM';
   document.getElementById('bEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
-  document.getElementById('bWp').textContent=editWaypoints.length;
+  document.getElementById('bWp').textContent=d.coordinates.length;
   document.getElementById('rBar').classList.add('show');
 
-  // Legend + hint
+  // Legends + hint
   document.getElementById('wpLegend').classList.add('show');
   document.getElementById('dragHint').classList.add('show');
-  document.getElementById('dragHint').textContent=
-    `🖱 DRAG WAYPOINTS · RIGHT-CLICK SEGMENT TO SNAP TO SEA LANE · ${lineMode.toUpperCase()} MODE`;
+  document.getElementById('dragHint').textContent='🖱 DRAG ANY WAYPOINT TO ADJUST ROUTE · DISTANCE UPDATES LIVE';
 
   // Reset ETA
   document.getElementById('etaBox').classList.remove('show');
@@ -1283,86 +1219,75 @@ function renderRoute(fitBounds=true){
 }
 
 // ── WAYPOINT PANEL ────────────────────────────────────────────────────────────
-function buildWpPanel(coords, orderedIdxs, ecaTrans){
+function buildWpPanel(coords, ecaTrans){
+  const ecaIdxMap=new Map(ecaTrans.map(t=>[t.idx,t.type]));
   const panel=document.getElementById('wpListPanel');
-  document.getElementById('wpCount').textContent=
-    `${editWaypoints.length} waypoints · ${lineMode.toUpperCase()}`;
+  document.getElementById('wpCount').textContent=`${coords.length} waypoints · GC`;
 
-  panel.innerHTML=editWaypoints.map((wp,idx)=>{
-    const isOrigin=wp.type==='origin';
-    const isDest=wp.type==='dest';
-    const isEca=wp.type.startsWith('eca-');
-    const dotClass=wp.type;
-    const rowClass=isEca?wp.type:'';
+  // Virtual scroll for performance with 100+ waypoints
+  // Build all rows but use document fragment
+  const frag=document.createDocumentFragment();
 
-    // Per-leg info (bearing + distance from prev)
+  coords.forEach(([lon,lat],idx)=>{
+    const isOrigin=idx===0;
+    const isDest=idx===coords.length-1;
+    const ecaType=ecaIdxMap.get(idx);
+    const isDragged=wpDragged.has(idx);
+
+    const dotClass=isOrigin?'origin':isDest?'dest':ecaType?`eca-${ecaType}`:'normal';
+    const rowClass=ecaType?`eca-${ecaType}`:(isDragged?'dragged':'');
+
+    // Per-leg bearing + distance from previous (GC)
     let legInfo='';
     if(idx>0){
-      const prev=editWaypoints[idx-1];
-      const distKm=lineMode==='gc'
-        ? GEO.gcDistKm(prev.lat,prev.lon,wp.lat,wp.lon)
-        : GEO.rhumbDistKm(prev.lat,prev.lon,wp.lat,wp.lon);
-      const brg=lineMode==='gc'
-        ? GEO.gcBearing(prev.lat,prev.lon,wp.lat,wp.lon)
-        : GEO.rhumbBearing(prev.lat,prev.lon,wp.lat,wp.lon);
-      legInfo=`<div class="wp-leg">${Math.round(GEO.kmToNm(distKm))} NM · ${Math.round(brg)}°</div>`;
+      const [pLon,pLat]=coords[idx-1];
+      const distNm=Math.round(GEO.kmToNm(GEO.gcDistKm(pLat,pLon,lat,lon)));
+      const brg=Math.round(GEO.gcBearing(pLat,pLon,lat,lon));
+      legInfo=`<div class="wp-leg">${distNm} NM · ${brg}°</div>`;
     }
 
-    const tag=isEca?`<span class="wp-tag ${wp.type.replace('eca-','')}">${wp.type.replace('eca-','').toUpperCase()}</span>`:'';
+    const ecaTag=ecaType?`<span class="wp-tag ${ecaType}">${ecaType.toUpperCase()}</span>`:'';
+    const dragTag=isDragged?`<span class="wp-tag user">MOVED</span>`:'';
     const name=isOrigin?routeData.oName:isDest?routeData.dName:
-      isEca?`ECA ${wp.type.replace('eca-','').toUpperCase()}`:`WP ${idx+1}`;
-    const canDel=!wp.locked&&!isEca;
+               ecaType?`ECA ${ecaType.toUpperCase()}`:`WP ${idx+1}`;
 
-    return `<div class="wp-row ${rowClass}" id="wpr-${idx}" onclick="highlightWp(${idx})">
-      <span class="wp-num">${String(idx+1).padStart(2,'0')}</span>
+    const row=document.createElement('div');
+    row.className=`wp-row ${rowClass}`;
+    row.id=`wpr-${idx}`;
+    row.onclick=()=>highlightWp(idx);
+    row.innerHTML=`
+      <span class="wp-num">${String(idx+1).padStart(3,'0')}</span>
       <div class="wp-dot ${dotClass}"></div>
       <div class="wp-info">
-        <div class="wp-name">${name}${tag}</div>
-        <div class="wp-coords">${wp.lat.toFixed(4)}°, ${wp.lon.toFixed(4)}°</div>
+        <div class="wp-name">${name}${ecaTag}${dragTag}</div>
+        <div class="wp-coords">${lat.toFixed(4)}°, ${lon.toFixed(4)}°</div>
         ${legInfo}
-      </div>
-      ${canDel?`<button class="wp-del" onclick="event.stopPropagation();deleteWpEdit(${idx})" title="Remove">✕</button>`:''}
-    </div>`;
-  }).join('');
+      </div>`;
+    frag.appendChild(row);
+  });
+
+  panel.innerHTML='';
+  panel.appendChild(frag);
 }
 
 function highlightWp(idx){
   document.querySelectorAll('.wp-row').forEach(r=>r.classList.remove('selected'));
   const row=document.getElementById(`wpr-${idx}`);
-  if(row)row.classList.add('selected');
-  const wp=editWaypoints[idx];
-  if(wp)map.panTo([wp.lat,wp.lon],{animate:true,duration:0.4});
-  const marker=wpMarkers.find(m=>m._editIdx===idx);
+  if(row){
+    row.classList.add('selected');
+    row.scrollIntoView({block:'nearest',behavior:'smooth'});
+  }
+  const [lon,lat]=wpCoords[idx]||[];
+  if(lat!==undefined) map.panTo([lat,lon],{animate:true,duration:0.4});
+  const marker=wpMarkers.find(m=>m._wpIdx===idx);
   if(marker){
     const el=marker.getElement();
-    if(el){el.style.transform='scale(2.2)';el.style.transition='transform .15s';
-      setTimeout(()=>{el.style.transform='scale(1)';},350);}
-  }
-}
-
-async function deleteWpEdit(idx){
-  if(idx<=0||idx>=editWaypoints.length-1)return; // can't delete origin/dest
-  const A=editWaypoints[idx-1], B=editWaypoints[idx+1];
-  editWaypoints.splice(idx,1);
-  // Reroute the now-joined leg via MARNET for sea safety
-  showHint('UPDATING ROUTE…');
-  try{
-    const avoid=buildAvoidList();
-    const data=await fetchRoute(A.lon,A.lat,B.lon,B.lat,avoid);
-    if(!data.error){
-      const newWps=data.coordinates.slice(1,-1).map(c=>({
-        lon:c[0],lat:c[1],name:'WP',type:'normal',locked:false
-      }));
-      editWaypoints.splice(idx,0,...newWps);
+    if(el){
+      el.style.transform='scale(2.5)';
+      el.style.transition='transform .15s';
+      setTimeout(()=>{el.style.transform='scale(1)';},400);
     }
-  }catch(e){}
-  // Rebuild from new editWaypoints
-  clearWpMarkers();
-  const newCoords=editWaypoints.map(wp=>[wp.lon,wp.lat]);
-  routeData={...routeData,coordinates:newCoords};
-  buildDraggableWaypoints(newCoords);
-  finalizeWaypointDrag(idx);
-  hideHint();
+  }
 }
 
 // ── ETA / SPEED ───────────────────────────────────────────────────────────────
@@ -1415,13 +1340,13 @@ function toggleMob(){
 
 function clearAll(){
   oPort=null;dPort=null;routeData=null;activeVia.clear();
-  editWaypoints=[];
+  wpCoords=[];wpDragged=new Set();
   document.querySelectorAll('.via-btn').forEach(b=>b.classList.remove('active'));
   ['oInp','dInp'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   ['oLat','oLon','dLat','dLon'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
-  if(routeLayer){map.removeLayer(routeLayer);routeLayer=null;}
-  if(shadowLayer){map.removeLayer(shadowLayer);shadowLayer=null;}
-  segmentLayers.forEach(l=>map.removeLayer(l));segmentLayers=[];
+  if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
+  if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
+  clearGCSegments();
   if(oMark){map.removeLayer(oMark);oMark=null;}
   if(dMark){map.removeLayer(dMark);dMark=null;}
   clearWpMarkers();
