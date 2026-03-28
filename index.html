@@ -1227,17 +1227,19 @@ function renderRoute(fitBounds=true){
   // Clear old layers
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
+  if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   clearGCSegments();
 
-  // Draw MARNET polyline — single connected line, all coords, stays in water
+  // Build markers first — this populates wpCoords from d.coordinates
+  const ecaTrans=findECATransitions(d.coordinates);
+  buildAllWpMarkers(d.coordinates,ecaTrans);
+
+  // Now draw MARNET polyline using wpCoords (now populated)
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
   mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4'}).addTo(map);
 
   if(fitBounds) map.fitBounds(mainPolyline.getBounds(),{padding:[60,80]});
-
-  const ecaTrans=findECATransitions(d.coordinates);
-  buildAllWpMarkers(d.coordinates,ecaTrans);
 
   // Metrics
   const totalNm=calcTotalDistNm();
