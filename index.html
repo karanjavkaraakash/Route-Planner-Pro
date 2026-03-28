@@ -1012,6 +1012,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')hideAddWpPopup();});
 function onPolylineClick(e){
   if(!routeData)return;
   L.DomEvent.stopPropagation(e);
+  console.log('Route clicked at', e.latlng.lat.toFixed(4), e.latlng.lng.toFixed(4));
   const clickLat=e.latlng.lat,clickLon=e.latlng.lng;
   // Find nearest segment by midpoint distance
   let bestIdx=0,bestDist=Infinity;
@@ -1050,7 +1051,7 @@ function refreshPolylineAndMarkers(){
   clearGCSegments();
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
-  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4'}).addTo(map);
+  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4',bubblingMouseEvents:false}).addTo(map);
   // Rebuild markers
   const ecaTrans=findECATransitions(wpCoords);
   rebuildMarkersFromState(ecaTrans);
@@ -1066,13 +1067,14 @@ function attachPolylineContextMenu(){
   if(hitPolyline){map.removeLayer(hitPolyline);hitPolyline=null;}
   if(!mainPolyline) return;
 
-  // Wide invisible polyline — 20px wide for easy right-clicking
+  // Wide hit-target polyline — must have a real color/opacity for SVG mouse detection
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   hitPolyline=L.polyline(lls,{
-    color:'transparent',
+    color:'#ffffff',
     weight:20,
-    opacity:0.001, // must be > 0 for Leaflet to register mouse events
+    opacity:0.01,  // nearly invisible but SVG still registers mouse events
     interactive:true,
+    bubblingMouseEvents:false,
   }).addTo(map);
 
   // Left-click handler on hit target and visible line
@@ -1219,7 +1221,7 @@ function renderRoute(fitBounds=true){
   // Now draw MARNET polyline using wpCoords (now populated)
   const lls=wpCoords.map(c=>[c[1],c[0]]);
   shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
-  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4'}).addTo(map);
+  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4',bubblingMouseEvents:false}).addTo(map);
 
   if(fitBounds) map.fitBounds(mainPolyline.getBounds(),{padding:[60,80]});
 
