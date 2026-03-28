@@ -214,17 +214,19 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .wp-leg{font-family:var(--mono);font-size:8px;color:var(--accent-l);margin-top:1px;letter-spacing:.5px}
 .wp-row.dragged{border-left:2px solid var(--gold)}
 
-/* ── CONTEXT MENU ── */
-.ctx-menu{position:fixed;background:var(--panel);border:1px solid var(--border2);
-  border-radius:3px;padding:4px 0;z-index:9999;min-width:170px;
-  box-shadow:0 8px 24px rgba(0,0,0,.5);display:none}
-.ctx-menu.show{display:block}
-.ctx-item{padding:8px 14px;font-family:var(--mono);font-size:10px;color:var(--text);
-  cursor:pointer;display:flex;align-items:center;gap:8px;letter-spacing:.5px;
-  text-transform:uppercase;transition:background .12s;white-space:nowrap}
-.ctx-item:hover{background:rgba(33,150,243,.12);color:var(--accent-l)}
-.ctx-item.danger:hover{background:rgba(239,68,68,.1);color:var(--red)}
-.ctx-sep{height:1px;background:var(--border2);margin:3px 0}
+/* ── ADD WAYPOINT POPUP ── */
+.add-wp-popup{position:fixed;background:var(--panel);border:1px solid var(--accent-l);
+  border-radius:3px;padding:4px 6px;z-index:9999;display:none;
+  align-items:center;gap:6px;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+.add-wp-popup.show{display:flex}
+.add-wp-btn{background:rgba(33,150,243,.15);border:1px solid var(--accent-l);
+  color:var(--accent-l);font-family:var(--mono);font-size:10px;padding:6px 12px;
+  cursor:pointer;border-radius:2px;letter-spacing:.5px;text-transform:uppercase;
+  transition:background .12s;white-space:nowrap}
+.add-wp-btn:hover{background:rgba(33,150,243,.3)}
+.add-wp-cancel{background:transparent;border:none;color:var(--text-dim);
+  font-size:14px;cursor:pointer;padding:2px 4px;line-height:1;transition:color .12s}
+.add-wp-cancel:hover{color:var(--red)}
 .hidden{display:none!important}
 </style>
 </head>
@@ -459,11 +461,10 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div class="eca-row"><div class="eca-swatch" style="background:#117a65"></div>Hawaii ECA</div>
   </div>
 
-  <!-- Context menu for route line + markers -->
-  <div class="ctx-menu" id="ctxMenu">
-    <div class="ctx-item" id="ctxAdd" onclick="ctxAddWaypoint()">＋ Add Waypoint Here</div>
-    <div class="ctx-sep" id="ctxSep"></div>
-    <div class="ctx-item danger" id="ctxDel" onclick="ctxDeleteWaypoint()">✕ Delete Waypoint</div>
+  <!-- Left-click popup for adding waypoint on route -->
+  <div class="add-wp-popup" id="addWpPopup">
+    <button class="add-wp-btn" onclick="confirmAddWaypoint()">＋ Add Waypoint Here</button>
+    <button class="add-wp-cancel" onclick="hideAddWpPopup()">✕</button>
   </div>
 
   <!-- Bottom bar -->
@@ -608,7 +609,7 @@ let wpDragged=new Set();
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 const map=L.map('map',{center:[20,10],zoom:2,zoomControl:true,attributionControl:true,
-  contextmenu:false}); // suppress default context menu via Leaflet option
+});
 const tileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
   subdomains:'abcd',maxZoom:19,
   attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a> © <a href="https://carto.com">CARTO</a>'
@@ -624,9 +625,7 @@ tileLayer.on('tileerror',()=>{
 
 // Tell Leaflet map to suppress its own default contextmenu behaviour
 // but still let layer contextmenu events fire
-map.on('contextmenu', e => {
-  e.originalEvent.preventDefault();
-});
+
 
 map.on('mousemove',e=>{
   document.getElementById('hLat').textContent=e.latlng.lat.toFixed(4);
@@ -986,68 +985,50 @@ function buildAllWpMarkers(coords,ecaTrans){
 }
 
 // ── CONTEXT MENU ──────────────────────────────────────────────────────────────
-let ctxState={mode:null,insertIdx:null,deleteIdx:null,lat:null,lon:null};
+// ── ADD WAYPOINT STATE ────────────────────────────────────────────────────────
+let addWpState={insertIdx:null,lat:null,lon:null};
 
-function showCtxMenu(x,y,showAdd,showDel){
-  const menu=document.getElementById('ctxMenu');
-  const addItem=document.getElementById('ctxAdd');
-  const delItem=document.getElementById('ctxDel');
-  const sep=document.getElementById('ctxSep');
-  addItem.style.display=showAdd?'flex':'none';
-  delItem.style.display=showDel?'flex':'none';
-  sep.style.display=(showAdd&&showDel)?'block':'none';
+function showAddWpPopup(x,y,insertIdx,lat,lon){
+  const popup=document.getElementById('addWpPopup');
   const vw=window.innerWidth,vh=window.innerHeight;
-  menu.style.left=Math.min(x,vw-190)+'px';
-  menu.style.top=Math.min(y,vh-90)+'px';
-  menu.classList.add('show');
+  popup.style.left=Math.min(x+8,vw-200)+'px';
+  popup.style.top=Math.min(y-40,vh-60)+'px';
+  popup.classList.add('show');
+  addWpState={insertIdx,lat,lon};
 }
 
-function hideCtxMenu(){
-  document.getElementById('ctxMenu').classList.remove('show');
-  ctxState={mode:null,insertIdx:null,deleteIdx:null,lat:null,lon:null};
+function hideAddWpPopup(){
+  document.getElementById('addWpPopup').classList.remove('show');
+  addWpState={insertIdx:null,lat:null,lon:null};
 }
 
-document.addEventListener('click',e=>{if(!e.target.closest('#ctxMenu'))hideCtxMenu();});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')hideCtxMenu();});
+// Close popup on map click (but not on the popup itself)
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#addWpPopup'))hideAddWpPopup();
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')hideAddWpPopup();});
 
-// ── ADD WAYPOINT (right-click on route line) ──────────────────────────────────
-function onPolylineRightClick(e){
+// ── ADD WAYPOINT (left-click on route line) ───────────────────────────────────
+function onPolylineClick(e){
   if(!routeData)return;
-  e.originalEvent.preventDefault(); // stop browser context menu
-  e.originalEvent.stopPropagation();
-  const clickLat=e.latlng.lat, clickLon=e.latlng.lng;
-  // Find nearest segment midpoint
+  L.DomEvent.stopPropagation(e);
+  const clickLat=e.latlng.lat,clickLon=e.latlng.lng;
+  // Find nearest segment by midpoint distance
   let bestIdx=0,bestDist=Infinity;
   for(let i=0;i<wpCoords.length-1;i++){
     const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
     const d=GEO.gcDistKm(clickLat,clickLon,(la1+la2)/2,(lo1+lo2)/2);
     if(d<bestDist){bestDist=d;bestIdx=i;}
   }
-  ctxState={mode:'add',insertIdx:bestIdx,lat:clickLat,lon:clickLon};
-  showCtxMenu(e.originalEvent.clientX,e.originalEvent.clientY,true,false);
+  showAddWpPopup(e.originalEvent.clientX,e.originalEvent.clientY,bestIdx,clickLat,clickLon);
 }
 
-function ctxAddWaypoint(){
-  hideCtxMenu();
-  if(ctxState.mode!=='add')return;
-  wpCoords.splice(ctxState.insertIdx+1,0,[ctxState.lon,ctxState.lat]);
-  wpDragged.add(ctxState.insertIdx+1);
+function confirmAddWaypoint(){
+  hideAddWpPopup();
+  if(addWpState.insertIdx===null)return;
+  wpCoords.splice(addWpState.insertIdx+1,0,[addWpState.lon,addWpState.lat]);
+  wpDragged.add(addWpState.insertIdx+1);
   refreshPolylineAndMarkers();
-}
-
-// ── DELETE WAYPOINT (right-click on marker OR ✕ in panel) ────────────────────
-function onMarkerRightClick(e,idx){
-  e.originalEvent.preventDefault(); // stop browser context menu
-  e.originalEvent.stopPropagation();
-  if(idx===0||idx===wpCoords.length-1)return;
-  ctxState={mode:'delete',deleteIdx:idx};
-  showCtxMenu(e.originalEvent.clientX,e.originalEvent.clientY,false,true);
-}
-
-function ctxDeleteWaypoint(){
-  hideCtxMenu();
-  if(ctxState.mode!=='delete')return;
-  deleteWaypointAt(ctxState.deleteIdx);
 }
 
 function deleteWaypointAt(idx){
@@ -1094,10 +1075,9 @@ function attachPolylineContextMenu(){
     interactive:true,
   }).addTo(map);
 
-  // Single contextmenu handler on hit target — prevents browser menu, shows ours
-  hitPolyline.on('contextmenu', onPolylineRightClick);
-  // Also on visible line as fallback
-  mainPolyline.on('contextmenu', onPolylineRightClick);
+  // Left-click handler on hit target and visible line
+  hitPolyline.on('click', onPolylineClick);
+  mainPolyline.on('click', onPolylineClick);
 }
 
 // Rebuild markers without resetting wpCoords/wpDragged
@@ -1117,7 +1097,7 @@ function rebuildMarkersFromState(ecaTrans){
     if(!locked){
       marker.on('drag',e=>{const{lat:la,lng:lo}=e.target.getLatLng();onWpDrag(idx,la,lo);});
       marker.on('dragend',e=>{const{lat:la,lng:lo}=e.target.getLatLng();onWpDragEnd(idx,la,lo);});
-      marker.on('contextmenu',e=>onMarkerRightClick(e,idx));
+      // delete via ✕ button in waypoint panel only
     }
     marker.on('mouseover',()=>{
       let tip=`<div style="font-family:monospace;font-size:10px;line-height:1.6">`;
@@ -1286,7 +1266,7 @@ function renderRoute(fitBounds=true){
 
   document.getElementById('wpLegend').classList.add('show');
   document.getElementById('dragHint').classList.add('show');
-  document.getElementById('dragHint').textContent='🖱 DRAG to move · RIGHT-CLICK route line to add waypoint · RIGHT-CLICK waypoint to delete';
+  document.getElementById('dragHint').textContent='🖱 DRAG waypoint to move · CLICK route line to add waypoint · ✕ in panel to delete';
 
   document.getElementById('etaBox').classList.remove('show');
   document.getElementById('spdBox').classList.remove('show');
