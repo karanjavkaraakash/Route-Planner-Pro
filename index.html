@@ -251,6 +251,20 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 
 
 .hidden{display:none!important}
+/* Collapsible sections */
+.collapsible-hdr{width:100%;background:var(--panel2);border:1px solid var(--border2);
+  color:var(--text-dim);font-family:var(--mono);font-size:9px;letter-spacing:1.5px;
+  text-transform:uppercase;cursor:pointer;padding:6px 10px;border-radius:2px;
+  display:flex;justify-content:space-between;align-items:center;transition:all .15s;margin-bottom:0}
+.collapsible-hdr:hover{border-color:var(--accent-l);color:var(--accent-l)}
+.collapsible-hdr.open{border-color:var(--accent-l);color:var(--accent-l);
+  border-bottom-left-radius:0;border-bottom-right-radius:0}
+.coll-arrow{transition:transform .2s;font-size:8px}
+.collapsible-hdr.open .coll-arrow{transform:rotate(90deg)}
+.collapsible-body{border:1px solid var(--border2);border-top:none;
+  padding:0 10px;border-bottom-left-radius:2px;border-bottom-right-radius:2px}
+.collapsible-body.hidden{display:none}
+
 </style>
 </head>
 <body>
@@ -275,7 +289,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 <!-- ════ SIDEBAR ════ -->
 <div class="sidebar" id="sidebar">
 
-  <!-- VOYAGE INPUTS — each field independently port or coordinates -->
+  <!-- ── VOYAGE INPUTS ── -->
   <div class="sb-sec">
     <div class="sec-lbl">🗺 Voyage Inputs</div>
 
@@ -334,41 +348,70 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
         <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:3px">Click map to set position</div>
       </div>
     </div>
-  </div>
 
-  <!-- ROUTING OPTIONS -->
-  <div class="sb-sec">
-    <div class="sec-lbl">⚙ Routing Options</div>
-    <div class="opt-row">
-      <span class="opt-lbl">SUEZ CANAL</span>
-      <div class="tog"><button class="tb active" id="suezY" onclick="setTog('suez',true)">ALLOW</button><button class="tb" id="suezN" onclick="setTog('suez',false)">AVOID</button></div>
+    <!-- SPEED & DEPARTURE — mandatory, integrated with voyage inputs -->
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border2)">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <div style="flex:1">
+          <div class="inp-lbl" style="display:flex;align-items:center;gap:4px">
+            SPEED
+            <span style="color:var(--red);font-size:9px">*</span>
+          </div>
+          <div class="calc-row" style="margin:0">
+            <input class="num-inp" id="spdInp" type="number" min="1" max="35" step="0.1"
+              placeholder="e.g. 12.5" oninput="onSpeedInput()" style="font-size:11px;padding:6px 8px">
+            <span class="sfx">kn</span>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="inp-lbl">DEPARTURE (UTC) <span style="color:var(--text-dim);font-size:8px">— defaults to now</span></div>
+        <input type="datetime-local" class="dt-inp" id="depTime" onchange="onSpeedInput()" style="margin-bottom:0">
+      </div>
     </div>
-    <div class="opt-row">
-      <span class="opt-lbl">PANAMA CANAL</span>
-      <div class="tog"><button class="tb active" id="panaY" onclick="setTog('panama',true)">ALLOW</button><button class="tb" id="panaN" onclick="setTog('panama',false)">AVOID</button></div>
-    </div>
-    <div class="opt-row" style="margin-bottom:2px">
-      <span class="opt-lbl">KIEL CANAL</span>
-      <div class="tog"><button class="tb active" id="kielY" onclick="setTog('kiel',true)">ALLOW</button><button class="tb" id="kielN" onclick="setTog('kiel',false)">AVOID</button></div>
-    </div>
-  </div>
 
-  <!-- FORCE VIA -->
-  <div class="sb-sec">
-    <div class="sec-lbl">📍 Force Via</div>
-    <div class="via-grid">
-      <button class="via-btn" data-via="cape_good_hope" onclick="toggleVia(this)">CAPE OF<br>GOOD HOPE</button>
-      <button class="via-btn" data-via="cape_horn" onclick="toggleVia(this)">CAPE<br>HORN</button>
-      <button class="via-btn" data-via="malacca" onclick="toggleVia(this)">MALACCA<br>STRAIT</button>
-      <button class="via-btn" data-via="suez" onclick="toggleVia(this)">SUEZ<br>CANAL</button>
-      <button class="via-btn" data-via="panama" onclick="toggleVia(this)">PANAMA<br>CANAL</button>
-      <button class="via-btn" data-via="gibraltar" onclick="toggleVia(this)">GIBRALTAR<br>STRAIT</button>
-      <button class="via-btn" data-via="babalmandab" onclick="toggleVia(this)">BAB-EL<br>MANDEB</button>
-      <button class="via-btn" data-via="sunda" onclick="toggleVia(this)">SUNDA<br>STRAIT</button>
-      <button class="via-btn" data-via="lombok" onclick="toggleVia(this)">LOMBOK<br>STRAIT</button>
-      <button class="via-btn" data-via="hormuz" onclick="toggleVia(this)">HORMUZ<br>STRAIT</button>
-      <button class="via-btn" data-via="dover" onclick="toggleVia(this)">DOVER<br>STRAIT</button>
-      <button class="via-btn" data-via="bering" onclick="toggleVia(this)">BERING<br>STRAIT</button>
+    <!-- ROUTING OPTIONS — collapsible -->
+    <div style="margin-top:8px">
+      <button class="collapsible-hdr" id="routingOptHdr" onclick="toggleCollapsible('routingOptBody','routingOptHdr')">
+        <span>⚙ ROUTING OPTIONS</span><span class="coll-arrow">▶</span>
+      </button>
+      <div class="collapsible-body hidden" id="routingOptBody">
+        <div class="opt-row" style="margin-top:8px">
+          <span class="opt-lbl">SUEZ CANAL</span>
+          <div class="tog"><button class="tb active" id="suezY" onclick="setTog('suez',true)">ALLOW</button><button class="tb" id="suezN" onclick="setTog('suez',false)">AVOID</button></div>
+        </div>
+        <div class="opt-row">
+          <span class="opt-lbl">PANAMA CANAL</span>
+          <div class="tog"><button class="tb active" id="panaY" onclick="setTog('panama',true)">ALLOW</button><button class="tb" id="panaN" onclick="setTog('panama',false)">AVOID</button></div>
+        </div>
+        <div class="opt-row" style="margin-bottom:2px">
+          <span class="opt-lbl">KIEL CANAL</span>
+          <div class="tog"><button class="tb active" id="kielY" onclick="setTog('kiel',true)">ALLOW</button><button class="tb" id="kielN" onclick="setTog('kiel',false)">AVOID</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FORCE VIA — collapsible -->
+    <div style="margin-top:4px">
+      <button class="collapsible-hdr" id="forceViaHdr" onclick="toggleCollapsible('forceViaBody','forceViaHdr')">
+        <span>📍 FORCE VIA</span><span class="coll-arrow">▶</span>
+      </button>
+      <div class="collapsible-body hidden" id="forceViaBody">
+        <div class="via-grid" style="margin-top:8px">
+          <button class="via-btn" data-via="cape_good_hope" onclick="toggleVia(this)">CAPE OF<br>GOOD HOPE</button>
+          <button class="via-btn" data-via="cape_horn" onclick="toggleVia(this)">CAPE<br>HORN</button>
+          <button class="via-btn" data-via="malacca" onclick="toggleVia(this)">MALACCA<br>STRAIT</button>
+          <button class="via-btn" data-via="suez" onclick="toggleVia(this)">SUEZ<br>CANAL</button>
+          <button class="via-btn" data-via="panama" onclick="toggleVia(this)">PANAMA<br>CANAL</button>
+          <button class="via-btn" data-via="gibraltar" onclick="toggleVia(this)">GIBRALTAR<br>STRAIT</button>
+          <button class="via-btn" data-via="babalmandab" onclick="toggleVia(this)">BAB-EL<br>MANDEB</button>
+          <button class="via-btn" data-via="sunda" onclick="toggleVia(this)">SUNDA<br>STRAIT</button>
+          <button class="via-btn" data-via="lombok" onclick="toggleVia(this)">LOMBOK<br>STRAIT</button>
+          <button class="via-btn" data-via="hormuz" onclick="toggleVia(this)">HORMUZ<br>STRAIT</button>
+          <button class="via-btn" data-via="dover" onclick="toggleVia(this)">DOVER<br>STRAIT</button>
+          <button class="via-btn" data-via="bering" onclick="toggleVia(this)">BERING<br>STRAIT</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -379,7 +422,6 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       <span class="opt-lbl">ECA REGIONS</span>
       <div class="tog"><button class="tb active" id="ecaOn" onclick="setECA(true)">SHOW</button><button class="tb" id="ecaOff" onclick="setECA(false)">HIDE</button></div>
     </div>
-
   </div>
 
   <!-- CALCULATE -->
@@ -387,40 +429,6 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div class="err" id="errBox"></div>
     <button class="calc-btn" id="calcBtn" onclick="calcRoute()">⬡ CALCULATE ROUTE</button>
     <button class="clear-btn" onclick="clearAll()">✕ CLEAR ALL</button>
-  </div>
-
-  <!-- SPEED / ETA -->
-  <div class="sb-sec" id="etaSec">
-    <div class="sec-lbl">⏱ Speed & ETA</div>
-    <div class="sm-row">
-      <button class="sm-btn active" id="smS" onclick="setSM('speed')">SPEED → ETA</button>
-      <button class="sm-btn" id="smE" onclick="setSM('eta')">ETA → SPEED</button>
-    </div>
-    <div id="mSE">
-      <div class="inp-lbl">VESSEL SPEED</div>
-      <div class="calc-row">
-        <input class="num-inp" id="spdInp" type="number" min="1" max="35" step="0.1" placeholder="e.g. 12.5" oninput="calcETA()">
-        <span class="sfx">KNOTS</span>
-      </div>
-      <div class="inp-lbl">DEPARTURE (UTC)</div>
-      <input type="datetime-local" class="dt-inp" id="depTime" onchange="calcETA()">
-      <div class="eta-box" id="etaBox">
-        <div class="eta-lbl">TRANSIT TIME</div>
-        <div class="eta-val" id="etaTransit">—</div>
-        <div class="eta-arr" id="etaArr"></div>
-      </div>
-    </div>
-    <div id="mES" style="display:none">
-      <div class="inp-lbl">DEPARTURE (UTC)</div>
-      <input type="datetime-local" class="dt-inp" id="dep2" onchange="calcReqSpd()">
-      <div class="inp-lbl">TARGET ARRIVAL (UTC)</div>
-      <input type="datetime-local" class="dt-inp" id="arr2" onchange="calcReqSpd()">
-      <div class="eta-box" id="spdBox">
-        <div class="eta-lbl">REQUIRED SPEED</div>
-        <div class="eta-val" id="reqSpd">—</div>
-        <div class="eta-arr" id="reqNote"></div>
-      </div>
-    </div>
   </div>
 
   <!-- ADD WAYPOINT MODE — shown only after route is calculated -->
@@ -450,8 +458,14 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       </div>
     </div>
     <div class="passage-tags" id="pTags"></div>
+    <!-- ETA result shown after calculation -->
+    <div class="eta-box" id="etaBox" style="margin-top:8px">
+      <div class="eta-lbl">TRANSIT TIME</div>
+      <div class="eta-val" id="etaTransit">—</div>
+      <div class="eta-arr" id="etaArr"></div>
+    </div>
 
-    <!-- ── INTERACTIVE WAYPOINT PANEL ── -->
+    <!-- INTERACTIVE WAYPOINT PANEL -->
     <div class="wp-panel">
       <div class="wp-panel-hdr">
         <span class="wp-panel-title">WAYPOINTS</span>
@@ -462,19 +476,14 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     </div>
   </div>
 
-
   <!-- PHASE 2 — IMPORT / EXPORT / COMPARE -->
   <div class="sb-sec" id="p2Sec">
     <div class="sec-lbl">📂 Import / Export</div>
-
-    <!-- Export -->
     <div class="p2-group-lbl">EXPORT ROUTE</div>
     <div class="p2-btn-row">
       <button class="p2-btn" id="exportRtzBtn" onclick="exportRTZ()" disabled>⬇ RTZ</button>
       <button class="p2-btn" id="exportCsvBtn" onclick="exportCSV()" disabled>⬇ CSV</button>
     </div>
-
-    <!-- Import -->
     <div class="p2-group-lbl" style="margin-top:10px">IMPORT ROUTE (COMPARE)</div>
     <div class="p2-btn-row">
       <button class="p2-btn p2-import" onclick="document.getElementById('importRtz').click()">⬆ RTZ</button>
@@ -482,41 +491,31 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     </div>
     <input type="file" id="importRtz" accept=".rtz,.xml" style="display:none" onchange="importRTZ(this)">
     <input type="file" id="importCsv" accept=".csv,.txt" style="display:none" onchange="importCSV(this)">
-
-    <!-- Comparison panel — shown when an imported route exists -->
     <div id="cmpPanel" style="display:none;margin-top:10px">
       <div class="p2-group-lbl">ROUTE COMPARISON</div>
       <div class="cmp-grid">
         <div class="cmp-col">
           <div class="cmp-hdr" style="color:var(--accent-l)">● CALCULATED</div>
-          <div class="cmp-val" id="cmpCalcNm">—</div>
-          <div class="cmp-unit">TOTAL NM</div>
-          <div class="cmp-val ec" id="cmpCalcEca">—</div>
-          <div class="cmp-unit">ECA NM</div>
-          <div class="cmp-val" id="cmpCalcWp">—</div>
-          <div class="cmp-unit">WAYPOINTS</div>
+          <div class="cmp-val" id="cmpCalcNm">—</div><div class="cmp-unit">TOTAL NM</div>
+          <div class="cmp-val ec" id="cmpCalcEca">—</div><div class="cmp-unit">ECA NM</div>
+          <div class="cmp-val" id="cmpCalcWp">—</div><div class="cmp-unit">WAYPOINTS</div>
         </div>
         <div class="cmp-col">
           <div class="cmp-hdr" style="color:#f97316">● IMPORTED</div>
-          <div class="cmp-val" id="cmpImpNm">—</div>
-          <div class="cmp-unit">TOTAL NM</div>
-          <div class="cmp-val ec" id="cmpImpEca">—</div>
-          <div class="cmp-unit">ECA NM</div>
-          <div class="cmp-val" id="cmpImpWp">—</div>
-          <div class="cmp-unit">WAYPOINTS</div>
+          <div class="cmp-val" id="cmpImpNm">—</div><div class="cmp-unit">TOTAL NM</div>
+          <div class="cmp-val ec" id="cmpImpEca">—</div><div class="cmp-unit">ECA NM</div>
+          <div class="cmp-val" id="cmpImpWp">—</div><div class="cmp-unit">WAYPOINTS</div>
         </div>
         <div class="cmp-col cmp-diff-col">
           <div class="cmp-hdr" style="color:var(--text-dim)">DIFF</div>
-          <div class="cmp-val" id="cmpDiffNm">—</div>
-          <div class="cmp-unit">NM</div>
-          <div class="cmp-val" id="cmpDiffEca">—</div>
-          <div class="cmp-unit">ECA NM</div>
-          <div class="cmp-val" id="cmpDiffWp">—</div>
-          <div class="cmp-unit">WPS</div>
+          <div class="cmp-val" id="cmpDiffNm">—</div><div class="cmp-unit">NM</div>
+          <div class="cmp-val" id="cmpDiffEca">—</div><div class="cmp-unit">ECA NM</div>
+          <div class="cmp-val" id="cmpDiffWp">—</div><div class="cmp-unit">WPS</div>
         </div>
       </div>
       <div id="cmpName" style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:6px"></div>
-      <button class="p2-btn" style="width:100%;margin-top:6px;border-color:var(--accent-l);color:var(--accent-l)" id="recalcImpBtn" onclick="recalcFromImport()" title="Recalculate route using imported route start/end for fair comparison">⬡ RECALCULATE USING IMPORT ENDPOINTS</button>
+      <button class="p2-btn" style="width:100%;margin-top:6px;border-color:var(--accent-l);color:var(--accent-l)"
+        onclick="recalcFromImport()">⬡ RECALCULATE USING IMPORT ENDPOINTS</button>
       <button class="clear-btn" style="margin-top:5px" onclick="clearImport()">✕ CLEAR IMPORTED ROUTE</button>
     </div>
   </div>
@@ -524,10 +523,11 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   <!-- ABOUT -->
   <div class="sb-sec">
     <div class="notice">
-      <strong>Engine:</strong> Eurostat MARNET / Oak Ridge National Labs.<br><br>
-      <strong>Phase 1:</strong> Interactive waypoints — drag, add, delete.<br>
-      <strong>Phase 2:</strong> RTZ &amp; CSV import/export, route comparison.<br><br>
-      <strong>Coming soon:</strong> Weather overlay · HRA/piracy zones · Bunker cost estimator
+      <strong>Engine:</strong> MARNET / Oak Ridge National Labs.<br>
+      <strong>Phase 1:</strong> Interactive waypoints.<br>
+      <strong>Phase 2:</strong> RTZ &amp; CSV import/export.<br>
+      <strong>Phase 3:</strong> OpenSeaMap overlay.<br>
+      <strong>Phase 4:</strong> Weather (coming next).
     </div>
   </div>
 
@@ -1100,7 +1100,7 @@ const CAPE_HORN_WP={la:-57.0,lo:-68.0,name:'Cape Horn approach'};
 let oMode='port', dMode='port'; // per-field mode: 'port' or 'coord'
 let oPort=null, dPort=null, routeData=null;
 let suezOK=true, panamaOK=true, kielOK=true;
-let speedMode='speed', mapClick='o';
+let mapClick='o';
 let activeVia=new Set();
 let ecaVisible=true;
 
@@ -1282,6 +1282,20 @@ function setFieldMode(which,m){
 }
 // Legacy setMode stub (used by recalcFromImport)
 function setMode(m){setFieldMode('o',m);setFieldMode('d',m);}
+
+// ── COLLAPSIBLE SECTIONS ──────────────────────────────────────────────────────
+function toggleCollapsible(bodyId,hdrId){
+  const body=document.getElementById(bodyId);
+  const hdr=document.getElementById(hdrId);
+  const isOpen=!body.classList.contains('hidden');
+  body.classList.toggle('hidden',isOpen);
+  hdr.classList.toggle('open',!isOpen);
+}
+
+// ── SPEED INPUT — auto-calculate ETA when route exists ────────────────────────
+function onSpeedInput(){
+  if(routeData) calcETA();
+}
 function showHint(t){const h=document.getElementById('mapHint');h.textContent=t;h.classList.add('show');}
 function hideHint(){document.getElementById('mapHint').classList.remove('show');}
 
@@ -1719,6 +1733,16 @@ async function calcRoute(){
   }
   if(oLa===dLa&&oLo===dLo){showErr('Origin and destination are the same.');return;}
 
+  // Speed is mandatory — required for weather calculations
+  const speedVal=parseFloat(document.getElementById('spdInp').value);
+  if(!speedVal||speedVal<=0){
+    showErr('Please enter vessel speed (knots) before calculating route.');
+    document.getElementById('spdInp').focus();
+    document.getElementById('spdInp').style.borderColor='var(--red)';
+    setTimeout(()=>document.getElementById('spdInp').style.borderColor='',3000);
+    return;
+  }
+
   const avoid=buildAvoidList();
   const viaKeys=[...activeVia];
   const useCapGH=viaKeys.includes('cape_good_hope');
@@ -1785,7 +1809,7 @@ function renderRoute(fitBounds=true){
   const ecaPct=totalNm>0?((ecaNm/totalNm)*100):0;
 
   document.getElementById('resSec').style.display='block';
-  // etaSec is always visible now — no need to show
+  calcETA(); // auto-calculate ETA with speed
   document.getElementById('addWpSec').style.display='block';
   updateExportBtns();
   if(importedRoute) updateComparison();
@@ -1828,7 +1852,6 @@ function renderRoute(fitBounds=true){
   document.getElementById('dragHint').textContent='🖱 DRAG waypoint to move · CLICK route line to add waypoint · ✕ in panel to delete';
 
   document.getElementById('etaBox').classList.remove('show');
-  document.getElementById('spdBox').classList.remove('show');
   document.getElementById('bEtaItem').style.display='none';
   document.getElementById('spdInp').value='';
 }
@@ -2156,19 +2179,13 @@ function safeName(s){ return s.replace(/[^a-zA-Z0-9_\-. ]/g,'_').trim().slice(0,
 function escXml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ── ETA / SPEED ───────────────────────────────────────────────────────────────
-function setSM(m){
-  speedMode=m;
-  document.getElementById('smS').classList.toggle('active',m==='speed');
-  document.getElementById('smE').classList.toggle('active',m==='eta');
-  document.getElementById('mSE').style.display=m==='speed'?'block':'none';
-  document.getElementById('mES').style.display=m==='eta'?'block':'none';
-}
+// ── ETA / SPEED ─────────────────────────────────────────────────────────────────
 function calcETA(){
   if(!routeData)return;
+  const totalNm=calcTotalDistNm(); // use live wpCoords distance
   const spd=parseFloat(document.getElementById('spdInp').value);
   if(!spd||spd<=0)return;
-  const hrs=routeData.distance_nm/spd;
+  const hrs=totalNm/spd;
   const d=Math.floor(hrs/24),h=Math.floor(hrs%24),m=Math.round((hrs*60)%60);
   let t='';if(d)t+=d+'d ';t+=h+'h '+m+'m';
   document.getElementById('etaTransit').textContent=t+` @ ${spd} kn`;
@@ -2181,18 +2198,7 @@ function calcETA(){
   }
   document.getElementById('etaBox').classList.add('show');
 }
-function calcReqSpd(){
-  if(!routeData)return;
-  const dep=document.getElementById('dep2').value,arr=document.getElementById('arr2').value;
-  if(!dep||!arr)return;
-  const hrs=(new Date(arr+':00Z')-new Date(dep+':00Z'))/3600000;
-  if(hrs<=0){document.getElementById('reqSpd').textContent='INVALID';document.getElementById('spdBox').classList.add('show');return;}
-  const spd=routeData.distance_nm/hrs;
-  document.getElementById('reqSpd').textContent=spd.toFixed(1)+' KNOTS';
-  const note=spd>25?'⚠ Exceeds typical max':spd>20?'⚡ High-speed service':spd>14?'✓ Fast cargo':spd>10?'✓ Standard laden':'✓ Slow steaming';
-  document.getElementById('reqNote').textContent=note;
-  document.getElementById('spdBox').classList.add('show');
-}
+
 
 // ── MISC ──────────────────────────────────────────────────────────────────────
 function showErr(m){const e=document.getElementById('errBox');e.textContent='⚠ '+m;e.classList.add('show');}
@@ -2219,7 +2225,6 @@ function clearAll(){
   if(dMark){map.removeLayer(dMark);dMark=null;}
   clearWpMarkers();
   document.getElementById('resSec').style.display='none';
-  // etaSec always visible
   document.getElementById('addWpSec').style.display='none';
   setAddWpMode(false);
   clearImport();
@@ -2230,15 +2235,19 @@ function clearAll(){
   document.getElementById('dragHint').classList.remove('show');
   document.getElementById('calcBtn').textContent='⬡ CALCULATE ROUTE';
   document.getElementById('bEtaItem').style.display='none';
+  document.getElementById('etaBox').classList.remove('show');
+  document.getElementById('etaTransit').textContent='—';
+  document.getElementById('etaArr').textContent='';
   hideErr(); map.setView([20,10],2);
 }
 
-// Default times
-const now=new Date();
-const pad=n=>String(n).padStart(2,'0');
-const lt=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
-document.getElementById('depTime').value=lt;
-document.getElementById('dep2').value=lt;
+// Set departure time default to current time
+(function setDefaultDeparture(){
+  const now=new Date();
+  const pad=n=>String(n).padStart(2,'0');
+  const lt=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  document.getElementById('depTime').value=lt;
+})();
 </script>
 </body>
 </html>
