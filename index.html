@@ -161,6 +161,45 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .notice a{color:var(--accent-l);text-decoration:none}
 .notice strong{color:var(--text)}
 
+/* ── WEATHER LEGEND ── */
+.wx-legend{position:absolute;bottom:60px;left:60px;background:rgba(10,15,24,.92);
+  border:1px solid var(--border2);padding:8px 11px;z-index:600;border-radius:3px;
+  backdrop-filter:blur(4px);min-width:160px}
+.wx-legend-title{font-family:var(--mono);font-size:9px;color:var(--accent-l);
+  letter-spacing:2px;text-transform:uppercase;margin-bottom:2px}
+
+/* ── SIMULATION PANEL ── */
+.sim-panel{position:absolute;bottom:52px;left:50%;transform:translateX(-50%);
+  background:rgba(10,15,24,.96);border:1px solid var(--accent-l);border-radius:4px;
+  padding:10px 14px;z-index:700;min-width:480px;max-width:680px;width:90%;
+  backdrop-filter:blur(8px);box-shadow:0 -4px 24px rgba(0,0,0,.5)}
+.sim-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.sim-title{font-family:var(--mono);font-size:10px;color:var(--accent-l);letter-spacing:2px;text-transform:uppercase}
+.sim-time{font-family:var(--mono);font-size:11px;color:var(--gold);font-weight:bold}
+.sim-close{background:transparent;border:none;color:var(--text-dim);font-size:14px;cursor:pointer;padding:0 4px;transition:color .1s}
+.sim-close:hover{color:var(--red)}
+.sim-controls{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.sim-btn{padding:5px 14px;background:rgba(33,150,243,.15);border:1px solid var(--accent-l);
+  color:var(--accent-l);font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:2px;
+  letter-spacing:1px;text-transform:uppercase;transition:all .15s}
+.sim-btn:hover{background:rgba(33,150,243,.3)}
+.sim-btn.playing{border-color:var(--gold);color:var(--gold);background:rgba(245,158,11,.12)}
+.sim-speed-row{display:flex;align-items:center;gap:5px}
+.sim-lbl{font-family:var(--mono);font-size:8px;color:var(--text-dim);letter-spacing:1px;text-transform:uppercase;white-space:nowrap}
+.sim-select{background:var(--panel2);border:1px solid var(--border2);color:var(--text);
+  font-family:var(--mono);font-size:9px;padding:3px 5px;border-radius:2px;cursor:pointer}
+.sim-scrubber-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.sim-scrubber{flex:1;height:4px;accent-color:var(--accent-l);cursor:pointer}
+.sim-progress-bar{height:3px;background:var(--border2);border-radius:2px;overflow:hidden}
+.sim-progress-fill{height:100%;background:linear-gradient(90deg,var(--accent-l),var(--green));width:0%;transition:width .3s;border-radius:2px}
+.wx-bft-badge{display:inline-block;padding:1px 5px;border-radius:2px;font-weight:bold;font-size:8px}
+.wx-clim{color:var(--text-dim);font-style:italic}
+.wx-route-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:8px;margin-top:6px}
+.wx-route-table th{color:var(--text-dim);padding:3px 4px;text-align:left;border-bottom:1px solid var(--border2);letter-spacing:1px;text-transform:uppercase}
+.wx-route-table td{padding:3px 4px;border-bottom:1px solid var(--border);color:var(--text)}
+.wx-route-table tr:last-child td{border-bottom:none}
+.wx-route-table tr:hover td{background:rgba(33,150,243,.05)}
+
 /* ── FLOATING OVERLAY TOOLBAR ── */
 .overlay-toolbar{position:absolute;top:80px;left:10px;z-index:700;display:flex;flex-direction:column;gap:4px}
 .ovt-btn{width:36px;height:36px;background:rgba(10,15,24,.92);border:1px solid var(--border2);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .15s;backdrop-filter:blur(4px);color:var(--text-dim);position:relative}
@@ -541,7 +580,72 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       🧭
       <span class="ovt-tooltip">NAUTICAL CHART (OPENSEAMAP)</span>
     </button>
+    <button class="ovt-btn" id="btnWind" onclick="toggleWeather('wind')" title="Wind">
+      💨
+      <span class="ovt-tooltip">WIND (BEAUFORT)</span>
+    </button>
+    <button class="ovt-btn" id="btnWave" onclick="toggleWeather('wave')" title="Wave height">
+      🌊
+      <span class="ovt-tooltip">WAVE HEIGHT (M)</span>
+    </button>
+    <button class="ovt-btn" id="btnCurrent" onclick="toggleWeather('current')" title="Ocean current">
+      🌀
+      <span class="ovt-tooltip">OCEAN CURRENT (KN)</span>
+    </button>
   </div>
+
+  <!-- Weather canvas overlay (sits on top of map, below markers) -->
+  <canvas id="wxCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:400"></canvas>
+
+  <!-- Weather legend -->
+  <div class="wx-legend" id="wxLegend" style="display:none">
+    <div class="wx-legend-title" id="wxLegendTitle">WIND — BEAUFORT</div>
+    <canvas id="wxLegendBar" width="140" height="12" style="display:block;border-radius:2px;margin:4px 0"></canvas>
+    <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--text-dim)">
+      <span id="wxLegendMin">0</span><span id="wxLegendMax">12 Bft</span>
+    </div>
+    <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:4px" id="wxLegendNote"></div>
+  </div>
+
+  <!-- Simulation panel (floating, bottom of map above route bar) -->
+  <div class="sim-panel" id="simPanel" style="display:none">
+    <div class="sim-top">
+      <div class="sim-title">🚢 VOYAGE SIMULATION</div>
+      <div class="sim-time" id="simTimeDisplay">—</div>
+      <button class="sim-close" onclick="stopSimulation()">✕</button>
+    </div>
+    <div class="sim-controls">
+      <button class="sim-btn" id="simPlayBtn" onclick="toggleSimPlayPause()">▶ PLAY</button>
+      <div class="sim-speed-row">
+        <span class="sim-lbl">SPEED</span>
+        <select class="sim-select" id="simSpeed" onchange="updateSimSpeed()">
+          <option value="1">1×</option>
+          <option value="5">5×</option>
+          <option value="10" selected>10×</option>
+          <option value="50">50×</option>
+          <option value="200">200×</option>
+        </select>
+      </div>
+      <div class="sim-speed-row">
+        <span class="sim-lbl">STEP</span>
+        <select class="sim-select" id="simStep">
+          <option value="6">6h</option>
+          <option value="12" selected>12h</option>
+          <option value="24">24h</option>
+        </select>
+      </div>
+    </div>
+    <div class="sim-scrubber-row">
+      <span class="sim-lbl" id="simPct">0%</span>
+      <input type="range" class="sim-scrubber" id="simScrubber" min="0" max="100" value="0" oninput="scrubSimulation(this.value)">
+      <span class="sim-lbl" id="simEtaLabel">ETA —</span>
+    </div>
+    <div class="sim-progress-bar"><div class="sim-progress-fill" id="simProgressFill"></div></div>
+  </div>
+
+  <!-- Weather along route panel (shown after weather load) -->
+  <div id="wxRouteSec" style="display:none"></div>
+
   <div class="map-ov" id="mapOv">
     <div class="ov-row"><span>FROM</span><b id="ovFrom">—</b></div>
     <div class="ov-row"><span>TO</span><b id="ovTo">—</b></div>
@@ -1658,7 +1762,623 @@ function rebuildMarkersFromState(ecaTrans){
 }
 
 
-// ── PHASE 3 — OVERLAYS ────────────────────────────────────────────────────────
+// ── PHASE 4 — WEATHER ENGINE ──────────────────────────────────────────────────
+
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const WX_FORECAST_DAYS = 7;   // Open-Meteo free forecast horizon
+const WX_CLIM_MONTH_AVG = [   // Climatological monthly avg wind speed (m/s) per ocean basin
+  // [Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec]
+  // North Atlantic
+  {name:'N Atlantic',lat:[30,65],lon:[-80,0],   avg:[9,9,8,7,6,6,6,6,7,8,9,9]},
+  {name:'S Atlantic',lat:[-60,30],lon:[-70,20],  avg:[7,7,6,6,6,7,7,7,7,7,7,7]},
+  {name:'N Pacific', lat:[30,65],lon:[120,240],  avg:[9,8,8,7,6,6,6,7,7,8,9,9]},
+  {name:'S Pacific', lat:[-60,30],lon:[140,290], avg:[7,7,7,7,7,7,7,7,7,7,7,7]},
+  {name:'Indian',    lat:[-60,30],lon:[20,120],  avg:[6,6,6,7,8,9,8,8,7,6,6,6]},
+  {name:'Arctic',    lat:[65,90], lon:[-180,180],avg:[8,8,7,6,5,4,4,5,6,7,8,8]},
+];
+
+// Beaufort scale — m/s thresholds
+const BEAUFORT_THRESHOLDS=[0,0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.6];
+const BEAUFORT_COLORS=['#0a0f18','#05326b','#0a4e8a','#0e6ea8','#178bc7','#22aadb',
+  '#7dd4e8','#b5e8b0','#f5e642','#f5a020','#e05520','#c01010','#800000'];
+
+function msToBeaufort(ms){
+  for(let i=BEAUFORT_THRESHOLDS.length-1;i>=0;i--){
+    if(ms>=BEAUFORT_THRESHOLDS[i]) return i;
+  }
+  return 0;
+}
+function bftColor(bft){return BEAUFORT_COLORS[Math.min(bft,12)];}
+function waveColor(hm){
+  // 0m=deep blue, 2m=teal, 4m=yellow, 6m+=red
+  const t=Math.min(hm/7,1);
+  const stops=[[14,30,80],[0,160,160],[220,220,0],[220,50,0]];
+  const i=Math.floor(t*3), f=t*3-i;
+  const a=stops[Math.min(i,2)],b=stops[Math.min(i+1,3)];
+  return `rgba(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)},0.65)`;
+}
+function currentColor(kn){
+  const t=Math.min(kn/3,1);
+  const r=Math.round(10+(0-10)*t), g=Math.round(180+(100-180)*t), b=Math.round(220+(220-220)*t);
+  return `rgba(${r},${g},${b},0.7)`;
+}
+
+// ── WEATHER STATE ─────────────────────────────────────────────────────────────
+let wxMode=null;          // 'wind'|'wave'|'current'|null
+let wxGrid=null;          // fetched grid data
+let wxGridTime=null;      // ISO timestamp of fetch
+let wxAnimFrame=null;     // requestAnimationFrame handle
+let wxParticles=[];       // particle array for wind/current
+let wxCanvas=null;        // canvas element
+let wxCtx=null;           // canvas 2d context
+
+// ── CLIMATOLOGICAL FALLBACK ───────────────────────────────────────────────────
+function getClimWind(lat,lon,dateStr){
+  const month=new Date(dateStr).getMonth();
+  for(const b of WX_CLIM_MONTH_AVG){
+    if(lat>=b.lat[0]&&lat<=b.lat[1]){
+      const loNorm=((lon%360)+360)%360;
+      const lo0=((b.lon[0]%360)+360)%360;
+      const lo1=((b.lon[1]%360)+360)%360;
+      if(loNorm>=lo0||loNorm<=lo1){return{spd:b.avg[month],isClim:true};}
+    }
+  }
+  return{spd:6,isClim:true}; // global default 6 m/s
+}
+
+// ── OPEN-METEO FETCH ──────────────────────────────────────────────────────────
+async function fetchWeatherGrid(bounds, simDateISO){
+  // Build a grid of sample points covering the map bounds
+  // Density scales with zoom: coarser at low zoom, denser at high zoom
+  const zoom=map.getZoom();
+  const step=zoom<=3?10:zoom<=5?5:zoom<=7?2:zoom<=9?1:0.5; // degrees
+
+  const points=[];
+  const south=Math.max(bounds.getSouth(),-80);
+  const north=Math.min(bounds.getNorth(),80);
+  const west=bounds.getWest();
+  const east=bounds.getEast();
+
+  for(let la=Math.floor(south/step)*step;la<=north;la+=step){
+    for(let lo=Math.floor(west/step)*step;lo<=east;lo+=step){
+      points.push([parseFloat(la.toFixed(2)),parseFloat(lo.toFixed(2))]);
+    }
+  }
+  if(points.length===0) return null;
+
+  const startDate=simDateISO?simDateISO.slice(0,10):new Date().toISOString().slice(0,10);
+  const endDate=new Date(new Date(startDate).getTime()+6*86400000).toISOString().slice(0,10);
+  const isWithinForecast=!simDateISO||
+    (new Date(simDateISO)-new Date()<WX_FORECAST_DAYS*86400000);
+
+  if(!isWithinForecast){
+    // Beyond 7-day forecast — use climatological data
+    return buildClimGrid(points, simDateISO||new Date().toISOString());
+  }
+
+  // Batch fetch from Open-Meteo — up to 10 points per request (free tier)
+  // Use a single-point fetch for the center of the visible area instead
+  // and interpolate across the grid (avoids rate limiting)
+  const centerLat=((north+south)/2).toFixed(2);
+  const centerLon=((west+east)/2).toFixed(2);
+
+  const vars = wxMode==='wave'
+    ? 'wave_height,wave_direction'
+    : wxMode==='current'
+    ? 'ocean_current_velocity,ocean_current_direction'
+    : 'wind_speed_10m,wind_direction_10m';
+
+  const url=`https://api.open-meteo.com/v1/forecast?latitude=${centerLat}&longitude=${centerLon}`+
+    `&hourly=${vars}&wind_speed_unit=ms&timezone=UTC&forecast_days=7`;
+
+  try{
+    const resp=await fetch(url,{signal:AbortSignal.timeout(15000)});
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data=await resp.json();
+    return buildGridFromForecast(data, points, simDateISO, vars);
+  } catch(e){
+    console.warn('Open-Meteo fetch failed, using climatology:',e);
+    return buildClimGrid(points, simDateISO||new Date().toISOString());
+  }
+}
+
+function buildGridFromForecast(data, points, simDateISO, vars){
+  // Find the closest hourly index to simDate
+  const times=data.hourly?.time||[];
+  const simMs=simDateISO?new Date(simDateISO).getTime():Date.now();
+  let closestIdx=0, minDiff=Infinity;
+  times.forEach((t,i)=>{
+    const diff=Math.abs(new Date(t).getTime()-simMs);
+    if(diff<minDiff){minDiff=diff;closestIdx=i;}
+  });
+
+  const h=data.hourly;
+  let spd, dir;
+  if(wxMode==='wave'){
+    spd=h.wave_height?.[closestIdx]??2;
+    dir=h.wave_direction?.[closestIdx]??0;
+  } else if(wxMode==='current'){
+    spd=(h.ocean_current_velocity?.[closestIdx]??0.5)/0.514444; // m/s to knots
+    dir=h.ocean_current_direction?.[closestIdx]??0;
+  } else {
+    spd=h.wind_speed_10m?.[closestIdx]??6;
+    dir=h.wind_direction_10m?.[closestIdx]??270;
+  }
+
+  return points.map(([la,lo])=>({la,lo,spd,dir,isClim:false}));
+}
+
+function buildClimGrid(points, dateISO){
+  return points.map(([la,lo])=>{
+    const {spd}=getClimWind(la,lo,dateISO);
+    return{la,lo,spd,dir:Math.random()*360,isClim:true};
+  });
+}
+
+// ── WEATHER TOGGLE ────────────────────────────────────────────────────────────
+async function toggleWeather(mode){
+  const btns={wind:'btnWind',wave:'btnWave',current:'btnCurrent'};
+  // If same mode clicked again — turn off
+  if(wxMode===mode){
+    wxMode=null;
+    Object.values(btns).forEach(id=>document.getElementById(id).classList.remove('active'));
+    stopParticles();
+    document.getElementById('wxLegend').style.display='none';
+    // Remove weather route section from resSec
+    const wxSec=document.getElementById('wxRouteInner');
+    if(wxSec) wxSec.remove();
+    return;
+  }
+  wxMode=mode;
+  Object.entries(btns).forEach(([k,id])=>{
+    document.getElementById(id).classList.toggle('active',k===mode);
+  });
+  document.getElementById(btns[mode]).textContent='⏳';
+  await loadAndRenderWeather();
+  document.getElementById(btns[mode]).textContent=
+    mode==='wind'?'💨':mode==='wave'?'🌊':'🌀';
+}
+
+async function loadAndRenderWeather(simDateISO=null){
+  if(!wxMode) return;
+  const bounds=map.getBounds();
+  const depVal=document.getElementById('depTime').value;
+  const dateToUse=simDateISO||(depVal?new Date(depVal+':00Z').toISOString():new Date().toISOString());
+
+  showHint('LOADING WEATHER DATA…');
+  wxGrid=await fetchWeatherGrid(bounds,dateToUse);
+  hideHint();
+  if(!wxGrid||wxGrid.length===0) return;
+
+  stopParticles();
+  initCanvas();
+  startParticles();
+  updateWxLegend();
+  if(routeData) buildWeatherRouteTable(dateToUse);
+}
+
+// ── CANVAS SETUP ──────────────────────────────────────────────────────────────
+function initCanvas(){
+  wxCanvas=document.getElementById('wxCanvas');
+  const mapDiv=document.getElementById('map');
+  wxCanvas.width=mapDiv.offsetWidth;
+  wxCanvas.height=mapDiv.offsetHeight;
+  wxCtx=wxCanvas.getContext('2d');
+  // Resize canvas when map changes
+  map.on('resize',()=>{
+    wxCanvas.width=mapDiv.offsetWidth;
+    wxCanvas.height=mapDiv.offsetHeight;
+  });
+}
+
+// ── PARTICLE SYSTEM ───────────────────────────────────────────────────────────
+const PARTICLE_COUNT=800;
+const PARTICLE_SPEED=0.6;
+const PARTICLE_FADE=0.96;
+const PARTICLE_AGE_MAX=120;
+
+function initParticles(){
+  wxParticles=[];
+  if(!wxCtx) return;
+  const w=wxCanvas.width, h=wxCanvas.height;
+  for(let i=0;i<PARTICLE_COUNT;i++){
+    wxParticles.push(randomParticle(w,h));
+  }
+}
+
+function randomParticle(w,h){
+  return{
+    x:Math.random()*w,
+    y:Math.random()*h,
+    age:Math.floor(Math.random()*PARTICLE_AGE_MAX),
+    alpha:Math.random(),
+  };
+}
+
+function getGridValueAtPixel(px,py){
+  // Convert pixel to lat/lon
+  const latlng=map.containerPointToLatLng([px,py]);
+  const lat=latlng.lat, lon=latlng.lng;
+  // Find closest grid point
+  let best=null, bestDist=Infinity;
+  for(const pt of wxGrid){
+    const d=(pt.la-lat)**2+(pt.lo-lon)**2;
+    if(d<bestDist){bestDist=d;best=pt;}
+  }
+  return best||{spd:0,dir:0,isClim:false};
+}
+
+function startParticles(){
+  initParticles();
+  animateParticles();
+}
+
+function stopParticles(){
+  if(wxAnimFrame){cancelAnimationFrame(wxAnimFrame);wxAnimFrame=null;}
+  if(wxCtx){wxCtx.clearRect(0,0,wxCanvas.width,wxCanvas.height);}
+  wxParticles=[];
+}
+
+function animateParticles(){
+  if(!wxCtx||!wxGrid) return;
+  const w=wxCanvas.width, h=wxCanvas.height;
+
+  // Fade existing trails
+  wxCtx.fillStyle='rgba(10,15,24,0.12)';
+  wxCtx.fillRect(0,0,w,h);
+
+  wxParticles.forEach((p,i)=>{
+    // Get wind/current at this pixel
+    const val=getGridValueAtPixel(p.x,p.y);
+    const spd=val.spd, dir=val.dir;
+
+    // Convert direction to dx/dy
+    // Meteorological convention: direction FROM which wind blows
+    const rad=(dir*Math.PI/180);
+    const dx= Math.sin(rad)*PARTICLE_SPEED*(wxMode==='wave'?0.4:1);
+    const dy=-Math.cos(rad)*PARTICLE_SPEED*(wxMode==='wave'?0.4:1);
+
+    // Speed multiplier (faster particles for stronger wind/current)
+    const speedMult=wxMode==='wind'?msToBeaufort(spd)/6:
+                    wxMode==='wave'?spd/4:
+                    spd/2;
+    const vx=dx*Math.max(0.3,speedMult);
+    const vy=dy*Math.max(0.3,speedMult);
+
+    // Draw particle trail
+    const alpha=Math.min(p.alpha,0.9)*(val.isClim?0.4:0.8);
+    const color=wxMode==='wind'?bftColor(msToBeaufort(spd)):
+                wxMode==='wave'?waveColor(spd):
+                currentColor(spd);
+
+    wxCtx.strokeStyle=color;
+    wxCtx.globalAlpha=alpha;
+    wxCtx.lineWidth=wxMode==='current'?1.5:1;
+    wxCtx.beginPath();
+    wxCtx.moveTo(p.x,p.y);
+    wxCtx.lineTo(p.x+vx*6,p.y+vy*6);
+    wxCtx.stroke();
+
+    // Update particle
+    p.x+=vx;
+    p.y+=vy;
+    p.age++;
+    p.alpha*=PARTICLE_FADE;
+
+    // Reset if off screen or too old
+    if(p.x<0||p.x>w||p.y<0||p.y>h||p.age>PARTICLE_AGE_MAX||p.alpha<0.05){
+      wxParticles[i]=randomParticle(w,h);
+    }
+  });
+
+  wxCtx.globalAlpha=1;
+  // Re-render when map moves
+  wxAnimFrame=requestAnimationFrame(animateParticles);
+}
+
+// Re-render weather when map is dragged or zoomed
+function onMapMoveForWeather(){
+  if(!wxMode) return;
+  stopParticles();
+  loadAndRenderWeather(simCurrentDate);
+}
+
+// ── WEATHER LEGEND ────────────────────────────────────────────────────────────
+function updateWxLegend(){
+  const leg=document.getElementById('wxLegend');
+  const title=document.getElementById('wxLegendTitle');
+  const bar=document.getElementById('wxLegendBar');
+  const minLbl=document.getElementById('wxLegendMin');
+  const maxLbl=document.getElementById('wxLegendMax');
+  const note=document.getElementById('wxLegendNote');
+  leg.style.display='block';
+
+  const ctx=bar.getContext('2d');
+  const grad=ctx.createLinearGradient(0,0,140,0);
+
+  if(wxMode==='wind'){
+    title.textContent='WIND — BEAUFORT';
+    for(let i=0;i<=12;i++) grad.addColorStop(i/12,bftColor(i));
+    minLbl.textContent='0';maxLbl.textContent='Bft 12';
+    note.textContent='Particles = wind direction';
+  } else if(wxMode==='wave'){
+    title.textContent='WAVE HEIGHT (M)';
+    for(let i=0;i<=7;i++) grad.addColorStop(i/7,waveColor(i));
+    minLbl.textContent='0m';maxLbl.textContent='7m+';
+    note.textContent='Particles = wave direction';
+  } else {
+    title.textContent='OCEAN CURRENT (KN)';
+    for(let i=0;i<=3;i++) grad.addColorStop(i/3,currentColor(i));
+    minLbl.textContent='0 kn';maxLbl.textContent='3 kn+';
+    note.textContent='Particles = current direction';
+  }
+  ctx.fillStyle=grad;ctx.fillRect(0,0,140,12);
+}
+
+// ── WEATHER ALONG ROUTE TABLE ─────────────────────────────────────────────────
+async function buildWeatherRouteTable(baseDateISO){
+  if(!routeData||wpCoords.length<2) return;
+  const spd=parseFloat(document.getElementById('spdInp').value)||12;
+  const depMs=new Date(baseDateISO).getTime();
+
+  // Sample every ~Nth waypoint (max 20 rows for readability)
+  const step=Math.max(1,Math.floor(wpCoords.length/20));
+  const rows=[];
+  let cumDistNm=0;
+
+  for(let i=0;i<wpCoords.length;i+=step){
+    if(i>0){
+      const [pLon,pLat]=wpCoords[i-step]||wpCoords[0];
+      const [cLon,cLat]=wpCoords[i];
+      cumDistNm+=GEO.kmToNm(GEO.gcDistKm(pLat,pLon,cLat,cLon))*step;
+    }
+    const etaMs=depMs+(cumDistNm/spd)*3600000;
+    const etaDate=new Date(etaMs);
+    const [lon,lat]=wpCoords[i];
+    const daysSinceDep=(etaMs-depMs)/86400000;
+    const isWithinForecast=daysSinceDep<=WX_FORECAST_DAYS;
+
+    // Fetch weather for this point and time
+    let windSpd=6,waveH=1.5,currentSpd=0.5,isClim=!isWithinForecast;
+    if(isWithinForecast){
+      try{
+        const isoDate=etaDate.toISOString().slice(0,10);
+        const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(2)}&longitude=${lon.toFixed(2)}`+
+          `&hourly=wind_speed_10m,wave_height&wind_speed_unit=ms&timezone=UTC&forecast_days=7&start_date=${isoDate}&end_date=${isoDate}`;
+        const r=await fetch(url,{signal:AbortSignal.timeout(8000)});
+        if(r.ok){
+          const d=await r.json();
+          windSpd=d.hourly?.wind_speed_10m?.[0]??6;
+          waveH=d.hourly?.wave_height?.[0]??1.5;
+        }
+      }catch(e){}
+    } else {
+      const clim=getClimWind(lat,lon,etaDate.toISOString());
+      windSpd=clim.spd;
+      isClim=true;
+    }
+
+    const bft=msToBeaufort(windSpd);
+    rows.push({
+      idx:i+1,lat,lon,
+      eta:etaDate.toUTCString().slice(5,22),
+      distNm:Math.round(cumDistNm),
+      bft,windKn:(windSpd*1.944).toFixed(1),
+      waveH:waveH.toFixed(1),
+      currentSpd:currentSpd.toFixed(1),
+      isClim
+    });
+  }
+  renderWeatherRouteTable(rows);
+}
+
+function renderWeatherRouteTable(rows){
+  // Remove old table if exists
+  const old=document.getElementById('wxRouteInner');
+  if(old) old.remove();
+
+  const resSec=document.getElementById('resSec');
+  if(!resSec) return;
+
+  const div=document.createElement('div');
+  div.id='wxRouteInner';
+  div.style.marginTop='10px';
+  div.innerHTML=`
+    <div style="font-family:var(--mono);font-size:9px;color:var(--accent-l);letter-spacing:2px;
+      text-transform:uppercase;margin-bottom:4px;display:flex;justify-content:space-between">
+      <span>🌦 WEATHER ALONG ROUTE</span>
+      <button onclick="document.getElementById('wxRouteInner').remove()"
+        style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:10px">✕</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:7px;color:var(--text-dim);margin-bottom:4px">
+      ★ = climatological estimate (beyond 7-day forecast)
+    </div>
+    <div style="overflow-x:auto">
+    <table class="wx-route-table">
+      <thead><tr>
+        <th>WP</th><th>ETA (UTC)</th><th>DIST</th>
+        <th>WIND (Bft/kn)</th><th>WAVE (m)</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r=>{
+          const bftColor2=bftColor(r.bft);
+          const climTag=r.isClim?'<span style="color:var(--text-dim)">★</span>':'';
+          return `<tr>
+            <td>${r.idx}</td>
+            <td style="white-space:nowrap;font-size:7px">${r.eta}</td>
+            <td>${r.distNm}</td>
+            <td><span class="wx-bft-badge" style="background:${bftColor2};color:#fff">${r.bft}</span>
+              ${r.windKn}kn ${climTag}</td>
+            <td>${r.waveH}m ${climTag}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`;
+  resSec.appendChild(div);
+}
+
+// ── VOYAGE SIMULATION ─────────────────────────────────────────────────────────
+let simActive=false;
+let simPlaying=false;
+let simProgress=0;      // 0–100
+let simCurrentDate=null;
+let simIntervalId=null;
+let simVesselMarker=null;
+let wxCoords=null;      // alias to wpCoords during simulation
+
+const VESSEL_ICON=L.divIcon({
+  className:'',iconSize:[24,24],iconAnchor:[12,12],
+  html:`<div style="font-size:20px;line-height:1;filter:drop-shadow(0 0 4px #42a5f5)">🚢</div>`
+});
+
+function startSimulation(){
+  if(!routeData||wpCoords.length<2) return;
+  const spd=parseFloat(document.getElementById('spdInp').value);
+  if(!spd){showErr('Enter vessel speed to run simulation.');return;}
+  wxCoords=wpCoords;
+  simActive=true;
+  simProgress=0;
+  simPlaying=false;
+  const dep=document.getElementById('depTime').value;
+  simCurrentDate=dep?new Date(dep+':00Z'):new Date();
+  document.getElementById('simPanel').style.display='block';
+  updateSimDisplay();
+  // Place vessel at origin
+  const [oLon,oLat]=wpCoords[0];
+  if(simVesselMarker) map.removeLayer(simVesselMarker);
+  simVesselMarker=L.marker([oLat,oLon],{icon:VESSEL_ICON,zIndexOffset:2000}).addTo(map);
+  // Load weather for departure time
+  if(wxMode) loadAndRenderWeather(simCurrentDate.toISOString());
+}
+
+function stopSimulation(){
+  simActive=false;
+  simPlaying=false;
+  clearInterval(simIntervalId);
+  if(simVesselMarker){map.removeLayer(simVesselMarker);simVesselMarker=null;}
+  document.getElementById('simPanel').style.display='none';
+  document.getElementById('simPlayBtn').textContent='▶ PLAY';
+  document.getElementById('simPlayBtn').classList.remove('playing');
+}
+
+function toggleSimPlayPause(){
+  if(!simActive) return;
+  simPlaying=!simPlaying;
+  const btn=document.getElementById('simPlayBtn');
+  btn.textContent=simPlaying?'⏸ PAUSE':'▶ PLAY';
+  btn.classList.toggle('playing',simPlaying);
+  if(simPlaying) runSimStep();
+}
+
+function updateSimSpeed(){
+  if(simPlaying){clearInterval(simIntervalId);runSimStep();}
+}
+
+function runSimStep(){
+  clearInterval(simIntervalId);
+  const speedMult=parseInt(document.getElementById('simSpeed').value)||10;
+  const stepHours=parseInt(document.getElementById('simStep').value)||12;
+  // Interval in ms: stepHours simulated time plays in 1s/speedMult
+  const intervalMs=Math.max(100,1000/speedMult);
+
+  simIntervalId=setInterval(()=>{
+    if(!simPlaying){clearInterval(simIntervalId);return;}
+    advanceSimulation(stepHours);
+  },intervalMs);
+}
+
+function advanceSimulation(hours){
+  const spd=parseFloat(document.getElementById('spdInp').value)||12;
+  const totalDistNm=calcTotalDistNm();
+  const totalHours=totalDistNm/spd;
+
+  simCurrentDate=new Date(simCurrentDate.getTime()+hours*3600000);
+  const elapsedHours=(simCurrentDate-(new Date(document.getElementById('depTime').value+':00Z')))/3600000;
+  simProgress=Math.min(100,(elapsedHours/totalHours)*100);
+
+  updateSimDisplay();
+  moveVesselToProgress(simProgress/100);
+  if(wxMode) loadAndRenderWeather(simCurrentDate.toISOString());
+
+  if(simProgress>=100){
+    simPlaying=false;clearInterval(simIntervalId);
+    document.getElementById('simPlayBtn').textContent='▶ PLAY';
+    document.getElementById('simPlayBtn').classList.remove('playing');
+  }
+}
+
+function scrubSimulation(pct){
+  const spd=parseFloat(document.getElementById('spdInp').value)||12;
+  const totalDistNm=calcTotalDistNm();
+  const totalHours=totalDistNm/spd;
+  const dep=document.getElementById('depTime').value;
+  const depMs=new Date(dep+':00Z').getTime();
+
+  simProgress=parseFloat(pct);
+  simCurrentDate=new Date(depMs+(simProgress/100)*totalHours*3600000);
+  updateSimDisplay();
+  moveVesselToProgress(simProgress/100);
+  if(wxMode) loadAndRenderWeather(simCurrentDate.toISOString());
+}
+
+function moveVesselToProgress(frac){
+  if(!simVesselMarker||wpCoords.length<2) return;
+  // Find position along route at fraction frac (0=origin, 1=dest)
+  const totalNm=calcTotalDistNm();
+  const targetNm=frac*totalNm;
+  let cumNm=0;
+  for(let i=0;i<wpCoords.length-1;i++){
+    const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
+    const segNm=GEO.kmToNm(GEO.gcDistKm(la1,lo1,la2,lo2));
+    if(cumNm+segNm>=targetNm){
+      const t=(targetNm-cumNm)/segNm;
+      const lat=la1+(la2-la1)*t;
+      const lon=lo1+(lo2-lo1)*t;
+      simVesselMarker.setLatLng([lat,lon]);
+      return;
+    }
+    cumNm+=segNm;
+  }
+  const last=wpCoords[wpCoords.length-1];
+  simVesselMarker.setLatLng([last[1],last[0]]);
+}
+
+function updateSimDisplay(){
+  const dateStr=simCurrentDate?simCurrentDate.toUTCString().slice(5,25):'—';
+  document.getElementById('simTimeDisplay').textContent=dateStr;
+  document.getElementById('simProgressFill').style.width=simProgress.toFixed(1)+'%';
+  document.getElementById('simPct').textContent=simProgress.toFixed(0)+'%';
+  document.getElementById('simScrubber').value=simProgress;
+  // ETA remaining
+  const spd=parseFloat(document.getElementById('spdInp').value)||12;
+  const totalDistNm=calcTotalDistNm();
+  const totalHours=totalDistNm/spd;
+  const remainHours=totalHours*(1-simProgress/100);
+  const d=Math.floor(remainHours/24),h=Math.floor(remainHours%24);
+  document.getElementById('simEtaLabel').textContent=
+    simProgress>=100?'ARRIVED':`-${d}d ${h}h`;
+}
+
+// Add Simulate button to route metrics (shown after route calculated)
+function addSimulateButton(){
+  if(document.getElementById('simStartBtn')) return;
+  const resSec=document.getElementById('resSec');
+  if(!resSec) return;
+  const btn=document.createElement('button');
+  btn.id='simStartBtn';
+  btn.className='calc-btn';
+  btn.style.cssText='margin-top:8px;font-size:11px;padding:8px;background:rgba(16,185,129,.1);border-color:var(--green);color:var(--green)';
+  btn.innerHTML='🚢 SIMULATE VOYAGE';
+  btn.onclick=startSimulation;
+  resSec.appendChild(btn);
+}
+
+// Hook into map move/zoom to refresh weather particles
+map.on('moveend zoomend',()=>{
+  if(wxMode) onMapMoveForWeather();
+});
+
+
 
 // ── OPENSEAMAP NAUTICAL LAYER ─────────────────────────────────────────────────
 let osmNauticalLayer=null;
@@ -1853,7 +2573,9 @@ function renderRoute(fitBounds=true){
 
   document.getElementById('etaBox').classList.remove('show');
   document.getElementById('bEtaItem').style.display='none';
-  document.getElementById('spdInp').value='';
+  // Don't clear speed — it's mandatory and user set it before calculating
+  addSimulateButton();
+  if(wxMode) loadAndRenderWeather(null); // refresh weather if active
 }
 
 // ── WAYPOINT PANEL ────────────────────────────────────────────────────────────
@@ -2211,6 +2933,16 @@ function toggleMob(){
 }
 
 function clearAll(){
+  // Stop weather and simulation
+  stopParticles();
+  stopSimulation();
+  wxMode=null;wxGrid=null;
+  ['btnWind','btnWave','btnCurrent'].forEach(id=>{
+    const b=document.getElementById(id);if(b)b.classList.remove('active');
+  });
+  document.getElementById('wxLegend').style.display='none';
+  const wxSec=document.getElementById('wxRouteInner');if(wxSec)wxSec.remove();
+  const simBtn=document.getElementById('simStartBtn');if(simBtn)simBtn.remove();
   oPort=null;dPort=null;routeData=null;activeVia.clear();
   wpCoords=[];wpDragged=new Set();
   oMode='port';dMode='port';
