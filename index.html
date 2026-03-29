@@ -64,6 +64,9 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .mode-tog{display:flex;margin-bottom:12px;border:1px solid var(--border2);border-radius:2px;overflow:hidden}
 .mode-btn{flex:1;padding:5px;background:transparent;border:none;color:var(--text-dim);font-family:var(--mono);font-size:9px;letter-spacing:1px;cursor:pointer;text-transform:uppercase;transition:all .15s}
 .mode-btn.active{background:rgba(33,150,243,.18);color:var(--accent-l)}
+.field-tog{display:flex;gap:2px}
+.ftb{padding:2px 7px;background:transparent;border:1px solid var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:8px;cursor:pointer;border-radius:2px;letter-spacing:.5px;text-transform:uppercase;transition:all .12s}
+.ftb.active{background:rgba(33,150,243,.15);border-color:var(--accent-l);color:var(--accent-l)}
 .ll-row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .swap-btn{width:100%;margin:3px 0 9px;padding:6px;background:transparent;border:1px dashed var(--border2);color:var(--text-dim);font-family:var(--mono);font-size:9px;cursor:pointer;letter-spacing:2px;text-transform:uppercase;transition:all .15s;border-radius:2px}
 .swap-btn:hover{border-color:var(--accent-l);color:var(--accent-l)}
@@ -261,16 +264,20 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 <!-- ════ SIDEBAR ════ -->
 <div class="sidebar" id="sidebar">
 
-  <!-- VOYAGE INPUTS -->
+  <!-- VOYAGE INPUTS — each field independently port or coordinates -->
   <div class="sb-sec">
     <div class="sec-lbl">🗺 Voyage Inputs</div>
-    <div class="mode-tog">
-      <button class="mode-btn active" id="mPort" onclick="setMode('port')">PORT NAME</button>
-      <button class="mode-btn" id="mCoord" onclick="setMode('coord')">COORDINATES</button>
-    </div>
-    <div id="portMode">
-      <div class="blk">
-        <div class="inp-lbl"><div class="dot-o"></div> ORIGIN PORT</div>
+
+    <!-- ORIGIN -->
+    <div class="blk">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div class="inp-lbl" style="margin:0"><div class="dot-o"></div> ORIGIN</div>
+        <div class="field-tog">
+          <button class="ftb active" id="oModePort" onclick="setFieldMode('o','port')">PORT</button>
+          <button class="ftb" id="oModeCoord" onclick="setFieldMode('o','coord')">COORDS</button>
+        </div>
+      </div>
+      <div id="oPortMode">
         <div class="inp-wrap">
           <input class="inp" id="oInp" type="text" placeholder="Search port…" autocomplete="off"
             oninput="psearch(this,'oAC','o')"
@@ -279,9 +286,27 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
           <div class="ac" id="oAC"></div>
         </div>
       </div>
-      <button class="swap-btn" onclick="swapPorts()">⇅ SWAP ORIGIN / DESTINATION</button>
-      <div class="blk">
-        <div class="inp-lbl"><div class="dot-d"></div> DESTINATION PORT</div>
+      <div id="oCoordMode" class="hidden">
+        <div class="ll-row">
+          <input class="inp" id="oLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
+          <input class="inp" id="oLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
+        </div>
+        <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:3px">Click map to set position</div>
+      </div>
+    </div>
+
+    <button class="swap-btn" onclick="swapPorts()">⇅ SWAP ORIGIN / DESTINATION</button>
+
+    <!-- DESTINATION -->
+    <div class="blk">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div class="inp-lbl" style="margin:0"><div class="dot-d"></div> DESTINATION</div>
+        <div class="field-tog">
+          <button class="ftb active" id="dModePort" onclick="setFieldMode('d','port')">PORT</button>
+          <button class="ftb" id="dModeCoord" onclick="setFieldMode('d','coord')">COORDS</button>
+        </div>
+      </div>
+      <div id="dPortMode">
         <div class="inp-wrap">
           <input class="inp" id="dInp" type="text" placeholder="Search port…" autocomplete="off"
             oninput="psearch(this,'dAC','d')"
@@ -290,22 +315,12 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
           <div class="ac" id="dAC"></div>
         </div>
       </div>
-    </div>
-    <div id="coordMode" class="hidden">
-      <div class="blk">
-        <div class="inp-lbl"><div class="dot-o"></div> ORIGIN (click map)</div>
-        <div class="ll-row">
-          <input class="inp" id="oLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
-          <input class="inp" id="oLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
-        </div>
-      </div>
-      <button class="swap-btn" onclick="swapPorts()">⇅ SWAP</button>
-      <div class="blk">
-        <div class="inp-lbl"><div class="dot-d"></div> DESTINATION (click map)</div>
+      <div id="dCoordMode" class="hidden">
         <div class="ll-row">
           <input class="inp" id="dLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
           <input class="inp" id="dLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
         </div>
+        <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:3px">Click map to set position</div>
       </div>
     </div>
   </div>
@@ -363,6 +378,40 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <button class="clear-btn" onclick="clearAll()">✕ CLEAR ALL</button>
   </div>
 
+  <!-- SPEED / ETA -->
+  <div class="sb-sec" id="etaSec">
+    <div class="sec-lbl">⏱ Speed & ETA</div>
+    <div class="sm-row">
+      <button class="sm-btn active" id="smS" onclick="setSM('speed')">SPEED → ETA</button>
+      <button class="sm-btn" id="smE" onclick="setSM('eta')">ETA → SPEED</button>
+    </div>
+    <div id="mSE">
+      <div class="inp-lbl">VESSEL SPEED</div>
+      <div class="calc-row">
+        <input class="num-inp" id="spdInp" type="number" min="1" max="35" step="0.1" placeholder="e.g. 12.5" oninput="calcETA()">
+        <span class="sfx">KNOTS</span>
+      </div>
+      <div class="inp-lbl">DEPARTURE (UTC)</div>
+      <input type="datetime-local" class="dt-inp" id="depTime" onchange="calcETA()">
+      <div class="eta-box" id="etaBox">
+        <div class="eta-lbl">TRANSIT TIME</div>
+        <div class="eta-val" id="etaTransit">—</div>
+        <div class="eta-arr" id="etaArr"></div>
+      </div>
+    </div>
+    <div id="mES" style="display:none">
+      <div class="inp-lbl">DEPARTURE (UTC)</div>
+      <input type="datetime-local" class="dt-inp" id="dep2" onchange="calcReqSpd()">
+      <div class="inp-lbl">TARGET ARRIVAL (UTC)</div>
+      <input type="datetime-local" class="dt-inp" id="arr2" onchange="calcReqSpd()">
+      <div class="eta-box" id="spdBox">
+        <div class="eta-lbl">REQUIRED SPEED</div>
+        <div class="eta-val" id="reqSpd">—</div>
+        <div class="eta-arr" id="reqNote"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ADD WAYPOINT MODE — shown only after route is calculated -->
   <div class="sb-sec" id="addWpSec" style="display:none">
     <div class="sec-lbl">📍 Edit Waypoints</div>
@@ -402,39 +451,6 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     </div>
   </div>
 
-  <!-- SPEED / ETA -->
-  <div class="sb-sec" id="etaSec" style="display:none">
-    <div class="sec-lbl">⏱ Speed & ETA</div>
-    <div class="sm-row">
-      <button class="sm-btn active" id="smS" onclick="setSM('speed')">SPEED → ETA</button>
-      <button class="sm-btn" id="smE" onclick="setSM('eta')">ETA → SPEED</button>
-    </div>
-    <div id="mSE">
-      <div class="inp-lbl">VESSEL SPEED</div>
-      <div class="calc-row">
-        <input class="num-inp" id="spdInp" type="number" min="1" max="35" step="0.1" placeholder="e.g. 12.5" oninput="calcETA()">
-        <span class="sfx">KNOTS</span>
-      </div>
-      <div class="inp-lbl">DEPARTURE (UTC)</div>
-      <input type="datetime-local" class="dt-inp" id="depTime" onchange="calcETA()">
-      <div class="eta-box" id="etaBox">
-        <div class="eta-lbl">TRANSIT TIME</div>
-        <div class="eta-val" id="etaTransit">—</div>
-        <div class="eta-arr" id="etaArr"></div>
-      </div>
-    </div>
-    <div id="mES" style="display:none">
-      <div class="inp-lbl">DEPARTURE (UTC)</div>
-      <input type="datetime-local" class="dt-inp" id="dep2" onchange="calcReqSpd()">
-      <div class="inp-lbl">TARGET ARRIVAL (UTC)</div>
-      <input type="datetime-local" class="dt-inp" id="arr2" onchange="calcReqSpd()">
-      <div class="eta-box" id="spdBox">
-        <div class="eta-lbl">REQUIRED SPEED</div>
-        <div class="eta-val" id="reqSpd">—</div>
-        <div class="eta-arr" id="reqNote"></div>
-      </div>
-    </div>
-  </div>
 
   <!-- PHASE 2 — IMPORT / EXPORT / COMPARE -->
   <div class="sb-sec" id="p2Sec">
@@ -489,7 +505,8 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
         </div>
       </div>
       <div id="cmpName" style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:6px"></div>
-      <button class="clear-btn" style="margin-top:6px" onclick="clearImport()">✕ CLEAR IMPORTED ROUTE</button>
+      <button class="p2-btn" style="width:100%;margin-top:6px;border-color:var(--accent-l);color:var(--accent-l)" id="recalcImpBtn" onclick="recalcFromImport()" title="Recalculate route using imported route start/end for fair comparison">⬡ RECALCULATE USING IMPORT ENDPOINTS</button>
+      <button class="clear-btn" style="margin-top:5px" onclick="clearImport()">✕ CLEAR IMPORTED ROUTE</button>
     </div>
   </div>
 
@@ -661,7 +678,8 @@ const CAPE_GH_WP={la:-35.0,lo:17.5,name:'Cape of Good Hope approach'};
 const CAPE_HORN_WP={la:-57.0,lo:-68.0,name:'Cape Horn approach'};
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
-let inputMode='port', oPort=null, dPort=null, routeData=null;
+let oMode='port', dMode='port'; // per-field mode: 'port' or 'coord'
+let oPort=null, dPort=null, routeData=null;
 let suezOK=true, panamaOK=true, kielOK=true;
 let speedMode='speed', mapClick='o';
 let activeVia=new Set();
@@ -725,13 +743,15 @@ map.on('click',e=>{
   }
 
   // ── COORDINATE INPUT MODE ─────────────────────────────────────────────────
-  if(inputMode!=='coord') return;
-  if(mapClick==='o'){
+  // Only respond if at least one field is in coord mode
+  if(oMode!=='coord'&&dMode!=='coord') return;
+  if(mapClick==='o'&&oMode==='coord'){
     document.getElementById('oLat').value=lat.toFixed(4);
     document.getElementById('oLon').value=lng.toFixed(4);
-    placeEndMarker('o',lat,lng,'ORIGIN'); mapClick='d';
-    showHint('CLICK TO SET DESTINATION');
-  } else {
+    placeEndMarker('o',lat,lng,'ORIGIN');
+    if(dMode==='coord'){mapClick='d';showHint('CLICK MAP TO SET DESTINATION');}
+    else hideHint();
+  } else if(mapClick==='d'&&dMode==='coord'){
     document.getElementById('dLat').value=lat.toFixed(4);
     document.getElementById('dLon').value=lng.toFixed(4);
     placeEndMarker('d',lat,lng,'DEST'); mapClick='o'; hideHint();
@@ -822,15 +842,27 @@ function findECATransitions(coords){
 }
 
 // ── INPUT MODE ────────────────────────────────────────────────────────────────
-function setMode(m){
-  inputMode=m;
-  document.getElementById('portMode').classList.toggle('hidden',m!=='port');
-  document.getElementById('coordMode').classList.toggle('hidden',m!=='coord');
-  document.getElementById('mPort').classList.toggle('active',m==='port');
-  document.getElementById('mCoord').classList.toggle('active',m==='coord');
-  if(m==='coord'){showHint('CLICK TO SET ORIGIN');mapClick='o';}
-  else hideHint();
+function setFieldMode(which,m){
+  if(which==='o'){
+    oMode=m;
+    document.getElementById('oPortMode').classList.toggle('hidden',m!=='port');
+    document.getElementById('oCoordMode').classList.toggle('hidden',m!=='coord');
+    document.getElementById('oModePort').classList.toggle('active',m==='port');
+    document.getElementById('oModeCoord').classList.toggle('active',m==='coord');
+    if(m==='coord'){oPort=null;showHint('CLICK MAP TO SET ORIGIN');mapClick='o';}
+    else hideHint();
+  } else {
+    dMode=m;
+    document.getElementById('dPortMode').classList.toggle('hidden',m!=='port');
+    document.getElementById('dCoordMode').classList.toggle('hidden',m!=='coord');
+    document.getElementById('dModePort').classList.toggle('active',m==='port');
+    document.getElementById('dModeCoord').classList.toggle('active',m==='coord');
+    if(m==='coord'){dPort=null;showHint('CLICK MAP TO SET DESTINATION');mapClick='d';}
+    else hideHint();
+  }
 }
+// Legacy setMode stub (used by recalcFromImport)
+function setMode(m){setFieldMode('o',m);setFieldMode('d',m);}
 function showHint(t){const h=document.getElementById('mapHint');h.textContent=t;h.classList.add('show');}
 function hideHint(){document.getElementById('mapHint').classList.remove('show');}
 
@@ -851,18 +883,20 @@ function selPort(name,c,la,lo,which){
   if(oPort&&dPort)fitEnds();
 }
 function swapPorts(){
-  if(inputMode==='port'){
-    [oPort,dPort]=[dPort,oPort];
-    document.getElementById('oInp').value=oPort?oPort.name:'';
-    document.getElementById('dInp').value=dPort?dPort.name:'';
-    if(oPort)placeEndMarker('o',oPort.la,oPort.lo,oPort.name);
-    if(dPort)placeEndMarker('d',dPort.la,dPort.lo,dPort.name);
-  } else {
-    const tmp=[document.getElementById('oLat').value,document.getElementById('oLon').value];
-    document.getElementById('oLat').value=document.getElementById('dLat').value;
-    document.getElementById('oLon').value=document.getElementById('dLon').value;
-    document.getElementById('dLat').value=tmp[0];document.getElementById('dLon').value=tmp[1];
-  }
+  // Swap ports
+  [oPort,dPort]=[dPort,oPort];
+  document.getElementById('oInp').value=oPort?oPort.name:'';
+  document.getElementById('dInp').value=dPort?dPort.name:'';
+  // Swap coords
+  const oLat=document.getElementById('oLat').value,oLon=document.getElementById('oLon').value;
+  document.getElementById('oLat').value=document.getElementById('dLat').value;
+  document.getElementById('oLon').value=document.getElementById('dLon').value;
+  document.getElementById('dLat').value=oLat; document.getElementById('dLon').value=oLon;
+  // Swap modes
+  [oMode,dMode]=[dMode,oMode];
+  setFieldMode('o',oMode); setFieldMode('d',dMode);
+  if(oPort)placeEndMarker('o',oPort.la,oPort.lo,oPort.name);
+  if(dPort)placeEndMarker('d',dPort.la,dPort.lo,dPort.name);
   if(routeData)calcRoute();
 }
 
@@ -1220,14 +1254,25 @@ async function fetchRoute(olon,olat,dlon,dlat,avoid){
 // ── CALCULATE ROUTE ───────────────────────────────────────────────────────────
 async function calcRoute(){
   let oLa,oLo,dLa,dLo,oName,dName;
-  if(inputMode==='port'){
-    if(!oPort||!dPort){showErr('Please select both origin and destination ports.');return;}
-    oLa=oPort.la;oLo=oPort.lo;oName=oPort.name;dLa=dPort.la;dLo=dPort.lo;dName=dPort.name;
+  // Origin — port or coordinates independently
+  if(oMode==='port'){
+    if(!oPort){showErr('Please select an origin port, or switch origin to COORDS.');return;}
+    oLa=oPort.la;oLo=oPort.lo;oName=oPort.name;
   } else {
-    oLa=parseFloat(document.getElementById('oLat').value);oLo=parseFloat(document.getElementById('oLon').value);
-    dLa=parseFloat(document.getElementById('dLat').value);dLo=parseFloat(document.getElementById('dLon').value);
-    if([oLa,oLo,dLa,dLo].some(isNaN)){showErr('Enter valid coordinates.');return;}
-    oName=`${oLa.toFixed(3)}°, ${oLo.toFixed(3)}°`;dName=`${dLa.toFixed(3)}°, ${dLo.toFixed(3)}°`;
+    oLa=parseFloat(document.getElementById('oLat').value);
+    oLo=parseFloat(document.getElementById('oLon').value);
+    if(isNaN(oLa)||isNaN(oLo)){showErr('Enter valid origin coordinates.');return;}
+    oName=`${oLa.toFixed(3)}°, ${oLo.toFixed(3)}°`;
+  }
+  // Destination — port or coordinates independently
+  if(dMode==='port'){
+    if(!dPort){showErr('Please select a destination port, or switch destination to COORDS.');return;}
+    dLa=dPort.la;dLo=dPort.lo;dName=dPort.name;
+  } else {
+    dLa=parseFloat(document.getElementById('dLat').value);
+    dLo=parseFloat(document.getElementById('dLon').value);
+    if(isNaN(dLa)||isNaN(dLo)){showErr('Enter valid destination coordinates.');return;}
+    dName=`${dLa.toFixed(3)}°, ${dLo.toFixed(3)}°`;
   }
   if(oLa===dLa&&oLo===dLo){showErr('Origin and destination are the same.');return;}
 
@@ -1293,11 +1338,11 @@ function renderRoute(fitBounds=true){
 
   // Metrics
   const totalNm=calcTotalDistNm();
-  const ecaNm=calcECAMiles(d.coordinates);
+  const ecaNm=calcECAMiles(wpCoords); // use wpCoords — same source as the tile
   const ecaPct=totalNm>0?((ecaNm/totalNm)*100):0;
 
   document.getElementById('resSec').style.display='block';
-  document.getElementById('etaSec').style.display='block';
+  // etaSec is always visible now — no need to show
   document.getElementById('addWpSec').style.display='block';
   updateExportBtns();
   if(importedRoute) updateComparison();
@@ -1637,6 +1682,25 @@ function clearImport(){
   document.getElementById('cmpPanel').style.display='none';
 }
 
+// Recalculate MARNET route using first/last waypoint of imported RTZ
+async function recalcFromImport(){
+  if(!importedRoute||importedRoute.coords.length<2) return;
+  const first=importedRoute.coords[0];
+  const last=importedRoute.coords[importedRoute.coords.length-1];
+  const oLa=first[1],oLo=first[0],dLa=last[1],dLo=last[0];
+  // Switch both fields to coord mode
+  oPort=null; dPort=null;
+  setFieldMode('o','coord');
+  setFieldMode('d','coord');
+  document.getElementById('oLat').value=oLa.toFixed(4);
+  document.getElementById('oLon').value=oLo.toFixed(4);
+  document.getElementById('dLat').value=dLa.toFixed(4);
+  document.getElementById('dLon').value=dLo.toFixed(4);
+  placeEndMarker('o',oLa,oLo,`${oLa.toFixed(3)}°,${oLo.toFixed(3)}°`);
+  placeEndMarker('d',dLa,dLo,`${dLa.toFixed(3)}°,${dLo.toFixed(3)}°`);
+  await calcRoute();
+}
+
 // ── UTILITIES ─────────────────────────────────────────────────────────────────
 function downloadFile(filename, content, mimeType){
   const blob=new Blob([content],{type:mimeType});
@@ -1700,6 +1764,8 @@ function toggleMob(){
 function clearAll(){
   oPort=null;dPort=null;routeData=null;activeVia.clear();
   wpCoords=[];wpDragged=new Set();
+  oMode='port';dMode='port';
+  setFieldMode('o','port');setFieldMode('d','port');
   document.querySelectorAll('.via-btn').forEach(b=>b.classList.remove('active'));
   ['oInp','dInp'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   ['oLat','oLon','dLat','dLon'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
@@ -1710,7 +1776,7 @@ function clearAll(){
   if(dMark){map.removeLayer(dMark);dMark=null;}
   clearWpMarkers();
   document.getElementById('resSec').style.display='none';
-  document.getElementById('etaSec').style.display='none';
+  // etaSec always visible
   document.getElementById('addWpSec').style.display='none';
   setAddWpMode(false);
   clearImport();
