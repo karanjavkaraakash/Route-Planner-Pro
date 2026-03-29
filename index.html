@@ -162,6 +162,10 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .notice strong{color:var(--text)}
 
 /* ── WEATHER LEGEND ── */
+.toolbar-panel{position:absolute;left:54px;top:80px;background:rgba(10,15,24,.95);
+  border:1px solid var(--border2);padding:8px 11px;z-index:700;border-radius:3px;
+  backdrop-filter:blur(4px);min-width:150px;font-family:var(--mono);font-size:8px}
+.toolbar-panel-title{color:var(--accent-l);letter-spacing:2px;text-transform:uppercase;margin-bottom:5px}
 .wx-legend{position:absolute;bottom:60px;left:60px;background:rgba(10,15,24,.92);
   border:1px solid var(--border2);padding:8px 11px;z-index:600;border-radius:3px;
   backdrop-filter:blur(4px);min-width:160px}
@@ -231,9 +235,6 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .wpl-dot{width:10px;height:10px;border-radius:50%}
 
 /* Map overlay */
-.map-ov{position:absolute;top:14px;right:14px;background:rgba(10,15,24,.92);border:1px solid var(--border2);padding:10px 13px;z-index:600;display:none;border-radius:3px;min-width:175px;backdrop-filter:blur(4px)}
-.ov-row{font-family:var(--mono);font-size:9px;color:var(--text-dim);display:flex;justify-content:space-between;gap:10px;margin-bottom:3px}
-.ov-row b{color:var(--text-bright)}
 
 /* Map hint */
 .map-hint{position:absolute;bottom:48px;left:50%;transform:translateX(-50%);background:rgba(10,15,24,.85);border:1px solid var(--border2);padding:5px 14px;font-family:var(--mono);font-size:9px;color:var(--text-dim);z-index:600;pointer-events:none;letter-spacing:1px;opacity:0;transition:opacity .3s;border-radius:3px}
@@ -580,6 +581,10 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       🧭
       <span class="ovt-tooltip">NAUTICAL CHART (OPENSEAMAP)</span>
     </button>
+    <button class="ovt-btn" id="btnLegend" onclick="toggleWpLegend()" title="Legend">
+      ◉
+      <span class="ovt-tooltip">WAYPOINT LEGEND</span>
+    </button>
     <button class="ovt-btn" id="btnWind" onclick="toggleWeather('wind')" title="Wind">
       💨
       <span class="ovt-tooltip">WIND (BEAUFORT)</span>
@@ -593,9 +598,6 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
       <span class="ovt-tooltip">OCEAN CURRENT (KN)</span>
     </button>
   </div>
-
-  <!-- Weather canvas overlay (sits on top of map, below markers) -->
-  <canvas id="wxCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:400"></canvas>
 
   <!-- Weather legend -->
   <div class="wx-legend" id="wxLegend" style="display:none">
@@ -646,35 +648,12 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   <!-- Weather along route panel (shown after weather load) -->
   <div id="wxRouteSec" style="display:none"></div>
 
-  <div class="map-ov" id="mapOv">
-    <div class="ov-row"><span>FROM</span><b id="ovFrom">—</b></div>
-    <div class="ov-row"><span>TO</span><b id="ovTo">—</b></div>
-    <div class="ov-row"><span>DIST</span><b id="ovDist">—</b></div>
-    <div class="ov-row"><span>ECA</span><b id="ovEca" style="color:var(--eca)">—</b></div>
-  </div>
   <div class="map-hint" id="mapHint">CLICK TO SET COORDINATES</div>
 
-  <!-- Waypoint legend -->
-  <div class="wp-legend" id="wpLegend">
-    <div class="wp-legend-title">WAYPOINTS</div>
-    <div class="wpl-row"><div class="wpl-dot" style="background:var(--green)"></div>Origin</div>
-    <div class="wpl-row"><div class="wpl-dot" style="background:var(--gold)"></div>Destination</div>
-    <div class="wpl-row"><div class="wpl-dot" style="background:var(--wp-normal)"></div>Route waypoint</div>
-    <div class="wpl-row"><div class="wpl-dot" style="background:var(--eca);border:1px solid #fff"></div>ECA entry</div>
-    <div class="wpl-row"><div class="wpl-dot" style="background:var(--green);border:1px solid #fff"></div>ECA exit</div>
-    <div class="wpl-row"><div class="wpl-dot" style="background:var(--gold);border:2px solid #fff"></div>User-added</div>
-  </div>
+  <!-- Waypoint legend panel — toggled by toolbar button -->
 
-  <!-- ECA legend -->
-  <div class="eca-legend" id="ecaLegend">
-    <div class="eca-legend-title">ECA / SECA ZONES</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#2e86c1"></div>North Sea ECA</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#1a5276"></div>Baltic Sea ECA</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#7d3c98"></div>Mediterranean SECA</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#1e8449"></div>N. America ECA</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#148f77"></div>US Caribbean ECA</div>
-    <div class="eca-row"><div class="eca-swatch" style="background:#117a65"></div>Hawaii ECA</div>
-  </div>
+
+
 
 
 
@@ -1309,14 +1288,12 @@ checkEngine();
 // ── ECA LAYERS ────────────────────────────────────────────────────────────────
 function drawECA(){
   ecaLayers.forEach(l=>map.removeLayer(l)); ecaLayers=[];
-  if(!ecaVisible){document.getElementById('ecaLegend').classList.remove('show');return;}
   ECA_ZONES.forEach(z=>{
     const lls=z.coords.map(c=>[c[1],c[0]]);
     const poly=L.polygon(lls,{color:z.color,weight:1,opacity:.5,fillColor:z.color,fillOpacity:.07,dashArray:'4 6'}).addTo(map);
     poly.bindTooltip(`<div style="font-family:monospace;font-size:10px;color:${z.color}">${z.name}</div>`,{sticky:true,opacity:.9});
     ecaLayers.push(poly);
   });
-  document.getElementById('ecaLegend').classList.add('show');
 }
 drawECA();
 function setECA(v){
@@ -1608,8 +1585,6 @@ function updateMetricsLive(){
   document.getElementById('rEca').textContent=ecaNm>0?Math.round(ecaNm).toLocaleString()+' NM':'0 NM';
   document.getElementById('bNm').textContent=Math.round(totalNm).toLocaleString()+' NM';
   document.getElementById('bEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
-  document.getElementById('ovDist').textContent=Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('ovEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
   if(ecaNm>0){
     document.getElementById('rEcaBar').style.display='block';
     document.getElementById('rEcaPctBar').textContent=ecaPct.toFixed(1)+'%';
@@ -1916,6 +1891,30 @@ function buildClimGrid(points, dateISO){
 }
 
 // ── WEATHER TOGGLE ────────────────────────────────────────────────────────────
+// Toggle toolbar legend panels
+let openToolbarPanel=null;
+function toggleToolbarPanel(panelId, btnId){
+  const panel=document.getElementById(panelId);
+  const btn=document.getElementById(btnId);
+  if(!panel) return;
+  const isOpen=panel.style.display!=='none';
+  // Close all panels first
+  ['wpLegendPanel','ecaLegendPanel'].forEach(id=>{
+    const p=document.getElementById(id);if(p)p.style.display='none';
+  });
+  ['btnWpLegend','btnEcaLegend'].forEach(id=>{
+    const b=document.getElementById(id);if(b)b.classList.remove('active');
+  });
+  if(!isOpen){
+    panel.style.display='block';
+    btn.classList.add('active');
+    // Position panel next to the button
+    const btnRect=btn.getBoundingClientRect();
+    const mapRect=map.getContainer().getBoundingClientRect();
+    panel.style.top=(btnRect.top-mapRect.top)+'px';
+  }
+}
+
 async function toggleWeather(mode){
   const btns={wind:'btnWind',wave:'btnWave',current:'btnCurrent'};
   // If same mode clicked again — turn off
@@ -1959,16 +1958,33 @@ async function loadAndRenderWeather(simDateISO=null){
 
 // ── CANVAS SETUP ──────────────────────────────────────────────────────────────
 function initCanvas(){
-  wxCanvas=document.getElementById('wxCanvas');
-  const mapDiv=document.getElementById('map');
-  wxCanvas.width=mapDiv.offsetWidth;
-  wxCanvas.height=mapDiv.offsetHeight;
+  // Remove old canvas if exists
+  const old=document.getElementById('wxCanvas');
+  if(old) old.remove();
+
+  // Create canvas inside Leaflet's overlay pane — sits above tiles, below markers
+  const pane=map.getPanes().overlayPane;
+  wxCanvas=document.createElement('canvas');
+  wxCanvas.id='wxCanvas';
+  wxCanvas.style.cssText='position:absolute;top:0;left:0;pointer-events:none;opacity:1';
+  pane.appendChild(wxCanvas);
+
+  // Size canvas to map container
+  const mapSize=map.getSize();
+  wxCanvas.width=mapSize.x;
+  wxCanvas.height=mapSize.y;
   wxCtx=wxCanvas.getContext('2d');
-  // Resize canvas when map changes
-  map.on('resize',()=>{
-    wxCanvas.width=mapDiv.offsetWidth;
-    wxCanvas.height=mapDiv.offsetHeight;
-  });
+
+  // Reposition canvas when map moves (Leaflet pane shifts on pan)
+  function repositionCanvas(){
+    if(!wxCanvas) return;
+    const topLeft=map.containerPointToLayerPoint([0,0]);
+    L.DomUtil.setPosition(wxCanvas, topLeft);
+    const s=map.getSize();
+    wxCanvas.width=s.x; wxCanvas.height=s.y;
+  }
+  map.on('move zoom resize', repositionCanvas);
+  repositionCanvas();
 }
 
 // ── PARTICLE SYSTEM ───────────────────────────────────────────────────────────
@@ -2024,7 +2040,7 @@ function animateParticles(){
   const w=wxCanvas.width, h=wxCanvas.height;
 
   // Fade existing trails
-  wxCtx.fillStyle='rgba(10,15,24,0.12)';
+  wxCtx.fillStyle='rgba(10,15,24,0.08)'; // lighter trail for more visible particles
   wxCtx.fillRect(0,0,w,h);
 
   wxParticles.forEach((p,i)=>{
@@ -2046,14 +2062,14 @@ function animateParticles(){
     const vy=dy*Math.max(0.3,speedMult);
 
     // Draw particle trail
-    const alpha=Math.min(p.alpha,0.9)*(val.isClim?0.4:0.8);
+    const alpha=Math.min(p.alpha,0.95)*(val.isClim?0.6:0.92); // stronger alpha
     const color=wxMode==='wind'?bftColor(msToBeaufort(spd)):
                 wxMode==='wave'?waveColor(spd):
                 currentColor(spd);
 
     wxCtx.strokeStyle=color;
     wxCtx.globalAlpha=alpha;
-    wxCtx.lineWidth=wxMode==='current'?1.5:1;
+    wxCtx.lineWidth=wxMode==='current'?2:1.5; // thicker lines
     wxCtx.beginPath();
     wxCtx.moveTo(p.x,p.y);
     wxCtx.lineTo(p.x+vx*6,p.y+vy*6);
@@ -2554,11 +2570,6 @@ function renderRoute(fitBounds=true){
 
   buildWpPanel(d.coordinates,ecaTrans);
 
-  document.getElementById('ovFrom').textContent=d.oName.slice(0,18);
-  document.getElementById('ovTo').textContent=d.dName.slice(0,18);
-  document.getElementById('ovDist').textContent=Math.round(totalNm).toLocaleString()+' NM';
-  document.getElementById('ovEca').textContent=Math.round(ecaNm).toLocaleString()+' NM';
-  document.getElementById('mapOv').style.display='block';
 
   document.getElementById('bFrom').textContent=d.oName.slice(0,20);
   document.getElementById('bTo').textContent=d.dName.slice(0,20);
@@ -2567,7 +2578,7 @@ function renderRoute(fitBounds=true){
   document.getElementById('bWp').textContent=d.coordinates.length;
   document.getElementById('rBar').classList.add('show');
 
-  document.getElementById('wpLegend').classList.add('show');
+  // wpLegend is now a toolbar toggle — no auto-show
   document.getElementById('dragHint').classList.add('show');
   document.getElementById('dragHint').textContent='🖱 DRAG waypoint to move · CLICK route line to add waypoint · ✕ in panel to delete';
 
@@ -2961,9 +2972,8 @@ function clearAll(){
   setAddWpMode(false);
   clearImport();
   updateExportBtns();
-  document.getElementById('mapOv').style.display='none';
   document.getElementById('rBar').classList.remove('show');
-  document.getElementById('wpLegend').classList.remove('show');
+  document.getElementById('wpLegend').style.display='none'; // hide on clear
   document.getElementById('dragHint').classList.remove('show');
   document.getElementById('calcBtn').textContent='⬡ CALCULATE ROUTE';
   document.getElementById('bEtaItem').style.display='none';
