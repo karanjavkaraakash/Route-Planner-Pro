@@ -969,8 +969,13 @@ function clearGCSegments(){
 }
 
 function drawGCSegment(la1,lo1,la2,lo2,legIdx){
+  // Antimeridian fix
+  let dLon=lo2-lo1;
+  if(dLon>180) lo2-=360;
+  else if(dLon<-180) lo2+=360;
+
   const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
-  const n=Math.max(8,Math.floor(distKm/150));
+  const n=Math.max(8,Math.floor(distKm/200));
   const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
   const sh=L.polyline(pts,{color:'#1565c0',weight:6,opacity:.07}).addTo(map);
   sh._wpIdx=legIdx; gcSegments.push(sh);
@@ -1135,17 +1140,13 @@ function deleteWaypointAt(idx){
 
 // ── SHARED REFRESH after add/delete ──────────────────────────────────────────
 function refreshPolylineAndMarkers(){
-  // Remove the original straight MARNET polyline
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
   clearGCSegments();
 
-  // Draw each leg as a proper GC arc between consecutive waypoints.
-  // This ensures that after deletions the route curves correctly over the
-  // earth's surface rather than drawing visually misleading straight lines.
+  // Draw each leg as a proper GC arc with antimeridian handling
   drawAllGCArcs();
 
-  // Rebuild markers
   const ecaTrans=findECATransitions(wpCoords);
   rebuildMarkersFromState(ecaTrans);
   updateMetricsLive();
@@ -1155,34 +1156,33 @@ function refreshPolylineAndMarkers(){
 }
 
 // Draw all legs as GC arcs — used after add/delete operations
-// Each leg gets interpolated into a smooth curve using gcArc()
+// Includes antimeridian fix: unwrap longitudes so arcs go the short way
 function drawAllGCArcs(){
   if(wpCoords.length<2) return;
 
   for(let i=0;i<wpCoords.length-1;i++){
     const [lo1,la1]=wpCoords[i];
-    const [lo2,la2]=wpCoords[i+1];
+    let [lo2,la2]=wpCoords[i+1];
+
+    // Antimeridian fix: if the longitude difference > 180, go the short way
+    let dLon=lo2-lo1;
+    if(dLon>180) lo2-=360;
+    else if(dLon<-180) lo2+=360;
+
     const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
-    // More interpolation points for longer legs so the curve looks smooth
-    const n=Math.max(8,Math.floor(distKm/150));
+    const n=Math.max(8,Math.floor(distKm/200));
     const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
 
-    // Shadow
     const sh=L.polyline(pts,{color:'#1565c0',weight:6,opacity:.07}).addTo(map);
-    sh._wpIdx=i;
-    gcSegments.push(sh);
+    sh._wpIdx=i; gcSegments.push(sh);
 
-    // Main arc line — same style as the original MARNET polyline
     const line=L.polyline(pts,{
       color:'#0d47a1',weight:1.5,opacity:.9,
       dashArray:'8 4',bubblingMouseEvents:false,
     }).addTo(map);
-    line._wpIdx=i;
-    gcSegments.push(line);
+    line._wpIdx=i; gcSegments.push(line);
   }
 
-  // Keep mainPolyline reference pointing to a dummy so other code
-  // that checks if(mainPolyline) still works correctly
   mainPolyline=gcSegments[gcSegments.length-1]||null;
 }
 
@@ -1325,10 +1325,13 @@ function renderRoute(fitBounds=true){
   const ecaTrans=findECATransitions(d.coordinates);
   buildAllWpMarkers(d.coordinates,ecaTrans);
 
-  // Draw route as GC arcs between consecutive waypoints.
-  // For the dense initial MARNET route this looks identical to a polyline
-  // but after any deletions/additions the same function keeps curves correct.
-  drawAllGCArcs();
+  // Draw MARNET route as a single polyline — all 127 coords already form a
+  // correct sea-safe path including antimeridian crossings. Do NOT replace
+  // with gcArc() here — MARNET handles ocean crossings correctly, gcArc()
+  // would draw arcs the wrong way around the globe across the antimeridian.
+  const lls=wpCoords.map(c=>[c[1],c[0]]);
+  shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
+  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4',bubblingMouseEvents:false}).addTo(map);
 
   if(fitBounds && mainPolyline) map.fitBounds(mainPolyline.getBounds(),{padding:[60,80]});
 
