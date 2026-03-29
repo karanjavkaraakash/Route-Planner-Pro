@@ -969,33 +969,19 @@ function clearGCSegments(){
 }
 
 function drawGCSegment(la1,lo1,la2,lo2,legIdx){
-  // Antimeridian fix
-  let dLon=lo2-lo1;
-  if(dLon>180) lo2-=360;
-  else if(dLon<-180) lo2+=360;
-
   const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
-  const n=Math.max(8,Math.floor(distKm/200));
+  const n=Math.max(4,Math.floor(distKm/300));
   const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
-  const sh=L.polyline(pts,{color:'#1565c0',weight:6,opacity:.07}).addTo(map);
-  sh._wpIdx=legIdx; gcSegments.push(sh);
   const line=L.polyline(pts,{color:'#42a5f5',weight:1.5,opacity:.95,dashArray:'8 4'}).addTo(map);
-  line._wpIdx=legIdx; gcSegments.push(line);
+  line._wpIdx=legIdx;
+  gcSegments.push(line);
 }
 
 // ── DRAG HANDLERS ─────────────────────────────────────────────────────────────
 function onWpDrag(idx,newLat,newLon){
   wpCoords[idx]=[newLon,newLat];
-  // Remove existing GC arc segments for legs touching this waypoint
-  // Each leg i has segments tagged with _wpIdx===i (the leg between i and i+1)
-  // Waypoint idx affects legs idx-1 (prev→idx) and idx (idx→next)
-  const affectedLegs=new Set();
-  if(idx>0) affectedLegs.add(idx-1);
-  affectedLegs.add(idx);
-  gcSegments.filter(l=>affectedLegs.has(l._wpIdx)).forEach(l=>map.removeLayer(l));
-  gcSegments=gcSegments.filter(l=>!affectedLegs.has(l._wpIdx));
-
-  // Draw two fresh GC arcs for the affected legs
+  gcSegments.filter(l=>l._wpIdx===idx||l._wpIdx===idx-1).forEach(l=>map.removeLayer(l));
+  gcSegments=gcSegments.filter(l=>l._wpIdx!==idx&&l._wpIdx!==idx-1);
   if(idx>0){
     const [pLon,pLat]=wpCoords[idx-1];
     drawGCSegment(pLat,pLon,newLat,newLon,idx-1);
@@ -1144,8 +1130,10 @@ function refreshPolylineAndMarkers(){
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
   clearGCSegments();
 
-  // Draw each leg as a proper GC arc with antimeridian handling
-  drawAllGCArcs();
+  // Redraw as simple polyline — same as original MARNET render
+  const lls=wpCoords.map(c=>[c[1],c[0]]);
+  shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
+  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4',bubblingMouseEvents:false}).addTo(map);
 
   const ecaTrans=findECATransitions(wpCoords);
   rebuildMarkersFromState(ecaTrans);
@@ -1155,39 +1143,7 @@ function refreshPolylineAndMarkers(){
   if(importedRoute) updateComparison();
 }
 
-// Draw all legs as GC arcs — used after add/delete operations
-// Includes antimeridian fix: unwrap longitudes so arcs go the short way
-function drawAllGCArcs(){
-  if(wpCoords.length<2) return;
-
-  for(let i=0;i<wpCoords.length-1;i++){
-    const [lo1,la1]=wpCoords[i];
-    let [lo2,la2]=wpCoords[i+1];
-
-    // Antimeridian fix: if the longitude difference > 180, go the short way
-    let dLon=lo2-lo1;
-    if(dLon>180) lo2-=360;
-    else if(dLon<-180) lo2+=360;
-
-    const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
-    const n=Math.max(8,Math.floor(distKm/200));
-    const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
-
-    const sh=L.polyline(pts,{color:'#1565c0',weight:6,opacity:.07}).addTo(map);
-    sh._wpIdx=i; gcSegments.push(sh);
-
-    const line=L.polyline(pts,{
-      color:'#0d47a1',weight:1.5,opacity:.9,
-      dashArray:'8 4',bubblingMouseEvents:false,
-    }).addTo(map);
-    line._wpIdx=i; gcSegments.push(line);
-  }
-
-  mainPolyline=gcSegments[gcSegments.length-1]||null;
-}
-
-// Attach right-click to the main polyline
-// Also add a wide transparent hit-target polyline for easy clicking
+// attachPolylineContextMenu — no-op, click handled by map.on click
 function attachPolylineContextMenu(){ /* no-op: click handled by map.on click */ }
 
 // Rebuild markers without resetting wpCoords/wpDragged
