@@ -968,25 +968,32 @@ function clearGCSegments(){
   gcSegments.forEach(l=>map.removeLayer(l)); gcSegments=[];
 }
 
-function drawGCSegment(la1,lo1,la2,lo2,idx){
+function drawGCSegment(la1,lo1,la2,lo2,legIdx){
   const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
-  const n=Math.max(4,Math.floor(distKm/300));
+  const n=Math.max(8,Math.floor(distKm/150));
   const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
+  const sh=L.polyline(pts,{color:'#1565c0',weight:6,opacity:.07}).addTo(map);
+  sh._wpIdx=legIdx; gcSegments.push(sh);
   const line=L.polyline(pts,{color:'#42a5f5',weight:1.5,opacity:.95,dashArray:'8 4'}).addTo(map);
-  line._wpIdx=idx;
-  gcSegments.push(line);
+  line._wpIdx=legIdx; gcSegments.push(line);
 }
 
 // ── DRAG HANDLERS ─────────────────────────────────────────────────────────────
 function onWpDrag(idx,newLat,newLon){
   wpCoords[idx]=[newLon,newLat];
-  // Remove existing GC segments for this waypoint
-  gcSegments.filter(l=>l._wpIdx===idx).forEach(l=>map.removeLayer(l));
-  gcSegments=gcSegments.filter(l=>l._wpIdx!==idx);
-  // Draw the two adjacent GC segments
+  // Remove existing GC arc segments for legs touching this waypoint
+  // Each leg i has segments tagged with _wpIdx===i (the leg between i and i+1)
+  // Waypoint idx affects legs idx-1 (prev→idx) and idx (idx→next)
+  const affectedLegs=new Set();
+  if(idx>0) affectedLegs.add(idx-1);
+  affectedLegs.add(idx);
+  gcSegments.filter(l=>affectedLegs.has(l._wpIdx)).forEach(l=>map.removeLayer(l));
+  gcSegments=gcSegments.filter(l=>!affectedLegs.has(l._wpIdx));
+
+  // Draw two fresh GC arcs for the affected legs
   if(idx>0){
     const [pLon,pLat]=wpCoords[idx-1];
-    drawGCSegment(pLat,pLon,newLat,newLon,idx);
+    drawGCSegment(pLat,pLon,newLat,newLon,idx-1);
   }
   if(idx<wpCoords.length-1){
     const [nLon,nLat]=wpCoords[idx+1];
@@ -1128,19 +1135,55 @@ function deleteWaypointAt(idx){
 
 // ── SHARED REFRESH after add/delete ──────────────────────────────────────────
 function refreshPolylineAndMarkers(){
-  // Redraw MARNET polyline from updated wpCoords
+  // Remove the original straight MARNET polyline
   if(mainPolyline){map.removeLayer(mainPolyline);mainPolyline=null;}
   if(shadowPolyline){map.removeLayer(shadowPolyline);shadowPolyline=null;}
   clearGCSegments();
-  const lls=wpCoords.map(c=>[c[1],c[0]]);
-  shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
-  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4',bubblingMouseEvents:false}).addTo(map);
+
+  // Draw each leg as a proper GC arc between consecutive waypoints.
+  // This ensures that after deletions the route curves correctly over the
+  // earth's surface rather than drawing visually misleading straight lines.
+  drawAllGCArcs();
+
   // Rebuild markers
   const ecaTrans=findECATransitions(wpCoords);
   rebuildMarkersFromState(ecaTrans);
   updateMetricsLive();
   buildWpPanel(wpCoords,ecaTrans);
   document.getElementById('bWp').textContent=wpCoords.length;
+  if(importedRoute) updateComparison();
+}
+
+// Draw all legs as GC arcs — used after add/delete operations
+// Each leg gets interpolated into a smooth curve using gcArc()
+function drawAllGCArcs(){
+  if(wpCoords.length<2) return;
+
+  for(let i=0;i<wpCoords.length-1;i++){
+    const [lo1,la1]=wpCoords[i];
+    const [lo2,la2]=wpCoords[i+1];
+    const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
+    // More interpolation points for longer legs so the curve looks smooth
+    const n=Math.max(8,Math.floor(distKm/150));
+    const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
+
+    // Shadow
+    const sh=L.polyline(pts,{color:'#1565c0',weight:6,opacity:.07}).addTo(map);
+    sh._wpIdx=i;
+    gcSegments.push(sh);
+
+    // Main arc line — same style as the original MARNET polyline
+    const line=L.polyline(pts,{
+      color:'#0d47a1',weight:1.5,opacity:.9,
+      dashArray:'8 4',bubblingMouseEvents:false,
+    }).addTo(map);
+    line._wpIdx=i;
+    gcSegments.push(line);
+  }
+
+  // Keep mainPolyline reference pointing to a dummy so other code
+  // that checks if(mainPolyline) still works correctly
+  mainPolyline=gcSegments[gcSegments.length-1]||null;
 }
 
 // Attach right-click to the main polyline
@@ -1282,12 +1325,12 @@ function renderRoute(fitBounds=true){
   const ecaTrans=findECATransitions(d.coordinates);
   buildAllWpMarkers(d.coordinates,ecaTrans);
 
-  // Now draw MARNET polyline using wpCoords (now populated)
-  const lls=wpCoords.map(c=>[c[1],c[0]]);
-  shadowPolyline=L.polyline(lls,{color:'#1565c0',weight:5,opacity:.07}).addTo(map);
-  mainPolyline=L.polyline(lls,{color:'#0d47a1',weight:1.5,opacity:.9,dashArray:'8 4',bubblingMouseEvents:false}).addTo(map);
+  // Draw route as GC arcs between consecutive waypoints.
+  // For the dense initial MARNET route this looks identical to a polyline
+  // but after any deletions/additions the same function keeps curves correct.
+  drawAllGCArcs();
 
-  if(fitBounds) map.fitBounds(mainPolyline.getBounds(),{padding:[60,80]});
+  if(fitBounds && mainPolyline) map.fitBounds(mainPolyline.getBounds(),{padding:[60,80]});
 
   // Metrics
   const totalNm=calcTotalDistNm();
