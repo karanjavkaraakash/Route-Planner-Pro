@@ -161,6 +161,27 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 .notice a{color:var(--accent-l);text-decoration:none}
 .notice strong{color:var(--text)}
 
+/* ── FLOATING OVERLAY TOOLBAR ── */
+.overlay-toolbar{position:absolute;top:80px;left:10px;z-index:700;display:flex;flex-direction:column;gap:4px}
+.ovt-btn{width:36px;height:36px;background:rgba(10,15,24,.92);border:1px solid var(--border2);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .15s;backdrop-filter:blur(4px);color:var(--text-dim);position:relative}
+.ovt-btn:hover{border-color:var(--accent-l);color:var(--accent-l)}
+.ovt-btn.active{border-color:var(--accent-l);background:rgba(33,150,243,.18);color:var(--accent-l)}
+.ovt-btn.active-hra{border-color:#ef4444;background:rgba(239,68,68,.15);color:#ef4444}
+.ovt-btn.active-tss{border-color:#8b5cf6;background:rgba(139,92,246,.15);color:#8b5cf6}
+.ovt-btn.active-osm{border-color:#06b6d4;background:rgba(6,182,212,.15);color:#06b6d4}
+.ovt-tooltip{position:absolute;left:44px;top:50%;transform:translateY(-50%);background:rgba(10,15,24,.95);border:1px solid var(--border2);padding:3px 8px;font-family:var(--mono);font-size:9px;color:var(--text-bright);white-space:nowrap;border-radius:2px;pointer-events:none;opacity:0;transition:opacity .15s;letter-spacing:.5px}
+.ovt-btn:hover .ovt-tooltip{opacity:1}
+
+/* HRA zone popup */
+.hra-popup .leaflet-popup-content-wrapper{background:rgba(10,15,24,.96);border:1px solid #ef4444;border-radius:3px;color:#ef4444;font-family:monospace;font-size:10px;padding:0;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.hra-popup .leaflet-popup-content{margin:8px 12px;line-height:1.6}
+.hra-popup .leaflet-popup-tip-container{display:none}
+
+/* TSS popup */
+.tss-popup .leaflet-popup-content-wrapper{background:rgba(10,15,24,.96);border:1px solid #8b5cf6;border-radius:3px;color:#8b5cf6;font-family:monospace;font-size:10px;padding:0;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.tss-popup .leaflet-popup-content{margin:8px 12px;line-height:1.6}
+.tss-popup .leaflet-popup-tip-container{display:none}
+
 /* ── MAP ── */
 #map{flex:1;position:relative;z-index:1;min-width:0}
 .leaflet-container{background:#c9dff0!important}
@@ -524,6 +545,21 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 
 <!-- ════ MAP ════ -->
 <div id="map">
+  <!-- Floating overlay toolbar -->
+  <div class="overlay-toolbar" id="overlayToolbar">
+    <button class="ovt-btn" id="btnHRA" onclick="toggleHRA()" title="HRA Zones">
+      ⚠
+      <span class="ovt-tooltip">HRA / PIRACY ZONES</span>
+    </button>
+    <button class="ovt-btn" id="btnTSS" onclick="toggleTSS()" title="TSS">
+      ⛵
+      <span class="ovt-tooltip">TRAFFIC SEPARATION SCHEMES</span>
+    </button>
+    <button class="ovt-btn" id="btnOSM" onclick="toggleOpenSeaMap()" title="OpenSeaMap">
+      🧭
+      <span class="ovt-tooltip">NAUTICAL CHART (OPENSEAMAP)</span>
+    </button>
+  </div>
   <div class="map-ov" id="mapOv">
     <div class="ov-row"><span>FROM</span><b id="ovFrom">—</b></div>
     <div class="ov-row"><span>TO</span><b id="ovTo">—</b></div>
@@ -1625,6 +1661,284 @@ function rebuildMarkersFromState(ecaTrans){
   attachPolylineContextMenu();
 }
 
+
+// ── PHASE 3 — OVERLAYS ────────────────────────────────────────────────────────
+
+// ── OPENSEAMAP NAUTICAL LAYER ─────────────────────────────────────────────────
+let osmNauticalLayer=null;
+let osmActive=false;
+
+function toggleOpenSeaMap(){
+  osmActive=!osmActive;
+  const btn=document.getElementById('btnOSM');
+  if(osmActive){
+    osmNauticalLayer=L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png',{
+      maxZoom:19, opacity:.8,
+      attribution:'<a href="https://www.openseamap.org">OpenSeaMap</a>'
+    }).addTo(map);
+    btn.classList.add('active-osm');
+  } else {
+    if(osmNauticalLayer){map.removeLayer(osmNauticalLayer);osmNauticalLayer=null;}
+    btn.classList.remove('active-osm');
+  }
+}
+
+// ── HRA / PIRACY ZONES ────────────────────────────────────────────────────────
+// Static polygons based on IMB / MSCHOA published HRA boundaries (2024)
+const HRA_ZONES=[
+  {
+    name:'High Risk Area — Indian Ocean / Gulf of Aden',
+    risk:'HIGH',
+    coords:[
+      [12,60],[12,65],[15,65],[20,68],[25,68],[25,60],[22,55],[18,52],[12,52],[10,55],[10,60],[12,60]
+    ]
+  },
+  {
+    name:'Voluntary Reporting Area — Western Indian Ocean',
+    risk:'CAUTION',
+    coords:[
+      [-5,40],[-5,60],[25,60],[25,40],[-5,40]
+    ]
+  },
+  {
+    name:'Gulf of Guinea — High Risk Area',
+    risk:'HIGH',
+    coords:[
+      [5,-5],[5,10],[-5,10],[-5,-5],[5,-5]
+    ]
+  },
+  {
+    name:'Gulf of Guinea — Extended Watch Zone',
+    risk:'CAUTION',
+    coords:[
+      [10,-10],[10,15],[-10,15],[-10,-10],[10,-10]
+    ]
+  },
+  {
+    name:'Strait of Malacca — Caution Area',
+    risk:'CAUTION',
+    coords:[
+      [6,98],[6,104],[1,104],[1,103],[2,102],[3,101],[5,100],[6,98]
+    ]
+  },
+  {
+    name:'Singapore Strait — Watch Area',
+    risk:'WATCH',
+    coords:[
+      [1.5,103.5],[1.5,104.5],[1.1,104.5],[1.1,103.5],[1.5,103.5]
+    ]
+  },
+  {
+    name:'Bangladesh / Bay of Bengal — Caution',
+    risk:'CAUTION',
+    coords:[
+      [24,88],[24,93],[20,93],[20,88],[24,88]
+    ]
+  },
+  {
+    name:'Peru / Ecuador — Caution',
+    risk:'CAUTION',
+    coords:[
+      [2,-82],[2,-76],[-10,-76],[-10,-82],[2,-82]
+    ]
+  },
+];
+
+const HRA_COLORS={HIGH:'#ef4444',CAUTION:'#f97316',WATCH:'#f59e0b'};
+let hraLayers=[];
+let hraActive=false;
+
+function toggleHRA(){
+  hraActive=!hraActive;
+  const btn=document.getElementById('btnHRA');
+  if(hraActive){
+    HRA_ZONES.forEach(zone=>{
+      const color=HRA_COLORS[zone.risk]||'#ef4444';
+      // coords are [lat,lon] — convert to Leaflet [lat,lon]
+      const lls=zone.coords.map(c=>[c[0],c[1]]);
+      const poly=L.polygon(lls,{
+        color,weight:1.5,opacity:.8,
+        fillColor:color,fillOpacity:.12,
+        interactive:true,
+      }).addTo(map);
+
+      poly.bindPopup(
+        `<div style="font-family:monospace;font-size:10px;line-height:1.7">
+          <div style="color:${color};font-weight:bold;letter-spacing:1px;margin-bottom:4px">
+            ⚠ ${zone.risk} RISK AREA
+          </div>
+          <div>${zone.name}</div>
+          <div style="color:#666;margin-top:4px;font-size:9px">Source: IMB / MSCHOA (static 2024)</div>
+        </div>`,
+        {className:'hra-popup',maxWidth:260}
+      );
+
+      poly.on('mouseover',function(){this.setStyle({fillOpacity:.25});});
+      poly.on('mouseout',function(){this.setStyle({fillOpacity:.12});});
+
+      hraLayers.push(poly);
+    });
+    btn.classList.add('active-hra');
+  } else {
+    hraLayers.forEach(l=>map.removeLayer(l));
+    hraLayers=[];
+    btn.classList.remove('active-hra');
+  }
+}
+
+// ── TSS — TRAFFIC SEPARATION SCHEMES ─────────────────────────────────────────
+let tssLayers=[];
+let tssActive=false;
+let tssLoading=false;
+
+function toggleTSS(){
+  if(tssLoading) return;
+  tssActive=!tssActive;
+  const btn=document.getElementById('btnTSS');
+
+  if(tssActive){
+    btn.classList.add('active-tss');
+    if(tssLayers.length>0){
+      // Already loaded — just re-add to map
+      tssLayers.forEach(l=>l.addTo(map));
+    } else {
+      fetchTSSFromOverpass();
+    }
+  } else {
+    tssLayers.forEach(l=>map.removeLayer(l));
+    btn.classList.remove('active-tss');
+  }
+}
+
+async function fetchTSSFromOverpass(){
+  tssLoading=true;
+  const btn=document.getElementById('btnTSS');
+  btn.textContent='⏳';
+
+  // Overpass API query for separation_zone and separation_lane (maritime TSS)
+  const query=`[out:json][timeout:60];
+(
+  way["seamark:type"="separation_zone"];
+  way["seamark:type"="separation_lane"];
+  way["seamark:type"="traffic_separation_scheme"];
+  relation["seamark:type"="separation_zone"];
+  relation["seamark:type"="separation_lane"];
+  relation["seamark:type"="traffic_separation_scheme"];
+);
+out geom;`;
+
+  const url='https://overpass-api.de/api/interpreter';
+
+  try{
+    const resp=await fetch(url,{
+      method:'POST',
+      body:`data=${encodeURIComponent(query)}`,
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      signal:AbortSignal.timeout(65000),
+    });
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data=await resp.json();
+    renderTSSData(data);
+  } catch(e){
+    console.warn('Overpass TSS fetch failed:',e);
+    // Fallback: draw major TSS zones as static polygons
+    renderTSSFallback();
+  } finally {
+    tssLoading=false;
+    btn.textContent='⛵';
+  }
+}
+
+function renderTSSData(data){
+  if(!data.elements||data.elements.length===0){
+    renderTSSFallback();
+    return;
+  }
+
+  data.elements.forEach(el=>{
+    if(!el.geometry&&(!el.members)) return;
+
+    const seamarkType=el.tags?.['seamark:type']||'';
+    const name=el.tags?.['seamark:traffic_separation_scheme:name']||
+               el.tags?.['name']||
+               el.tags?.['seamark:name']||
+               seamarkType.replace(/_/g,' ').toUpperCase();
+    const direction=el.tags?.['seamark:separation_lane:direction']||
+                    el.tags?.['seamark:traffic_flow']||'';
+
+    let lls=[];
+    if(el.type==='way'&&el.geometry){
+      lls=el.geometry.map(p=>[p.lat,p.lon]);
+    } else if(el.type==='relation'&&el.members){
+      // Use first way member with geometry
+      const firstWay=el.members.find(m=>m.type==='way'&&m.geometry);
+      if(firstWay) lls=firstWay.geometry.map(p=>[p.lat,p.lon]);
+    }
+    if(lls.length<2) return;
+
+    const isSepZone=seamarkType.includes('separation_zone');
+    const color=isSepZone?'#8b5cf6':'#a78bfa';
+
+    const line=L.polyline(lls,{
+      color,weight:isSepZone?3:2,opacity:.75,
+      dashArray:isSepZone?null:'6 3',
+    }).addTo(map);
+
+    const dirLabel=direction?`<div style="color:#a78bfa">Direction: ${direction}°</div>`:'';
+    line.bindPopup(
+      `<div style="font-family:monospace;font-size:10px;line-height:1.7">
+        <div style="color:#8b5cf6;font-weight:bold;letter-spacing:1px;margin-bottom:4px">
+          ⛵ TSS — ${isSepZone?'SEPARATION ZONE':'LANE'}
+        </div>
+        <div>${name}</div>
+        ${dirLabel}
+        <div style="color:#666;font-size:9px;margin-top:4px">Source: OpenSeaMap / OSM</div>
+      </div>`,
+      {className:'tss-popup',maxWidth:260}
+    );
+
+    tssLayers.push(line);
+  });
+
+  if(tssLayers.length===0) renderTSSFallback();
+}
+
+// Fallback: major TSS zones as static polylines if Overpass fails
+function renderTSSFallback(){
+  const TSS_STATIC=[
+    {name:'Dover Strait TSS — NE Lane',dir:'NE (045°)',coords:[[51.0,1.4],[51.2,2.0],[51.5,2.5]]},
+    {name:'Dover Strait TSS — SW Lane',dir:'SW (225°)',coords:[[51.3,2.3],[51.0,1.8],[50.8,1.3]]},
+    {name:'Singapore Strait TSS — East',dir:'E (090°)',coords:[[1.27,103.7],[1.25,104.0],[1.2,104.3]]},
+    {name:'Singapore Strait TSS — West',dir:'W (270°)',coords:[[1.2,104.3],[1.22,104.0],[1.25,103.7]]},
+    {name:'Malacca Strait TSS — NW',dir:'NW (315°)',coords:[[1.5,103.0],[3.0,101.5],[5.0,100.0],[6.0,99.0]]},
+    {name:'Malacca Strait TSS — SE',dir:'SE (135°)',coords:[[6.0,99.5],[5.0,100.5],[3.0,102.0],[1.5,103.5]]},
+    {name:'English Channel — Eastbound',dir:'E (090°)',coords:[[49.9,-5.0],[50.2,-3.0],[50.5,-1.0],[51.0,1.0]]},
+    {name:'English Channel — Westbound',dir:'W (270°)',coords:[[51.0,1.2],[50.6,-0.8],[50.3,-2.8],[50.0,-4.8]]},
+    {name:'Gulf of Suez TSS — Northbound',dir:'N (000°)',coords:[[27.5,33.6],[28.5,33.4],[29.5,32.8],[30.2,32.5]]},
+    {name:'Gulf of Suez TSS — Southbound',dir:'S (180°)',coords:[[30.0,32.6],[29.3,32.9],[28.3,33.5],[27.3,33.7]]},
+    {name:'Bosphorus TSS — Southbound',dir:'S (180°)',coords:[[41.2,29.0],[41.0,29.0],[40.8,29.05]]},
+    {name:'Bosphorus TSS — Northbound',dir:'N (000°)',coords:[[40.8,28.95],[41.0,28.95],[41.2,28.98]]},
+  ];
+
+  TSS_STATIC.forEach((tss,i)=>{
+    const lls=tss.coords.map(c=>[c[0],c[1]]);
+    const isEven=i%2===0;
+    const line=L.polyline(lls,{
+      color:'#8b5cf6',weight:2.5,opacity:.75,
+      dashArray:isEven?null:'6 3',
+    }).addTo(map);
+    line.bindPopup(
+      `<div style="font-family:monospace;font-size:10px;line-height:1.7">
+        <div style="color:#8b5cf6;font-weight:bold;letter-spacing:1px;margin-bottom:4px">⛵ TSS LANE</div>
+        <div>${tss.name}</div>
+        <div style="color:#a78bfa">Direction: ${tss.dir}</div>
+        <div style="color:#666;font-size:9px;margin-top:4px">Static data — Overpass unavailable</div>
+      </div>`,
+      {className:'tss-popup',maxWidth:260}
+    );
+    tssLayers.push(line);
+  });
+}
 
 // ── TOGGLES ───────────────────────────────────────────────────────────────────
 function setTog(which,val){
