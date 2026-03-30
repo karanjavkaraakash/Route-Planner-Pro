@@ -26,84 +26,132 @@ CMEMS_USER = os.environ.get('CMEMS_USER', '')
 CMEMS_PASS = os.environ.get('CMEMS_PASS', '')
 CMEMS_WMTS = 'https://wmts.marine.copernicus.eu/teroWmts'
 
-# Auth token cache
-_cmems_token      = None
-_cmems_token_exp  = 0
-_cmems_token_lock = threading.Lock()
+# ── AUTH STRATEGY: HTTP Basic Auth (primary) + Bearer token (secondary) ───────
+# Copernicus Marine WMTS supports HTTP Basic Auth directly.
+# We try Basic Auth first — it is simpler, has no expiry, and always works
+# as long as credentials are correct.
+# Bearer token is attempted as a fallback for newer API endpoints.
 
-CMEMS_TOKEN_URL = (
-    'https://iam.marine.copernicus.eu/realms/ocean/protocol/openid-connect/token'
-)
+_bearer_token     = None
+_bearer_token_exp = 0
+_token_lock       = threading.Lock()
+CMEMS_TOKEN_URL   = 'https://iam.marine.copernicus.eu/realms/ocean/protocol/openid-connect/token'
 
-def get_cmems_token():
-    """
-    Obtain a short-lived Bearer token from Copernicus Marine IAM.
-    Tokens last ~60 seconds; we cache and refresh automatically.
-    Falls back to HTTP Basic Auth if token endpoint fails.
-    """
-    global _cmems_token, _cmems_token_exp
-    with _cmems_token_lock:
-        if _cmems_token and time.time() < _cmems_token_exp - 10:
-            return _cmems_token, 'bearer'
+def get_bearer_token():
+    """Try to get a Bearer token. Returns token string or None."""
+    global _bearer_token, _bearer_token_exp
+    with _token_lock:
+        if _bearer_token and time.time() < _bearer_token_exp - 30:
+            return _bearer_token
         if not CMEMS_USER or not CMEMS_PASS:
-            return None, 'none'
+            return None
         try:
-            resp = req_lib.post(
-                CMEMS_TOKEN_URL,
-                data={
-                    'client_id':  'cmems-marine-public',
-                    'username':   CMEMS_USER,
-                    'password':   CMEMS_PASS,
-                    'grant_type': 'password',
-                },
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                d = resp.json()
-                _cmems_token     = d['access_token']
-                _cmems_token_exp = time.time() + d.get('expires_in', 60)
-                log.info('CMEMS token obtained, expires in %ds', d.get('expires_in', 60))
-                return _cmems_token, 'bearer'
-            else:
-                log.warning('CMEMS token endpoint returned %d', resp.status_code)
+            r = req_lib.post(CMEMS_TOKEN_URL, data={
+                'client_id': 'cmems-marine-public',
+                'username':  CMEMS_USER,
+                'password':  CMEMS_PASS,
+                'grant_type':'password',
+            }, timeout=10)
+            if r.status_code == 200:
+                d = r.json()
+                _bearer_token     = d.get('access_token')
+                _bearer_token_exp = time.time() + d.get('expires_in', 300)
+                log.info('CMEMS bearer token OK, expires in %ds', d.get('expires_in', 300))
+                return _bearer_token
         except Exception as e:
-            log.warning('CMEMS token error: %s', e)
-        # Fallback: Basic Auth
-        _cmems_token = None
-        return None, 'basic'
+            log.debug('Bearer token fetch failed (will use Basic Auth): %s', e)
+        return None
+
+
+def cmems_request(params):
+    """
+    Make an authenticated GET request to the Copernicus Marine WMTS.
+    Strategy:
+      1. Try HTTP Basic Auth (always works if credentials are correct)
+      2. If 401, try Bearer token once
+      3. Return response
+    """
+    if not CMEMS_USER or not CMEMS_PASS:
+        return None, 'CMEMS_USER/CMEMS_PASS not set in environment', 503
+
+    headers = {
+        'User-Agent': 'RoutePlannerPro/1.0',
+        'Accept':     'image/png,image/jpeg,application/json,*/*',
+    }
+
+    # ── Attempt 1: HTTP Basic Auth ───────────────────────────────────────────
+    try:
+        r = req_lib.get(
+            CMEMS_WMTS,
+            params=params,
+            headers=headers,
+            auth=(CMEMS_USER, CMEMS_PASS),
+            timeout=30,
+        )
+        log.debug('CMEMS Basic Auth response: %d', r.status_code)
+
+        if r.status_code == 200:
+            return r.content, r.headers.get('Content-Type','image/png'), 200
+
+        if r.status_code == 401:
+            log.warning('CMEMS Basic Auth 401 — trying Bearer token')
+            # ── Attempt 2: Bearer token ──────────────────────────────────────
+            token = get_bearer_token()
+            if token:
+                headers['Authorization'] = f'Bearer {token}'
+                r2 = req_lib.get(
+                    CMEMS_WMTS,
+                    params=params,
+                    headers=headers,
+                    timeout=30,
+                )
+                log.debug('CMEMS Bearer response: %d', r2.status_code)
+                return r2.content, r2.headers.get('Content-Type','image/png'), r2.status_code
+            return r.content, r.headers.get('Content-Type','text/plain'), 401
+
+        # Other HTTP errors (404 = layer not found, 400 = bad params, etc.)
+        log.warning('CMEMS response %d for params: %s', r.status_code,
+                    {k:v for k,v in params.items() if k not in ('password',)})
+        return r.content, r.headers.get('Content-Type','text/plain'), r.status_code
+
+    except req_lib.exceptions.Timeout:
+        log.error('CMEMS request timed out')
+        return b'', 'text/plain', 504
+    except Exception as e:
+        log.error('CMEMS request error: %s', e)
+        return b'', 'text/plain', 503
+
+
+def verify_cmems_auth():
+    """
+    Test auth by fetching a single known-good tile.
+    Returns (ok: bool, method: str, message: str)
+    """
+    if not CMEMS_USER or not CMEMS_PASS:
+        return False, 'none', 'CMEMS_USER or CMEMS_PASS not set'
+
+    test_params = {
+        'SERVICE':      'WMTS',
+        'REQUEST':      'GetCapabilities',
+        'VERSION':      '1.0.0',
+    }
+    try:
+        content, ctype, status = cmems_request(test_params)
+        if status == 200:
+            method = 'bearer' if _bearer_token else 'basic'
+            return True, method, 'Authentication successful'
+        elif status == 401:
+            return False, 'failed', f'Authentication failed (401) — check CMEMS_USER/CMEMS_PASS'
+        else:
+            return False, 'error', f'CMEMS returned HTTP {status}'
+    except Exception as e:
+        return False, 'error', str(e)
 
 
 def cmems_tile_proxy(path, params):
-    """
-    Proxy a WMTS tile request to Copernicus Marine, injecting auth.
-    Returns (content_bytes, content_type, status_code).
-    """
-    token, auth_type = get_cmems_token()
-
-    headers = {'User-Agent': 'RoutePlannerPro/1.0'}
-    if auth_type == 'bearer' and token:
-        headers['Authorization'] = f'Bearer {token}'
-        auth = None
-    elif auth_type == 'basic' and CMEMS_USER and CMEMS_PASS:
-        auth = (CMEMS_USER, CMEMS_PASS)
-    else:
-        auth = None
-
-    url = f'{CMEMS_WMTS}/{path}' if path else CMEMS_WMTS
-    try:
-        r = req_lib.get(
-            url,
-            params=params,
-            headers=headers,
-            auth=auth,
-            timeout=30,
-            stream=True,
-        )
-        content_type = r.headers.get('Content-Type', 'image/png')
-        return r.content, content_type, r.status_code
-    except Exception as e:
-        log.error('CMEMS proxy error: %s', e)
-        return b'', 'text/plain', 503
+    """Legacy wrapper — kept for compatibility."""
+    content, ctype, status = cmems_request(params)
+    return content, ctype, status
 
 
 # ── ROUTING ENGINE ────────────────────────────────────────────────────────────
@@ -223,7 +271,7 @@ def cmems_tile():
     params.setdefault('VERSION', '1.0.0')
     params.setdefault('FORMAT', 'image/png')
 
-    content, ctype, status = cmems_tile_proxy('', params)
+    content, ctype, status = cmems_request(params)
 
     resp = Response(content, status=status, content_type=ctype)
     resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -265,7 +313,7 @@ def cmems_featureinfo():
     params.setdefault('INFOFORMAT', 'application/json')
     params.setdefault('TILEMATRIXSET', 'EPSG:3857')
 
-    content, ctype, status = cmems_tile_proxy('', params)
+    content, ctype, status = cmems_request(params)
     resp = Response(content, status=status, content_type=ctype)
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp
@@ -274,13 +322,14 @@ def cmems_featureinfo():
 @app.route("/api/cmems/status")
 def cmems_status():
     """Check auth status and return available layer info."""
-    token, auth_type = get_cmems_token()
     configured = bool(CMEMS_USER and CMEMS_PASS)
+    auth_ok, auth_method, auth_msg = verify_cmems_auth() if configured else (False,'none','Not configured')
     r = jsonify({
         'configured':  configured,
         'user':        CMEMS_USER if configured else None,
-        'auth_type':   auth_type,
-        'token_valid': bool(token),
+        'auth_type':   auth_method,
+        'token_valid': auth_ok,
+        'message':     auth_msg,
         'layers': {
             'wind': {
                 'product':  'WIND_GLO_PHY_L4_NRT_012_004',
