@@ -620,6 +620,23 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:4px" id="wxLegendNote"></div>
   </div>
 
+  <!-- Weather time slider panel -->
+  <div id="wxTimePanel" style="display:none;position:absolute;bottom:58px;left:50%;
+    transform:translateX(-50%);background:rgba(10,15,24,.96);border:1px solid var(--border2);
+    border-radius:4px;padding:8px 14px;z-index:650;min-width:400px;max-width:600px;width:80%;
+    backdrop-filter:blur(8px);display:none;align-items:center;gap:10px;flex-wrap:wrap">
+    <button onclick="wxTimeStep(-1)" style="background:transparent;border:1px solid var(--border2);
+      color:var(--text-dim);padding:3px 8px;border-radius:2px;cursor:pointer;font-family:var(--mono);font-size:10px">◀</button>
+    <div style="flex:1;min-width:200px">
+      <input type="range" id="wxTimeSlider" min="0" max="39" value="0" style="width:100%;accent-color:var(--accent-l)"
+        oninput="onWxTimeChange(this.value)">
+    </div>
+    <button onclick="wxTimeStep(1)" style="background:transparent;border:1px solid var(--border2);
+      color:var(--text-dim);padding:3px 8px;border-radius:2px;cursor:pointer;font-family:var(--mono);font-size:10px">▶</button>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--accent-l);white-space:nowrap" id="wxTimeDisplay">—</div>
+    <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);white-space:nowrap" id="wxTimePct">Day 1</div>
+  </div>
+
   <!-- Simulation panel (floating, bottom of map above route bar) -->
   <div class="sim-panel" id="simPanel" style="display:none">
     <div class="sim-top">
@@ -1756,610 +1773,677 @@ function rebuildMarkersFromState(ecaTrans){
 }
 
 
-// ── PHASE 4 — WEATHER ENGINE (GFS Backend) ───────────────────────────────────
-// Uses server.py /api/weather/grid  — real NOAA GFS 1° global grid
-// Uses server.py /api/weather/route — forecast at each waypoint by ETA
-// Canvas heatmap with bilinear interpolation + coloured route line
+// ── PHASE 4 — WEATHER ENGINE (Copernicus Marine WMTS) ────────────────────────
+// Professional-grade ocean weather tiles from Copernicus Marine Service
+// Wind: 0.125° hourly | Wave: 1/12° 3-hourly | Current: 1/12° 6-hourly
+// All rendering done server-side by Copernicus — smooth, global, instant
 
-// ── CONSTANTS ─────────────────────────────────────────────────────────────────
-const BFT=[0,0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.6];
-const BFT_COLORS=['#0a1628','#082a6e','#0d50a0','#1070b8','#1496cc',
+// ── LAYER DEFINITIONS ────────────────────────────────────────────────────────
+// These match exactly what /api/cmems/status reports
+const CMEMS_LAYERS = {
+  wind: {
+    layer: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r/wind_velocity',
+    style: 'vectorStyle:solidAndVector,cmap:speed,range=0/20',
+    label: 'WIND — SPEED & DIRECTION',
+    unit:  'm/s',
+    desc:  'Global Wind 0.125° · Hourly NRT · Copernicus Marine',
+  },
+  wave: {
+    layer: 'GLOBAL_ANALYSISFORECAST_WAV_001_027/cmems_mod_glo_wav_anfc_0.083deg_PT3H-i/VHM0',
+    style: 'cmap:matter,range=0/8',
+    label: 'WAVE HEIGHT (m)',
+    unit:  'm',
+    desc:  'Significant Wave Height 1/12° · 3-hourly · Copernicus Marine',
+  },
+  current: {
+    layer: 'GLOBAL_ANALYSISFORECAST_PHY_001_024/cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i_202406/sea_water_velocity',
+    style: 'vectorStyle:solidAndVector,cmap:thermal,range=0/2',
+    label: 'OCEAN CURRENT (m/s)',
+    unit:  'm/s',
+    desc:  'Global Ocean Current 1/12° · 6-hourly · Copernicus Marine',
+  },
+};
+
+// Time steps for the 7-day forecast slider
+// We generate ISO timestamps at 6-hour intervals for up to 10 days
+function generateForecastTimes(depISO) {
+  const base = depISO ? new Date(depISO) : new Date();
+  // Round to nearest 6h
+  base.setUTCMinutes(0,0,0);
+  const h = base.getUTCHours();
+  base.setUTCHours(Math.floor(h/6)*6);
+  const times = [];
+  for (let i = 0; i <= 40; i++) {  // 40 steps × 6h = 10 days
+    const t = new Date(base.getTime() + i * 6 * 3600000);
+    times.push(t.toISOString().replace('.000Z', '.000000000Z'));
+  }
+  return times;
+}
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let wxMode       = null;          // 'wind'|'wave'|'current'|null
+let wxTileLayer  = null;          // Active Leaflet tile layer
+let wxTimeSteps  = [];            // Array of ISO timestamps
+let wxStepIdx    = 0;             // Current time step index
+let wxRoutePolylines = [];
+let wxRouteCache = null;          // {mode, depISO, segments}
+let wxCmemsOk    = null;          // null=unknown, true=auth ok, false=auth fail
+
+// ── AUTH CHECK ────────────────────────────────────────────────────────────────
+async function checkCmemsStatus() {
+  try {
+    const r = await fetch(`${API}/api/cmems/status`, {signal: AbortSignal.timeout(10000)});
+    const d = await r.json();
+    wxCmemsOk = d.configured && d.token_valid;
+    if (!wxCmemsOk) {
+      console.warn('CMEMS not configured or auth failed:', d);
+    } else {
+      console.log('CMEMS auth OK, user:', d.user);
+    }
+    return wxCmemsOk;
+  } catch(e) {
+    console.warn('CMEMS status check failed:', e);
+    wxCmemsOk = false;
+    return false;
+  }
+}
+
+// ── TILE LAYER MANAGEMENT ─────────────────────────────────────────────────────
+function buildTileUrl(layerDef, timeISO) {
+  // Route all tile requests through our backend proxy (/api/cmems/tile)
+  // The proxy injects Copernicus auth — credentials never exposed in frontend
+  const base = `${API}/api/cmems/tile`;
+  const params = new URLSearchParams({
+    SERVICE:      'WMTS',
+    REQUEST:      'GetTile',
+    VERSION:      '1.0.0',
+    LAYER:        layerDef.layer,
+    FORMAT:       'image/png',
+    TILEMATRIXSET:'EPSG:3857',
+    TILEMATRIX:   '{z}',
+    TILEROW:      '{y}',
+    TILECOL:      '{x}',
+    STYLE:        layerDef.style,
+    TIME:         timeISO || new Date().toISOString().replace('.000Z','.000000000Z'),
+  });
+  return `${base}?${params.toString()}`;
+}
+
+function setWxTileLayer(mode, timeISO) {
+  // Remove existing tile layer
+  if (wxTileLayer) { map.removeLayer(wxTileLayer); wxTileLayer = null; }
+  if (!mode) return;
+
+  const layerDef = CMEMS_LAYERS[mode];
+  if (!layerDef) return;
+
+  const tileUrl = buildTileUrl(layerDef, timeISO);
+
+  wxTileLayer = L.tileLayer(tileUrl, {
+    tileSize:    256,
+    opacity:     0.78,
+    zIndex:      300,
+    maxZoom:     12,
+    attribution: '<a href="https://marine.copernicus.eu">© Copernicus Marine</a>',
+    // Leaflet needs {z}/{x}/{y} substitution — handled in URL template above
+    // But Leaflet uses different substitution syntax — fix:
+  });
+
+  // Override getTileUrl to handle Copernicus WMTS parameter substitution
+  // Standard Leaflet tile URL uses /{z}/{x}/{y} but we need ?TILEMATRIX=z etc
+  wxTileLayer.getTileUrl = function(coords) {
+    const base = `${API}/api/cmems/tile`;
+    const params = new URLSearchParams({
+      SERVICE:      'WMTS',
+      REQUEST:      'GetTile',
+      VERSION:      '1.0.0',
+      LAYER:        layerDef.layer,
+      FORMAT:       'image/png',
+      TILEMATRIXSET:'EPSG:3857',
+      TILEMATRIX:   String(coords.z),
+      TILEROW:      String(coords.y),
+      TILECOL:      String(coords.x),
+      STYLE:        layerDef.style,
+      TIME:         timeISO || new Date().toISOString().replace('.000Z','.000000000Z'),
+    });
+    return `${base}?${params.toString()}`;
+  };
+
+  wxTileLayer.addTo(map);
+  updateWxLegend();
+}
+
+function refreshTileLayer() {
+  if (!wxMode) return;
+  const timeISO = wxTimeSteps[wxStepIdx] || new Date().toISOString().replace('.000Z','.000000000Z');
+  setWxTileLayer(wxMode, timeISO);
+}
+
+// ── MAIN WEATHER TOGGLE ───────────────────────────────────────────────────────
+async function toggleWeather(mode) {
+  const BTN = {wind:'btnWind', wave:'btnWave', current:'btnCurrent'};
+
+  if (wxMode === mode) {
+    // Turn off
+    wxMode = null;
+    Object.values(BTN).forEach(id => document.getElementById(id).classList.remove('active'));
+    if (wxTileLayer) { map.removeLayer(wxTileLayer); wxTileLayer = null; }
+    clearWxRouteColour();
+    document.getElementById('wxLegend').style.display = 'none';
+    hideWxTimeSlider();
+    return;
+  }
+
+  // Check CMEMS auth on first use
+  if (wxCmemsOk === null) {
+    showWxLoading('Checking Copernicus Marine auth…');
+    await checkCmemsStatus();
+    hideWxLoading();
+  }
+
+  if (!wxCmemsOk) {
+    showErr('Copernicus Marine not configured. Set CMEMS_USER and CMEMS_PASS environment variables on Render.');
+    return;
+  }
+
+  wxMode = mode;
+  Object.entries(BTN).forEach(([k,id]) =>
+    document.getElementById(id).classList.toggle('active', k === mode));
+
+  // Build time steps from departure time
+  const dep = document.getElementById('depTime').value;
+  const depISO = dep ? new Date(dep+':00Z').toISOString() : new Date().toISOString();
+  wxTimeSteps = generateForecastTimes(depISO);
+  wxStepIdx = 0;
+
+  // Load tile layer immediately (fast — just like map tiles)
+  const timeISO = wxTimeSteps[0];
+  setWxTileLayer(mode, timeISO);
+  showWxTimeSlider();
+
+  // Then fetch route colouring if route exists
+  if (routeData && wpCoords.length > 1) {
+    await fetchRouteWeather(depISO);
+  }
+}
+
+// ── 7-DAY TIME SLIDER ─────────────────────────────────────────────────────────
+function showWxTimeSlider() {
+  const panel = document.getElementById('wxTimePanel');
+  if (!panel) return;
+  panel.style.display = 'flex';
+  updateWxTimeDisplay();
+}
+function hideWxTimeSlider() {
+  const panel = document.getElementById('wxTimePanel');
+  if (panel) panel.style.display = 'none';
+}
+function updateWxTimeDisplay() {
+  const disp = document.getElementById('wxTimeDisplay');
+  const pct  = document.getElementById('wxTimePct');
+  if (!disp || !wxTimeSteps.length) return;
+  const iso = wxTimeSteps[wxStepIdx];
+  const dt  = new Date(iso);
+  disp.textContent = dt.toUTCString().slice(5,22)+' UTC';
+  if (pct) pct.textContent = `Day ${Math.floor(wxStepIdx*6/24)+1}`;
+}
+function onWxTimeChange(val) {
+  wxStepIdx = parseInt(val);
+  updateWxTimeDisplay();
+  refreshTileLayer();
+  // Refresh route colour for this time step
+  if (wxMode && routeData && wpCoords.length > 1) {
+    const timeISO = wxTimeSteps[wxStepIdx];
+    fetchRouteWeatherForTime(timeISO);
+  }
+}
+function wxTimeStep(dir) {
+  wxStepIdx = Math.max(0, Math.min(wxTimeSteps.length-1, wxStepIdx + dir));
+  document.getElementById('wxTimeSlider').value = wxStepIdx;
+  onWxTimeChange(wxStepIdx);
+}
+
+// ── ROUTE WEATHER (Copernicus GetFeatureInfo) ─────────────────────────────────
+// We use WMTS GetFeatureInfo to get actual Copernicus data values at waypoints
+// This is accurate, reliable, and uses the same data as the tiles
+
+async function fetchRouteWeather(depISO) {
+  // Use the current tile time step
+  const timeISO = wxTimeSteps[wxStepIdx] || depISO;
+  await fetchRouteWeatherForTime(timeISO);
+}
+
+async function fetchRouteWeatherForTime(timeISO) {
+  if (!routeData || wpCoords.length < 2 || !wxMode) return;
+
+  // Check cache
+  const cacheKey = `${wxMode}_${timeISO}`;
+  if (wxRouteCache && wxRouteCache.key === cacheKey) {
+    renderRouteColour(wxRouteCache.segments);
+    return;
+  }
+
+  showWxLoading('Fetching route weather from Copernicus…');
+  try {
+    const spd  = parseFloat(document.getElementById('spdInp').value) || 12;
+    const depMs = new Date(timeISO).getTime();
+
+    // Sample waypoints — max 60
+    const MAX = 60;
+    const step = Math.max(1, Math.floor(wpCoords.length / MAX));
+    const samples = [];
+    for (let i = 0; i < wpCoords.length; i += step) samples.push(i);
+    if (samples[samples.length-1] !== wpCoords.length-1) samples.push(wpCoords.length-1);
+
+    let cumNm = 0;
+    const pts = samples.map((idx, si) => {
+      if (si > 0) {
+        const pi = samples[si-1];
+        const [pLon,pLat] = wpCoords[pi], [cLon,cLat] = wpCoords[idx];
+        cumNm += GEO.kmToNm(GEO.gcDistKm(pLat,pLon,cLat,cLon)) * (idx - pi);
+      }
+      const [lon,lat] = wpCoords[idx];
+      // Each waypoint's ETA = departure + travel time to that point
+      const etaISO = new Date(depMs + (cumNm/spd)*3600000)
+        .toISOString().replace('.000Z','.000000000Z');
+      return { idx, lat, lon, cumNm: Math.round(cumNm), etaISO };
+    });
+
+    const layerDef = CMEMS_LAYERS[wxMode];
+
+    // Fetch weather at each waypoint using GetFeatureInfo
+    // We need tile coords for each lat/lon — use zoom level 5
+    const ZOOM = 5;
+    const wxByPt = await Promise.all(pts.map(async (pt) => {
+      const {tileX, tileY, pixI, pixJ} = latLonToTilePixel(pt.lat, pt.lon, ZOOM);
+      const params = new URLSearchParams({
+        SERVICE:      'WMTS',
+        REQUEST:      'GetFeatureInfo',
+        VERSION:      '1.0.0',
+        LAYER:        layerDef.layer,
+        TILEMATRIXSET:'EPSG:3857',
+        TILEMATRIX:   String(ZOOM),
+        TILEROW:      String(tileY),
+        TILECOL:      String(tileX),
+        i:            String(pixI),
+        j:            String(pixJ),
+        INFOFORMAT:   'application/json',
+        TIME:         pt.etaISO,
+      });
+      try {
+        const r = await fetch(`${API}/api/cmems/featureinfo?${params}`,
+          {signal: AbortSignal.timeout(15000)});
+        if (!r.ok) return null;
+        const d = await r.json();
+        return parseFeatureInfo(d, wxMode);
+      } catch(e) { return null; }
+    }));
+
+    // Build segments with fetched weather
+    const segments = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      segments.push({ A: pts[i], B: pts[i+1], wx: wxByPt[i] });
+    }
+
+    wxRouteCache = { key: cacheKey, segments };
+    renderRouteColour(segments);
+
+  } finally {
+    hideWxLoading();
+  }
+}
+
+function parseFeatureInfo(data, mode) {
+  // Copernicus GetFeatureInfo JSON format varies by product
+  // Try common response shapes
+  if (!data) return null;
+  try {
+    // Shape 1: {value: X}
+    if (data.value !== undefined) return { val: parseFloat(data.value), raw: data };
+    // Shape 2: {values: [{value: X}]}
+    if (data.values && data.values[0]) return { val: parseFloat(data.values[0].value), raw: data };
+    // Shape 3: {features: [{properties: {value: X}}]}
+    if (data.features && data.features[0]) {
+      const p = data.features[0].properties;
+      const v = p.value ?? p[Object.keys(p)[0]];
+      if (v !== undefined) return { val: parseFloat(v), raw: data };
+    }
+    // Shape 4: direct number array
+    if (Array.isArray(data) && data[0] !== undefined) return { val: parseFloat(data[0]), raw: data };
+  } catch(e) {}
+  return null;
+}
+
+function latLonToTilePixel(lat, lon, zoom) {
+  // Convert lat/lon to WMTS tile coords (EPSG:3857 / GoogleMapsCompatible)
+  const n = Math.pow(2, zoom);
+  const tileX = Math.floor((lon + 180) / 360 * n);
+  const latRad = lat * Math.PI / 180;
+  const tileY = Math.floor((1 - Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI) / 2 * n);
+  // Pixel within tile (0-255 for 256px tiles)
+  const pixI = Math.floor(((lon + 180) / 360 * n - tileX) * 256);
+  const pixJ = Math.floor(((1 - Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI) / 2 * n - tileY) * 256);
+  return {
+    tileX: Math.max(0, Math.min(n-1, tileX)),
+    tileY: Math.max(0, Math.min(n-1, tileY)),
+    pixI:  Math.max(0, Math.min(255, pixI)),
+    pixJ:  Math.max(0, Math.min(255, pixJ)),
+  };
+}
+
+// ── ROUTE COLOUR RENDERING ────────────────────────────────────────────────────
+const BFT = [0,0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.6];
+const BFT_COLORS = ['#0a1628','#082a6e','#0d50a0','#1070b8','#1496cc',
   '#1ab8d4','#5ed4a0','#a8e060','#f0d040','#f08820','#d44010','#a00808','#500000'];
-const WAVE_STOPS=[[0,'#082a6e'],[1,'#0d70a0'],[2,'#10a878'],[3,'#60d040'],
+const WAVE_STOPS = [[0,'#082a6e'],[1,'#0d70a0'],[2,'#10a878'],[3,'#60d040'],
   [4,'#c8d820'],[5,'#f0a010'],[6,'#d44010'],[7,'#a00808'],[8,'#500000']];
-const CURR_STOPS=[[0,'#082a6e'],[0.5,'#0d70c0'],[1,'#10b8a0'],[2,'#80e040'],[3,'#f0d040']];
+const CURR_STOPS = [[0,'#082a6e'],[0.5,'#0d70c0'],[1,'#10b8a0'],[2,'#80e040'],[3,'#f0d040']];
 
-function msToBft(ms){for(let i=BFT.length-1;i>=0;i--)if(ms>=BFT[i])return i;return 0;}
-function bftColor(b){return BFT_COLORS[Math.min(b,12)];}
-function hexRgb(h){return[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
-function lerp(a,b,t){return Math.round(a+(b-a)*t);}
+function msToBft(ms){ for(let i=BFT.length-1;i>=0;i--) if(ms>=BFT[i]) return i; return 0; }
+function bftColor(b){ return BFT_COLORS[Math.min(b,12)]; }
+function hexRgb(h){ return[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
+function lerpVal(a,b,t){ return Math.round(a+(b-a)*t); }
 function interpColor(stops,val){
   for(let i=0;i<stops.length-1;i++){
     if(val<=stops[i+1][0]){
       const t=(val-stops[i][0])/(stops[i+1][0]-stops[i][0]);
-      const a=hexRgb(stops[i][1]),b=hexRgb(stops[i+1][1]);
-      return[lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)];
+      const a=hexRgb(stops[i][1]),b2=hexRgb(stops[i+1][1]);
+      return `rgb(${lerpVal(a[0],b2[0],t)},${lerpVal(a[1],b2[1],t)},${lerpVal(a[2],b2[2],t)})`;
     }
   }
-  return hexRgb(stops[stops.length-1][1]);
+  return stops[stops.length-1][1];
 }
 
-// Climatological fallback (client-side, same as server)
-const CLIM_CLIENT=[
+// Climatological fallback for when GetFeatureInfo fails
+const CLIM=[
   [65,90,[9,9,8,7,6,5,5,6,7,8,9,9]],[30,65,[8,8,7,6,6,6,6,6,7,7,8,8]],
   [10,30,[6,6,5,5,5,6,6,6,6,6,6,6]],[-10,10,[4,4,4,4,5,5,5,5,5,4,4,4]],
   [-30,-10,[6,6,6,6,7,7,7,7,7,7,6,6]],[-60,-30,[8,8,8,8,9,9,9,9,9,9,8,8]],
   [-80,-60,[9,9,9,8,8,7,7,8,8,9,9,9]],
 ];
-function climClient(lat,iso){
+function climWind(lat,iso){
   const m=new Date(iso||Date.now()).getMonth();
-  for(const[mn,mx,v]of CLIM_CLIENT)if(lat>=mn&&lat<mx)return v[m];
+  for(const[mn,mx,v]of CLIM)if(lat>=mn&&lat<mx)return v[m];
   return 6;
 }
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
-let wxMode=null;
-let wxCanvas=null,wxCtx=null;
-let wxRoutePolylines=[],wxRouteLayers=[];
-let wxLoading=false;
-let wxRouteCache=null;       // {mode,depISO,segments}
-let wxGridCache=null;        // {mode,fhr,data,lookup,step}
-let wxCycleInfo='';
-
-// ── LOADING HELPERS ───────────────────────────────────────────────────────────
-function showWxLoading(msg){
-  const el=document.getElementById('wxLoading');
-  if(el){el.classList.add('show');setWxProgress(msg||'Loading…');}
-}
-function hideWxLoading(){
-  const el=document.getElementById('wxLoading');
-  if(el)el.classList.remove('show');
-}
-function setWxProgress(msg){
-  const el=document.getElementById('wxLoadingProgress');
-  if(el)el.textContent=msg;
+function clearWxRouteColour() {
+  wxRoutePolylines.forEach(l => map.removeLayer(l));
+  wxRoutePolylines = [];
+  const old = document.getElementById('wxRouteInner');
+  if (old) old.remove();
 }
 
-// ── CANVAS SETUP ──────────────────────────────────────────────────────────────
-function initWxCanvas(){
-  const old=document.getElementById('wxCanvas');if(old)old.remove();
-  const pane=map.getPanes().overlayPane;
-  wxCanvas=document.createElement('canvas');
-  wxCanvas.id='wxCanvas';
-  wxCanvas.style.cssText='position:absolute;top:0;left:0;pointer-events:none;opacity:0.72';
-  pane.appendChild(wxCanvas);
-  wxCtx=wxCanvas.getContext('2d');
-  repositionWxCanvas();
-  map.on('move zoom resize',repositionWxCanvas);
-}
-function repositionWxCanvas(){
-  if(!wxCanvas)return;
-  const tl=map.containerPointToLayerPoint([0,0]);
-  L.DomUtil.setPosition(wxCanvas,tl);
-  const s=map.getSize();
-  wxCanvas.width=s.x;wxCanvas.height=s.y;
-  if(wxGridCache) redrawHeatmap();
-}
-
-// ── HEATMAP RENDERER ──────────────────────────────────────────────────────────
-function buildGridLookup(data){
-  // Build lookup map keyed by rounded lat/lon for fast bilinear interpolation
-  const lookup=new Map();
-  let minStep=Infinity;
-  const lats=[...new Set(data.map(p=>p.lat))].sort((a,b)=>a-b);
-  const lons=[...new Set(data.map(p=>p.lon))].sort((a,b)=>a-b);
-  if(lats.length>1) minStep=Math.min(minStep,lats[1]-lats[0]);
-  if(lons.length>1) minStep=Math.min(minStep,lons[1]-lons[0]);
-  if(minStep===Infinity) minStep=1;
-  data.forEach(p=>{
-    const key=`${p.lat.toFixed(1)},${p.lon.toFixed(1)}`;
-    lookup.set(key,p);
-  });
-  return{lookup,step:minStep};
-}
-
-function getGridVal(lookup,step,lat,lon){
-  // Bilinear interpolation between 4 nearest grid points
-  const s=step;
-  const la0=Math.floor(lat/s)*s, lo0=Math.floor(lon/s)*s;
-  const la1=la0+s, lo1=lo0+s;
-  const tLat=(lat-la0)/s, tLon=(lon-lo0)/s;
-  const p00=lookup.get(`${la0.toFixed(1)},${lo0.toFixed(1)}`);
-  const p01=lookup.get(`${la0.toFixed(1)},${lo1.toFixed(1)}`);
-  const p10=lookup.get(`${la1.toFixed(1)},${lo0.toFixed(1)}`);
-  const p11=lookup.get(`${la1.toFixed(1)},${lo1.toFixed(1)}`);
-  const pts=[p00,p01,p10,p11].filter(Boolean);
-  if(pts.length===0)return null;
-  // Only render ocean points (skip if all surrounding points are null/land)
-  const oceanPts=pts.filter(p=>p.spd!==null&&p.spd!==undefined&&!isNaN(p.spd));
-  if(oceanPts.length===0)return null;
-  if(pts.length<4){
-    // Nearest neighbour fallback
-    return oceanPts[0];
-  }
-  // Bilinear
-  const getSpd=p=>p?p.spd:null;
-  const v00=getSpd(p00),v01=getSpd(p01),v10=getSpd(p10),v11=getSpd(p11);
-  if([v00,v01,v10,v11].some(v=>v===null||v===undefined||isNaN(v))){
-    return oceanPts[0];
-  }
-  const spd=lerp(lerp(v00,v01,tLon),lerp(v10,v11,tLon),tLat);
-  const dir=p00.dir||0; // direction from nearest point
-  return{spd,dir,isClim:p00.isClim||false};
-}
-
-function drawHeatmapFromCache(){
-  if(!wxCtx||!wxCanvas||!wxGridCache)return;
-  const{lookup,step,mode}=wxGridCache;
-  const w=wxCanvas.width,h=wxCanvas.height;
-  wxCtx.clearRect(0,0,w,h);
-  if(!lookup||lookup.size===0)return;
-
-  const imgData=wxCtx.createImageData(w,h);
-  const data=imgData.data;
-  const PX=2; // 2x2 pixel blocks for performance
-
-  for(let px=0;px<w;px+=PX){
-    for(let py=0;py<h;py+=PX){
-      const ll=map.containerPointToLatLng([px,py]);
-      const val=getGridVal(lookup,step,ll.lat,ll.lng);
-      if(!val)continue;
-
-      let rgb;
-      if(mode==='wind')       rgb=[...hexRgb(bftColor(msToBft(val.spd)))];
-      else if(mode==='wave')  rgb=interpColor(WAVE_STOPS,val.spd);
-      else                    rgb=interpColor(CURR_STOPS,val.spd);
-
-      for(let dx=0;dx<PX;dx++)for(let dy=0;dy<PX;dy++){
-        const i=((py+dy)*w+(px+dx))*4;
-        if(i+3>=data.length)continue;
-        data[i]=rgb[0];data[i+1]=rgb[1];data[i+2]=rgb[2];
-        data[i+3]=val.isClim?120:168;
-      }
-    }
-  }
-  wxCtx.putImageData(imgData,0,0);
-
-  // Draw direction arrows
-  if(mode!=='wave'){
-    const zoom=map.getZoom();
-    const arrowDeg=zoom<=4?12:zoom<=6?8:zoom<=8?4:2;
-    wxGridCache.data.forEach(pt=>{
-      if(pt.dir==null)return;
-      const la=Math.round(pt.lat/arrowDeg)*arrowDeg;
-      const lo=Math.round(pt.lon/arrowDeg)*arrowDeg;
-      if(Math.abs(pt.lat-la)>arrowDeg/2||Math.abs(pt.lon-lo)>arrowDeg/2)return;
-      const px2=map.latLngToContainerPoint([pt.lat,pt.lon]);
-      if(px2.x<0||px2.x>w||px2.y<0||px2.y>h)return;
-      const sz=zoom<=4?7:zoom<=6?9:11;
-      drawArrow(wxCtx,px2.x,px2.y,pt.dir,sz);
-    });
-  }
-}
-function redrawHeatmap(){drawHeatmapFromCache();}
-
-function drawArrow(ctx,x,y,dir,size){
-  ctx.save();ctx.translate(x,y);ctx.rotate(dir*Math.PI/180);
-  ctx.strokeStyle='rgba(255,255,255,0.8)';ctx.lineWidth=1.2;
-  ctx.beginPath();
-  ctx.moveTo(0,-size);ctx.lineTo(0,size*0.4);
-  ctx.moveTo(0,-size);ctx.lineTo(-size*0.38,-size*0.3);
-  ctx.moveTo(0,-size);ctx.lineTo(size*0.38,-size*0.3);
-  ctx.stroke();ctx.restore();
-}
-
-function clearWxCanvas(){
-  if(wxCtx&&wxCanvas)wxCtx.clearRect(0,0,wxCanvas.width,wxCanvas.height);
-}
-
-// ── GFS GRID FETCH ────────────────────────────────────────────────────────────
-async function fetchGFSGrid(simTimeISO){
-  if(!wxCanvas)initWxCanvas();
-  else repositionWxCanvas();
-
-  const dep=document.getElementById('depTime').value;
-  const timeISO=simTimeISO||(dep?new Date(dep+':00Z').toISOString():new Date().toISOString());
-
-  // Check if same mode+time cached
-  const fhrNeeded=estimateFHR(timeISO);
-  if(wxGridCache&&wxGridCache.mode===wxMode&&wxGridCache.fhr===fhrNeeded){
-    redrawHeatmap();
-    return;
-  }
-
-  showWxLoading('Downloading GFS weather grid…');
-  try{
-    const url=`${API}/api/weather/grid?var=${wxMode}&time=${encodeURIComponent(timeISO)}`;
-    const resp=await fetch(url,{signal:AbortSignal.timeout(60000)});
-    const d=await resp.json();
-
-    if(d.error==='beyond_forecast'){
-      // Use climatological client-side
-      buildClimatologyGrid(timeISO);
-      return;
-    }
-    if(d.error||!d.points||d.points.length===0){
-      console.warn('GFS grid error:',d.error);
-      buildClimatologyGrid(timeISO);
-      return;
-    }
-
-    wxCycleInfo=d.cycle||'';
-    const{lookup,step}=buildGridLookup(d.points);
-    wxGridCache={mode:wxMode,fhr:d.fhr,data:d.points,lookup,step};
-    setWxProgress(`Rendering GFS ${d.cycle||''} fhr+${d.fhr}…`);
-    drawHeatmapFromCache();
-    updateWxLegend();
-
-  }catch(e){
-    console.warn('GFS fetch error:',e);
-    buildClimatologyGrid(timeISO);
-  }finally{
-    hideWxLoading();
-  }
-}
-
-function estimateFHR(isoStr){
-  // Rough estimate to check cache — actual calculation is on server
-  const now=new Date();
-  const target=new Date(isoStr);
-  const hrs=Math.max(0,(target-now)/3600000);
-  if(hrs<=120)return String(Math.round(hrs/3)*3).padStart(3,'0');
-  return String(Math.round(hrs/12)*12).padStart(3,'0');
-}
-
-function buildClimatologyGrid(isoStr){
-  // Build a sparse global climatological grid client-side as fallback
-  const data=[];
-  for(let la=-75;la<=75;la+=5){
-    for(let lo=-180;lo<=175;lo+=5){
-      const spd=climClient(la,isoStr);
-      const dir=(Math.abs(la)<30)?90:270; // simplistic trade winds
-      data.push({lat:la,lon:lo,spd,dir,isClim:true});
-    }
-  }
-  const{lookup,step}=buildGridLookup(data);
-  wxGridCache={mode:wxMode,fhr:'clim',data,lookup,step};
-  drawHeatmapFromCache();
-  updateWxLegend();
-  hideWxLoading();
-}
-
-// ── ROUTE WEATHER ─────────────────────────────────────────────────────────────
-async function fetchRouteWeather(simTimeISO){
-  if(!routeData||wpCoords.length<2)return;
-
-  const dep=document.getElementById('depTime').value;
-  const depISO=simTimeISO||(dep?new Date(dep+':00Z').toISOString():new Date().toISOString());
-
-  // Cache check
-  if(wxRouteCache&&wxRouteCache.mode===wxMode&&wxRouteCache.depISO===depISO){
-    renderRouteColour(wxRouteCache.segments);
-    return;
-  }
-
-  const spd=parseFloat(document.getElementById('spdInp').value)||12;
-  const depMs=new Date(depISO).getTime();
-
-  // Sample waypoints
-  const MAX=80;
-  const step=Math.max(1,Math.floor(wpCoords.length/MAX));
-  const samples=[];
-  for(let i=0;i<wpCoords.length;i+=step)samples.push(i);
-  if(samples[samples.length-1]!==wpCoords.length-1)samples.push(wpCoords.length-1);
-
-  let cumNm=0;
-  const pts=samples.map((idx,si)=>{
-    if(si>0){
-      const pi=samples[si-1];
-      const[pLon,pLat]=wpCoords[pi],[cLon,cLat]=wpCoords[idx];
-      cumNm+=GEO.kmToNm(GEO.gcDistKm(pLat,pLon,cLat,cLon))*(idx-pi);
-    }
-    const[lon,lat]=wpCoords[idx];
-    return{idx,lat:parseFloat(lat.toFixed(3)),lon:parseFloat(lon.toFixed(3)),
-           cumNm:Math.round(cumNm),
-           eta_iso:new Date(depMs+(cumNm/spd)*3600000).toISOString()};
-  });
-
-  setWxProgress('Fetching route weather…');
-  try{
-    const url=`${API}/api/weather/route?var=${wxMode}&points=${encodeURIComponent(JSON.stringify(pts))}`;
-    const resp=await fetch(url,{signal:AbortSignal.timeout(60000)});
-    const d=await resp.json();
-    if(!d.results)throw new Error('No results');
-
-    const segments=[];
-    for(let i=0;i<pts.length-1;i++){
-      const A=pts[i],B=pts[i+1];
-      const wx=d.results[i]||{spd:climClient(A.lat,A.eta_iso),dir:0,isClim:true};
-      segments.push({A,B,wx});
-    }
-    wxRouteCache={mode:wxMode,depISO,segments};
-    renderRouteColour(segments);
-  }catch(e){
-    console.warn('Route weather error:',e);
-    // Fallback: use grid cache if available
-    if(wxGridCache)renderRouteColourFromGrid(pts);
-  }
-}
-
-function renderRouteColourFromGrid(pts){
-  if(!wxGridCache)return;
-  const{lookup,step}=wxGridCache;
-  const segments=[];
-  for(let i=0;i<pts.length-1;i++){
-    const A=pts[i],B=pts[i+1];
-    const val=getGridVal(lookup,step,A.lat,A.lon)||
-      {spd:climClient(A.lat,new Date().toISOString()),dir:0,isClim:true};
-    segments.push({A,B,wx:{...val,wave:val.spd*0.25}});
-  }
-  wxRouteCache={mode:wxMode,depISO:new Date().toISOString(),segments};
-  renderRouteColour(segments);
-}
-
-function clearWxRouteColour(){
-  wxRoutePolylines.forEach(l=>map.removeLayer(l));wxRoutePolylines=[];
-  wxRouteLayers.forEach(l=>map.removeLayer(l));wxRouteLayers=[];
-  const old=document.getElementById('wxRouteInner');if(old)old.remove();
-}
-
-function renderRouteColour(segments){
+function renderRouteColour(segments) {
   clearWxRouteColour();
-  if(!segments||segments.length===0)return;
-  const rows=[];
-  segments.forEach(({A,B,wx})=>{
-    const windMs=wx.spd??climClient(A.lat,A.eta_iso||new Date().toISOString());
-    const bft=msToBft(windMs);
-    const waveH=wx.wave??windMs*0.25;
-    let segColor;
-    if(wxMode==='wave')       segColor=`rgb(${interpColor(WAVE_STOPS,waveH).join(',')})`;
-    else if(wxMode==='current') segColor=`rgb(${interpColor(CURR_STOPS,windMs).join(',')})`;
-    else                      segColor=bftColor(bft);
+  if (!segments || segments.length === 0) return;
 
-    const numPts=Math.max(2,Math.ceil(GEO.kmToNm(GEO.gcDistKm(A.lat,A.lon,B.lat,B.lon))/80));
-    const lls=[];
-    for(let t=0;t<=numPts;t++){
-      const f=t/numPts;
-      lls.push([A.lat+(B.lat-A.lat)*f,A.lon+(B.lon-A.lon)*f]);
+  const rows = [];
+  segments.forEach(({A, B, wx}) => {
+    // wx is {val, raw} from GetFeatureInfo or null
+    let val = wx?.val;
+    let isClim = false;
+
+    if (val == null || isNaN(val)) {
+      // Fallback to climatological
+      val = wxMode === 'wave' ? 1.5 :
+            wxMode === 'current' ? 0.5 :
+            climWind(A.lat, A.etaISO);
+      isClim = true;
     }
-    const seg=L.polyline(lls,{color:segColor,weight:5,opacity:0.9,lineCap:'round',lineJoin:'round'});
-    const eta=A.eta_iso?new Date(A.eta_iso).toUTCString().slice(5,22):'—';
-    const fhrLabel=wx.fhr?`GFS +${parseInt(wx.fhr)}h`:'Climatology';
-    seg.bindPopup(`<div style="font-family:monospace;font-size:10px;line-height:1.8;min-width:180px">
-      <div style="color:${segColor};font-weight:bold;margin-bottom:4px">⬡ WP${A.idx+1}→${B.idx+1}</div>
-      <div>ETA: <b>${eta}</b></div>
-      <div>Distance: <b>${A.cumNm} NM</b></div>
-      <div>Wind: <span style="background:${segColor};color:#fff;padding:1px 5px;border-radius:2px;font-weight:bold">Bft ${bft}</span> ${(windMs*1.944).toFixed(1)} kn</div>
-      <div>Wave: <b>${waveH.toFixed(1)}m</b></div>
-      <div style="color:#888;font-size:8px">${fhrLabel}${wx.isClim?' · Climatological':''}</div>
-    </div>`,{maxWidth:240});
+
+    let segColor;
+    if (wxMode === 'wave')    segColor = interpColor(WAVE_STOPS, val);
+    else if (wxMode === 'current') segColor = interpColor(CURR_STOPS, val);
+    else {
+      const bft = msToBft(val);
+      segColor = bftColor(bft);
+    }
+
+    // Interpolate segment into sub-points for smooth colour transition
+    const distNm = GEO.kmToNm(GEO.gcDistKm(A.lat,A.lon,B.lat,B.lon));
+    const numPts = Math.max(2, Math.ceil(distNm / 60));
+    const lls = [];
+    for (let t = 0; t <= numPts; t++) {
+      const f = t / numPts;
+      lls.push([A.lat+(B.lat-A.lat)*f, A.lon+(B.lon-A.lon)*f]);
+    }
+
+    const seg = L.polyline(lls, {
+      color: segColor, weight: 5, opacity: 0.92,
+      lineCap: 'round', lineJoin: 'round'
+    });
+
+    const eta = new Date(A.etaISO).toUTCString().slice(5,22);
+    const valStr = wxMode==='wind'
+      ? `<b>Bft ${msToBft(val)}</b> (${(val*1.944).toFixed(1)} kn)`
+      : wxMode==='wave'
+      ? `<b>${val.toFixed(1)} m</b>`
+      : `<b>${val.toFixed(2)} m/s</b>`;
+    const unit = CMEMS_LAYERS[wxMode]?.label || '';
+
+    seg.bindPopup(`
+      <div style="font-family:monospace;font-size:10px;line-height:1.8;min-width:180px">
+        <div style="color:${segColor};font-weight:bold;margin-bottom:4px">⬡ WP${A.idx+1} → ${B.idx+1}</div>
+        <div>ETA: <b>${eta}</b></div>
+        <div>Dist: <b>${A.cumNm} NM</b></div>
+        <div>${unit}: ${valStr}</div>
+        ${isClim?'<div style="color:#888;font-size:8px">★ Climatological estimate</div>':'<div style="color:#888;font-size:8px">Source: Copernicus Marine</div>'}
+      </div>`, {maxWidth: 240});
+
     seg.addTo(map);
     wxRoutePolylines.push(seg);
-    rows.push({eta,bft,windKn:(windMs*1.944).toFixed(1),
-      waveH:waveH.toFixed(1),dist:A.cumNm,
-      isClim:wx.isClim||false,color:segColor});
+    rows.push({
+      eta, val,
+      label: wxMode==='wind'?`Bft ${msToBft(val)} · ${(val*1.944).toFixed(1)} kn`:
+             wxMode==='wave'?`${val.toFixed(1)} m`:
+             `${val.toFixed(2)} m/s`,
+      dist: A.cumNm, isClim, color: segColor
+    });
   });
+
   buildWxRouteTable(rows);
 }
 
-function buildWxRouteTable(rows){
-  const old=document.getElementById('wxRouteInner');if(old)old.remove();
-  const rs=document.getElementById('resSec');if(!rs)return;
-  const div=document.createElement('div');
-  div.id='wxRouteInner';div.style.marginTop='10px';
-  const cycleDiv=wxCycleInfo?`<div style="font-family:var(--mono);font-size:7px;color:var(--text-dim);margin-bottom:2px">GFS Cycle: ${wxCycleInfo}</div>`:'';
-  div.innerHTML=`<div style="font-family:var(--mono);font-size:9px;color:var(--accent-l);
-    letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;
-    display:flex;justify-content:space-between;align-items:center">
-    <span>🌦 WEATHER ALONG ROUTE</span>
-    <button onclick="this.closest('#wxRouteInner').remove()"
-      style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:10px">✕</button>
-  </div>${cycleDiv}
-  ${rows.some(r=>r.isClim)?'<div style="font-family:var(--mono);font-size:7px;color:var(--text-dim);margin-bottom:3px">★ = climatological (beyond 16-day GFS forecast)</div>':''}
-  <div style="overflow-x:auto"><table class="wx-route-table">
-    <thead><tr><th>ETA (UTC)</th><th>NM</th><th>WIND</th><th>WAVE</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr>
-      <td style="font-size:7px;white-space:nowrap">${r.eta}</td>
-      <td style="font-size:8px">${r.dist}</td>
-      <td><span style="background:${r.color};color:#fff;padding:1px 4px;border-radius:2px;font-size:8px;font-weight:bold">Bft ${r.bft}</span>
-        <span style="font-size:7px;color:var(--text-dim)"> ${r.windKn}kn${r.isClim?' ★':''}</span></td>
-      <td style="font-size:8px">${r.waveH}m${r.isClim?' <span style="color:var(--text-dim)">★</span>':''}</td>
-    </tr>`).join('')}</tbody>
-  </table></div>`;
+function buildWxRouteTable(rows) {
+  const old = document.getElementById('wxRouteInner');
+  if (old) old.remove();
+  const rs = document.getElementById('resSec');
+  if (!rs) return;
+  const layerDesc = CMEMS_LAYERS[wxMode]?.desc || '';
+  const div = document.createElement('div');
+  div.id = 'wxRouteInner';
+  div.style.marginTop = '10px';
+  div.innerHTML = `
+    <div style="font-family:var(--mono);font-size:9px;color:var(--accent-l);
+      letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;
+      display:flex;justify-content:space-between;align-items:center">
+      <span>🌦 WEATHER ALONG ROUTE</span>
+      <button onclick="this.closest('#wxRouteInner').remove()"
+        style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:10px">✕</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:7px;color:var(--text-dim);margin-bottom:3px">${layerDesc}</div>
+    ${rows.some(r=>r.isClim)?'<div style="font-family:var(--mono);font-size:7px;color:var(--text-dim);margin-bottom:3px">★ = climatological (beyond 10-day forecast)</div>':''}
+    <div style="overflow-x:auto"><table class="wx-route-table">
+      <thead><tr><th>ETA (UTC)</th><th>NM</th><th>${CMEMS_LAYERS[wxMode]?.label||'VALUE'}</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr>
+        <td style="font-size:7px;white-space:nowrap">${r.eta}</td>
+        <td style="font-size:8px">${r.dist}</td>
+        <td><span style="background:${r.color};color:#fff;padding:1px 6px;border-radius:2px;font-size:8px;font-weight:bold">${r.label}</span>${r.isClim?' <span style="color:var(--text-dim)">★</span>':''}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
   rs.appendChild(div);
 }
 
-// ── MAIN TOGGLE ───────────────────────────────────────────────────────────────
-async function toggleWeather(mode){
-  const BTN={wind:'btnWind',wave:'btnWave',current:'btnCurrent'};
-  if(wxMode===mode){
-    wxMode=null;wxGridCache=null;
-    Object.values(BTN).forEach(id=>document.getElementById(id).classList.remove('active'));
-    clearWxCanvas();clearWxRouteColour();
-    document.getElementById('wxLegend').style.display='none';
-    return;
-  }
-  wxMode=mode;
-  Object.entries(BTN).forEach(([k,id])=>
-    document.getElementById(id).classList.toggle('active',k===mode));
-  document.getElementById(BTN[mode]).textContent='⏳';
-  await refreshWeather();
-  document.getElementById(BTN[mode]).textContent=mode==='wind'?'💨':mode==='wave'?'🌊':'🌀';
+// ── LOADING HELPERS ───────────────────────────────────────────────────────────
+function showWxLoading(msg) {
+  const el = document.getElementById('wxLoading');
+  if (el) { el.classList.add('show'); setWxProgress(msg||'Loading…'); }
 }
-
-async function refreshWeather(simTimeISO=null){
-  if(!wxMode||wxLoading)return;
-  wxLoading=true;
-  showWxLoading('Fetching GFS weather grid…');
-  try{
-    await fetchGFSGrid(simTimeISO);
-    if(routeData&&wpCoords.length>1){
-      await fetchRouteWeather(simTimeISO);
-    }
-    updateWxLegend();
-  }finally{
-    wxLoading=false;
-    hideWxLoading();
-  }
+function hideWxLoading() {
+  const el = document.getElementById('wxLoading');
+  if (el) el.classList.remove('show');
 }
-
-// Refresh on zoom/pan — redraw from cache, fetch new data if zoom changed significantly
-let wxLastZoom=null;
-map.on('moveend',()=>{if(wxMode&&wxGridCache)redrawHeatmap();});
-map.on('zoomend',()=>{
-  if(!wxMode)return;
-  const z=map.getZoom();
-  // Re-fetch if zoom changed by 2+ levels (different grid resolution)
-  if(wxLastZoom===null||Math.abs(z-wxLastZoom)>=2){
-    wxLastZoom=z;
-    wxGridCache=null; // force re-fetch
-    refreshWeather(simCurrentDate?.toISOString());
-  }else{
-    redrawHeatmap();
-  }
-});
-
-// Invalidate route cache when speed/departure changes
-function onSpeedInput(){
-  wxRouteCache=null;
-  if(routeData)calcETA();
+function setWxProgress(msg) {
+  const el = document.getElementById('wxLoadingProgress');
+  if (el) el.textContent = msg;
 }
 
 // ── LEGEND ────────────────────────────────────────────────────────────────────
-function updateWxLegend(){
-  const leg=document.getElementById('wxLegend');
-  const title=document.getElementById('wxLegendTitle');
-  const bar=document.getElementById('wxLegendBar');
-  const note=document.getElementById('wxLegendNote');
-  leg.style.display='block';
-  const ctx=bar.getContext('2d');
-  const g=ctx.createLinearGradient(0,0,140,0);
-  if(wxMode==='wind'){
-    title.textContent='WIND — BEAUFORT';
-    for(let i=0;i<=12;i++)g.addColorStop(i/12,BFT_COLORS[i]);
-    document.getElementById('wxLegendMin').textContent='Bft 0';
-    document.getElementById('wxLegendMax').textContent='Bft 12';
-    note.textContent=`GFS 1° grid${wxCycleInfo?' · '+wxCycleInfo:''}`;
-  }else if(wxMode==='wave'){
-    title.textContent='WAVE HEIGHT (M)';
-    WAVE_STOPS.forEach(([v,c])=>g.addColorStop(v/8,c));
-    document.getElementById('wxLegendMin').textContent='0m';
-    document.getElementById('wxLegendMax').textContent='8m+';
-    note.textContent=`GFS Wave model${wxCycleInfo?' · '+wxCycleInfo:''}`;
-  }else{
-    title.textContent='OCEAN CURRENT (KN)';
-    CURR_STOPS.forEach(([v,c])=>g.addColorStop(v/3,c));
-    document.getElementById('wxLegendMin').textContent='0 kn';
-    document.getElementById('wxLegendMax').textContent='3 kn+';
-    note.textContent=`GFS${wxCycleInfo?' · '+wxCycleInfo:''}`;
+function updateWxLegend() {
+  const leg  = document.getElementById('wxLegend');
+  const title= document.getElementById('wxLegendTitle');
+  const bar  = document.getElementById('wxLegendBar');
+  const note = document.getElementById('wxLegendNote');
+  if (!leg || !wxMode) return;
+  leg.style.display = 'block';
+
+  const layerDef = CMEMS_LAYERS[wxMode];
+  title.textContent = layerDef.label;
+  note.textContent  = layerDef.desc;
+
+  const ctx  = bar.getContext('2d');
+  const grad = ctx.createLinearGradient(0,0,140,0);
+
+  if (wxMode === 'wind') {
+    // Speed colour ramp 0-20 m/s via Beaufort colours
+    for (let i=0; i<=12; i++) grad.addColorStop(i/12, BFT_COLORS[i]);
+    document.getElementById('wxLegendMin').textContent = '0 m/s';
+    document.getElementById('wxLegendMax').textContent = '20 m/s';
+  } else if (wxMode === 'wave') {
+    WAVE_STOPS.forEach(([v,c]) => grad.addColorStop(v/8, c));
+    document.getElementById('wxLegendMin').textContent = '0 m';
+    document.getElementById('wxLegendMax').textContent = '8 m';
+  } else {
+    CURR_STOPS.forEach(([v,c]) => grad.addColorStop(v/3, c));
+    document.getElementById('wxLegendMin').textContent = '0 m/s';
+    document.getElementById('wxLegendMax').textContent = '3 m/s';
   }
-  ctx.fillStyle=g;ctx.fillRect(0,0,140,12);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,140,12);
+}
+
+// Invalidate route cache when speed/departure changes
+function onSpeedInput() {
+  wxRouteCache = null;
+  if (routeData) calcETA();
 }
 
 // ── SIMULATION ────────────────────────────────────────────────────────────────
-let simActive=false,simPlaying=false,simProgress=0;
-let simCurrentDate=null,simIntervalId=null,simVesselMarker=null;
+let simActive=false, simPlaying=false, simProgress=0;
+let simCurrentDate=null, simIntervalId=null, simVesselMarker=null;
 
-const VESSEL_ICON=L.divIcon({
-  className:'',iconSize:[28,28],iconAnchor:[14,14],
+const VESSEL_ICON = L.divIcon({
+  className:'', iconSize:[28,28], iconAnchor:[14,14],
   html:`<div style="width:28px;height:28px;border-radius:50%;background:#0d47a1;
     border:2px solid #42a5f5;display:flex;align-items:center;justify-content:center;
     box-shadow:0 0 10px #42a5f5;font-size:16px">🚢</div>`
 });
 
-function startSimulation(){
-  if(!routeData||wpCoords.length<2)return;
-  const spd=parseFloat(document.getElementById('spdInp').value);
-  if(!spd){showErr('Enter vessel speed to run simulation.');return;}
-  simActive=true;simProgress=0;simPlaying=false;
-  const dep=document.getElementById('depTime').value;
-  simCurrentDate=dep?new Date(dep+':00Z'):new Date();
-  document.getElementById('simPanel').style.display='block';
+function startSimulation() {
+  if (!routeData||wpCoords.length<2) return;
+  const spd = parseFloat(document.getElementById('spdInp').value);
+  if (!spd) { showErr('Enter vessel speed to run simulation.'); return; }
+  simActive=true; simProgress=0; simPlaying=false;
+  const dep = document.getElementById('depTime').value;
+  simCurrentDate = dep ? new Date(dep+':00Z') : new Date();
+  document.getElementById('simPanel').style.display = 'block';
   updateSimDisplay();
-  const[oLon,oLat]=wpCoords[0];
-  if(simVesselMarker)map.removeLayer(simVesselMarker);
-  simVesselMarker=L.marker([oLat,oLon],{icon:VESSEL_ICON,zIndexOffset:2000}).addTo(map);
-  if(wxMode)refreshWeather(simCurrentDate.toISOString());
+  const [oLon,oLat] = wpCoords[0];
+  if (simVesselMarker) map.removeLayer(simVesselMarker);
+  simVesselMarker = L.marker([oLat,oLon], {icon:VESSEL_ICON, zIndexOffset:2000}).addTo(map);
 }
-function stopSimulation(){
-  simActive=false;simPlaying=false;clearInterval(simIntervalId);
-  if(simVesselMarker){map.removeLayer(simVesselMarker);simVesselMarker=null;}
-  document.getElementById('simPanel').style.display='none';
-  document.getElementById('simPlayBtn').textContent='▶ PLAY';
+function stopSimulation() {
+  simActive=false; simPlaying=false; clearInterval(simIntervalId);
+  if (simVesselMarker) { map.removeLayer(simVesselMarker); simVesselMarker=null; }
+  document.getElementById('simPanel').style.display = 'none';
+  document.getElementById('simPlayBtn').textContent = '▶ PLAY';
   document.getElementById('simPlayBtn').classList.remove('playing');
 }
-function toggleSimPlayPause(){
-  if(!simActive)return;
-  simPlaying=!simPlaying;
-  const btn=document.getElementById('simPlayBtn');
-  btn.textContent=simPlaying?'⏸ PAUSE':'▶ PLAY';
-  btn.classList.toggle('playing',simPlaying);
-  if(simPlaying)tickSim();
+function toggleSimPlayPause() {
+  if (!simActive) return;
+  simPlaying = !simPlaying;
+  const btn = document.getElementById('simPlayBtn');
+  btn.textContent = simPlaying ? '⏸ PAUSE' : '▶ PLAY';
+  btn.classList.toggle('playing', simPlaying);
+  if (simPlaying) tickSim();
 }
-function updateSimSpeed(){if(simPlaying){clearInterval(simIntervalId);tickSim();}}
-function tickSim(){
+function updateSimSpeed() { if (simPlaying) { clearInterval(simIntervalId); tickSim(); } }
+function tickSim() {
   clearInterval(simIntervalId);
-  const mult=parseInt(document.getElementById('simSpeed').value)||10;
-  simIntervalId=setInterval(()=>{
-    if(!simPlaying){clearInterval(simIntervalId);return;}
-    const spd=parseFloat(document.getElementById('spdInp').value)||12;
-    simCurrentDate=new Date(simCurrentDate.getTime()+3600000);
-    const dep=document.getElementById('depTime').value;
-    const depMs=new Date(dep+':00Z').getTime();
-    const elapsed=(simCurrentDate-depMs)/3600000;
-    const totalHrs=calcTotalDistNm()/spd;
-    simProgress=Math.min(100,(elapsed/totalHrs)*100);
+  const mult = parseInt(document.getElementById('simSpeed').value) || 10;
+  simIntervalId = setInterval(() => {
+    if (!simPlaying) { clearInterval(simIntervalId); return; }
+    const spd = parseFloat(document.getElementById('spdInp').value) || 12;
+    simCurrentDate = new Date(simCurrentDate.getTime() + 3600000);
+    const dep = document.getElementById('depTime').value;
+    const depMs = new Date(dep+':00Z').getTime();
+    const elapsed = (simCurrentDate - depMs) / 3600000;
+    const totalHrs = calcTotalDistNm() / spd;
+    simProgress = Math.min(100, (elapsed/totalHrs)*100);
     updateSimDisplay();
     moveVesselToProgress(simProgress/100);
-    // Refresh weather every 6 simulated hours
-    if(wxMode&&!wxLoading&&Math.round(elapsed)%6===0){
-      wxGridCache=null; // force new GFS hour
-      refreshWeather(simCurrentDate.toISOString());
+    // Sync weather tile to simulated time (no re-fetch — just change TIME param)
+    if (wxMode && Math.round(elapsed) % 6 === 0) {
+      const simISO = simCurrentDate.toISOString().replace('.000Z','.000000000Z');
+      setWxTileLayer(wxMode, simISO);
+      // Find closest time step index for route
+      const closest = wxTimeSteps.reduce((best,t,i) => {
+        return Math.abs(new Date(t)-simCurrentDate) < Math.abs(new Date(wxTimeSteps[best])-simCurrentDate) ? i : best;
+      }, 0);
+      wxStepIdx = closest;
+      document.getElementById('wxTimeSlider').value = wxStepIdx;
+      updateWxTimeDisplay();
     }
-    if(simProgress>=100){
-      simPlaying=false;clearInterval(simIntervalId);
-      document.getElementById('simPlayBtn').textContent='▶ PLAY';
+    if (simProgress >= 100) {
+      simPlaying=false; clearInterval(simIntervalId);
+      document.getElementById('simPlayBtn').textContent = '▶ PLAY';
       document.getElementById('simPlayBtn').classList.remove('playing');
     }
-  },Math.max(50,1000/mult));
+  }, Math.max(50, 1000/mult));
 }
-function scrubSimulation(pct){
-  const spd=parseFloat(document.getElementById('spdInp').value)||12;
-  const dep=document.getElementById('depTime').value;
-  const depMs=new Date(dep+':00Z').getTime();
-  simProgress=parseFloat(pct);
-  simCurrentDate=new Date(depMs+(simProgress/100)*(calcTotalDistNm()/spd)*3600000);
-  updateSimDisplay();moveVesselToProgress(simProgress/100);
-  if(wxMode){wxGridCache=null;refreshWeather(simCurrentDate.toISOString());}
+function scrubSimulation(pct) {
+  const spd = parseFloat(document.getElementById('spdInp').value) || 12;
+  const dep = document.getElementById('depTime').value;
+  const depMs = new Date(dep+':00Z').getTime();
+  simProgress = parseFloat(pct);
+  simCurrentDate = new Date(depMs + (simProgress/100)*(calcTotalDistNm()/spd)*3600000);
+  updateSimDisplay();
+  moveVesselToProgress(simProgress/100);
+  if (wxMode) {
+    const simISO = simCurrentDate.toISOString().replace('.000Z','.000000000Z');
+    setWxTileLayer(wxMode, simISO);
+  }
 }
-function moveVesselToProgress(frac){
-  if(!simVesselMarker||wpCoords.length<2)return;
-  const tgt=frac*calcTotalDistNm();let cum=0;
-  for(let i=0;i<wpCoords.length-1;i++){
+function moveVesselToProgress(frac) {
+  if (!simVesselMarker||wpCoords.length<2) return;
+  const tgt = frac*calcTotalDistNm(); let cum=0;
+  for (let i=0; i<wpCoords.length-1; i++) {
     const[lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
     const seg=GEO.kmToNm(GEO.gcDistKm(la1,lo1,la2,lo2));
-    if(cum+seg>=tgt){const t=(tgt-cum)/seg;simVesselMarker.setLatLng([la1+(la2-la1)*t,lo1+(lo2-lo1)*t]);return;}
+    if (cum+seg>=tgt) { const t=(tgt-cum)/seg; simVesselMarker.setLatLng([la1+(la2-la1)*t,lo1+(lo2-lo1)*t]); return; }
     cum+=seg;
   }
-  const l=wpCoords[wpCoords.length-1];simVesselMarker.setLatLng([l[1],l[0]]);
+  const l=wpCoords[wpCoords.length-1]; simVesselMarker.setLatLng([l[1],l[0]]);
 }
-function updateSimDisplay(){
-  document.getElementById('simTimeDisplay').textContent=simCurrentDate?simCurrentDate.toUTCString().slice(5,25):'—';
-  document.getElementById('simProgressFill').style.width=simProgress.toFixed(1)+'%';
-  document.getElementById('simPct').textContent=simProgress.toFixed(0)+'%';
-  document.getElementById('simScrubber').value=simProgress;
-  const spd=parseFloat(document.getElementById('spdInp').value)||12;
-  const rem=calcTotalDistNm()/spd*(1-simProgress/100);
-  document.getElementById('simEtaLabel').textContent=
-    simProgress>=100?'ARRIVED':`-${Math.floor(rem/24)}d ${Math.floor(rem%24)}h`;
+function updateSimDisplay() {
+  document.getElementById('simTimeDisplay').textContent =
+    simCurrentDate ? simCurrentDate.toUTCString().slice(5,25) : '—';
+  document.getElementById('simProgressFill').style.width = simProgress.toFixed(1)+'%';
+  document.getElementById('simPct').textContent = simProgress.toFixed(0)+'%';
+  document.getElementById('simScrubber').value = simProgress;
+  const spd = parseFloat(document.getElementById('spdInp').value)||12;
+  const rem = calcTotalDistNm()/spd*(1-simProgress/100);
+  document.getElementById('simEtaLabel').textContent =
+    simProgress>=100 ? 'ARRIVED' : `-${Math.floor(rem/24)}d ${Math.floor(rem%24)}h`;
 }
-function addSimulateButton(){
-  if(document.getElementById('simStartBtn'))return;
-  const rs=document.getElementById('resSec');if(!rs)return;
-  const btn=document.createElement('button');
-  btn.id='simStartBtn';btn.className='calc-btn';
+function addSimulateButton() {
+  if (document.getElementById('simStartBtn')) return;
+  const rs = document.getElementById('resSec'); if (!rs) return;
+  const btn = document.createElement('button');
+  btn.id='simStartBtn'; btn.className='calc-btn';
   btn.style.cssText='margin-top:8px;font-size:11px;padding:8px;background:rgba(16,185,129,.1);border-color:var(--green);color:var(--green)';
-  btn.innerHTML='🚢 SIMULATE VOYAGE';btn.onclick=startSimulation;
+  btn.innerHTML='🚢 SIMULATE VOYAGE'; btn.onclick=startSimulation;
   rs.appendChild(btn);
 }
 
@@ -2914,8 +2998,11 @@ function toggleMob(){
 function clearAll(){
   // Stop weather and simulation
   stopSimulation();
-  wxMode=null;wxLoading=false;wxRouteCache=null;wxGridCache=null;
-  clearWxCanvas();clearWxRouteColour();hideWxLoading();
+  wxMode=null;wxRouteCache=null;
+  if(wxTileLayer){map.removeLayer(wxTileLayer);wxTileLayer=null;}
+  clearWxRouteColour();hideWxLoading();hideWxTimeSlider();
+  ['btnWind','btnWave','btnCurrent'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
+  document.getElementById('wxLegend').style.display='none';
   ['btnWind','btnWave','btnCurrent'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
   document.getElementById('wxLegend').style.display='none';
   ['btnWind','btnWave','btnCurrent'].forEach(id=>{
