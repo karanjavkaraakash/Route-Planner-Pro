@@ -2651,19 +2651,68 @@ function generateVoyageReport() {
     };
   }) || [];
 
-  // Build and open the print window
-  const printWin = window.open('', '_blank', 'width=900,height=700');
-  printWin.document.write(buildReportHTML({
+  // Build HTML and open via Blob URL (never blocked by popup blockers)
+  const html = buildReportHTML({
     vesselName, voyageNo, preparedBy,
     fromName, toName, speed, depDate, etaText, transit,
     totalNm, routeType, ecaNm,
     calcDate: new Date().toUTCString().slice(5,22)+' UTC',
     wpRows, wxRows,
     wxMode: wxMode||'—',
-  }));
-  printWin.document.close();
-  printWin.focus();
-  setTimeout(() => printWin.print(), 800);
+  });
+
+  // Method 1: Blob URL (opens in new tab, then auto-prints)
+  const blob = new Blob([html], {type: 'text/html'});
+  const blobUrl = URL.createObjectURL(blob);
+  const newTab = window.open(blobUrl, '_blank');
+
+  if (newTab) {
+    // New tab opened successfully — auto-print after load
+    newTab.addEventListener('load', () => {
+      setTimeout(() => { newTab.print(); }, 500);
+    });
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  } else {
+    // Popup blocked — fallback: show inline preview with print button
+    showInlinePdfPreview(html, blobUrl);
+  }
+}
+
+function showInlinePdfPreview(html, blobUrl) {
+  // Inline full-screen preview with print button
+  const overlay = document.createElement('div');
+  overlay.id = 'pdfPreviewOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:4000;background:#1a1a2e;display:flex;flex-direction:column';
+
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText = 'background:#0a0f18;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid #2196f3';
+  toolbar.innerHTML = `
+    <span style="font-family:monospace;font-size:11px;color:#2196f3;letter-spacing:1px">📄 VOYAGE REPORT PREVIEW</span>
+    <span style="flex:1"></span>
+    <a href="${blobUrl}" download="voyage_report.html"
+      style="padding:6px 14px;background:rgba(245,158,11,.15);border:1px solid #f59e0b;color:#f59e0b;
+      font-family:monospace;font-size:10px;text-decoration:none;border-radius:3px">
+      ⬇ DOWNLOAD HTML
+    </a>
+    <button onclick="document.getElementById('pdfPreviewFrame').contentWindow.print()"
+      style="padding:6px 14px;background:rgba(33,150,243,.15);border:1px solid #2196f3;color:#2196f3;
+      font-family:monospace;font-size:10px;cursor:pointer;border-radius:3px">
+      🖨 PRINT / SAVE PDF
+    </button>
+    <button onclick="document.getElementById('pdfPreviewOverlay').remove()"
+      style="padding:6px 12px;background:transparent;border:1px solid #555;color:#aaa;
+      font-family:monospace;font-size:10px;cursor:pointer;border-radius:3px">
+      ✕ CLOSE
+    </button>`;
+
+  const iframe = document.createElement('iframe');
+  iframe.id = 'pdfPreviewFrame';
+  iframe.style.cssText = 'flex:1;border:none;background:#fff';
+  iframe.src = blobUrl;
+
+  overlay.appendChild(toolbar);
+  overlay.appendChild(iframe);
+  document.body.appendChild(overlay);
 }
 
 function buildReportHTML(d) {
