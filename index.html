@@ -1812,27 +1812,49 @@ const CMEMS_LAYERS = {
   current: { ...CMEMS_META.current, layer: CMEMS_META.current.fallback },
 };
 
-// Discover exact current dataset names from server
+// Discover working layer IDs by testing actual tile fetches on server
 async function discoverCmemsLayers() {
   try {
-    const r = await fetch(`${API}/api/cmems/discover`, {signal: AbortSignal.timeout(20000)});
-    if (!r.ok) return;
-    const d = await r.json();
-    if (d.layers) {
-      ['wind','wave','current'].forEach(mode => {
-        if (d.layers[mode]) {
-          CMEMS_LAYERS[mode].layer = d.layers[mode];
-          console.log(`CMEMS ${mode} layer: ${d.layers[mode]}`);
-        }
-      });
-      console.log(`CMEMS discovery: ${d.total_available} layers available`);
+    // First try /discover (fast, XML parsing)
+    const r = await fetch(`${API}/api/cmems/discover`, {signal: AbortSignal.timeout(25000)});
+    if (r.ok) {
+      const d = await r.json();
+      if (d.layers) {
+        ['wind','wave','current'].forEach(mode => {
+          if (d.layers[mode]) {
+            CMEMS_LAYERS[mode].layer = d.layers[mode];
+            console.log(`CMEMS ${mode}: ${d.layers[mode]}`);
+          }
+        });
+        console.log(`CMEMS discovery OK: ${d.total_available} layers`);
+        return;
+      }
     }
   } catch(e) {
-    console.warn('CMEMS layer discovery failed, using fallback IDs:', e);
+    console.warn('CMEMS discover failed:', e);
+  }
+
+  // Fallback: try /test which validates actual tile fetches
+  try {
+    console.log('Trying CMEMS tile test…');
+    const r = await fetch(`${API}/api/cmems/test`, {signal: AbortSignal.timeout(60000)});
+    if (r.ok) {
+      const d = await r.json();
+      if (d.summary) {
+        ['wind','wave','current'].forEach(mode => {
+          if (d.summary[mode]) {
+            CMEMS_LAYERS[mode].layer = d.summary[mode];
+            console.log(`CMEMS ${mode} (tested): ${d.summary[mode]}`);
+          }
+        });
+      }
+    }
+  } catch(e) {
+    console.warn('CMEMS test failed, using hardcoded fallbacks:', e);
   }
 }
 
-// Run discovery on startup (non-blocking)
+// Run discovery on startup (non-blocking — doesn't delay page load)
 discoverCmemsLayers();
 
 // Time steps for the 7-day forecast slider
