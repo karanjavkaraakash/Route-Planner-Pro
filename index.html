@@ -2516,11 +2516,364 @@ function updateSimDisplay() {
 function addSimulateButton() {
   if (document.getElementById('simStartBtn')) return;
   const rs = document.getElementById('resSec'); if (!rs) return;
+
   const btn = document.createElement('button');
   btn.id='simStartBtn'; btn.className='calc-btn';
   btn.style.cssText='margin-top:8px;font-size:11px;padding:8px;background:rgba(16,185,129,.1);border-color:var(--green);color:var(--green)';
   btn.innerHTML='🚢 SIMULATE VOYAGE'; btn.onclick=startSimulation;
   rs.appendChild(btn);
+
+  const pdfBtn = document.createElement('button');
+  pdfBtn.id='pdfExportBtn'; pdfBtn.className='calc-btn';
+  pdfBtn.style.cssText='margin-top:6px;font-size:11px;padding:8px;background:rgba(245,158,11,.1);border-color:var(--gold);color:var(--gold)';
+  pdfBtn.innerHTML='📄 EXPORT VOYAGE REPORT (PDF)'; pdfBtn.onclick=showPdfModal;
+  rs.appendChild(pdfBtn);
+}
+
+// ── PDF VOYAGE REPORT ─────────────────────────────────────────────────────────
+function showPdfModal() {
+  // Show modal to collect vessel name before generating
+  const existing = document.getElementById('pdfModal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'pdfModal';
+  modal.style.cssText = `position:fixed;inset:0;background:rgba(10,15,24,.85);z-index:3000;
+    display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)`;
+
+  modal.innerHTML = `
+    <div style="background:var(--panel);border:1px solid var(--accent-l);border-radius:6px;
+      padding:28px 32px;min-width:320px;max-width:440px;font-family:var(--mono)">
+      <div style="font-size:13px;color:var(--accent-l);letter-spacing:2px;
+        text-transform:uppercase;margin-bottom:20px">📄 Voyage Report</div>
+
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;
+        text-transform:uppercase;margin-bottom:4px">VESSEL NAME</div>
+      <input id="pdfVesselName" type="text" placeholder="e.g. CL TONI MORRISON"
+        style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--border2);
+        color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 10px;
+        border-radius:3px;margin-bottom:14px;outline:none">
+
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;
+        text-transform:uppercase;margin-bottom:4px">VOYAGE NUMBER (optional)</div>
+      <input id="pdfVoyageNo" type="text" placeholder="e.g. 4"
+        style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--border2);
+        color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 10px;
+        border-radius:3px;margin-bottom:14px;outline:none">
+
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;
+        text-transform:uppercase;margin-bottom:4px">PREPARED BY (optional)</div>
+      <input id="pdfPreparedBy" type="text" placeholder="e.g. Navigation Officer"
+        style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--border2);
+        color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 10px;
+        border-radius:3px;margin-bottom:20px;outline:none">
+
+      <div style="display:flex;gap:10px">
+        <button onclick="document.getElementById('pdfModal').remove()"
+          style="flex:1;padding:9px;background:transparent;border:1px solid var(--border2);
+          color:var(--text-dim);font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:3px">
+          CANCEL
+        </button>
+        <button onclick="generateVoyageReport()"
+          style="flex:2;padding:9px;background:rgba(245,158,11,.15);border:1px solid var(--gold);
+          color:var(--gold);font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:3px;
+          letter-spacing:1px">
+          GENERATE PDF
+        </button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('pdfVesselName').focus();
+}
+
+function generateVoyageReport() {
+  const vesselName = document.getElementById('pdfVesselName').value.trim() || 'UNNAMED VESSEL';
+  const voyageNo   = document.getElementById('pdfVoyageNo').value.trim() || '—';
+  const preparedBy = document.getElementById('pdfPreparedBy').value.trim() || 'RoutePlannerPro';
+  document.getElementById('pdfModal').remove();
+
+  // Collect all voyage data
+  const fromName = document.getElementById('oInp')?.value || document.getElementById('oLat')?.value || '—';
+  const toName   = document.getElementById('dInp')?.value || document.getElementById('dLat')?.value || '—';
+  const speed    = parseFloat(document.getElementById('spdInp').value) || 0;
+  const dep      = document.getElementById('depTime').value || '';
+  const depDate  = dep ? new Date(dep+':00Z').toUTCString().slice(5,22)+' UTC' : '—';
+  const totalNm  = Math.round(calcTotalDistNm());
+  const etaText  = document.getElementById('etaArr')?.textContent || '—';
+  const transit  = document.getElementById('etaTransit')?.textContent || '—';
+  const routeType= document.getElementById('rRoute')?.textContent || '—';
+  const ecaNm    = document.getElementById('rEca')?.textContent || '0 NM';
+
+  // Build waypoint table rows from wpCoords (sample every Nth)
+  const MAX_ROWS = 30;
+  const wpStep = Math.max(1, Math.floor(wpCoords.length / MAX_ROWS));
+  const depMs = dep ? new Date(dep+':00Z').getTime() : Date.now();
+  let cumNm = 0;
+  const wpRows = [];
+  for (let i = 0; i < wpCoords.length; i += wpStep) {
+    if (i > 0) {
+      const pi = Math.max(0, i - wpStep);
+      const [pLon,pLat] = wpCoords[pi], [cLon,cLat] = wpCoords[i];
+      cumNm += GEO.kmToNm(GEO.gcDistKm(pLat,pLon,cLat,cLon)) * wpStep;
+    }
+    const [lon,lat] = wpCoords[i];
+    const etaMs = depMs + (cumNm/speed)*3600000;
+    const etaStr = speed>0 ? new Date(etaMs).toUTCString().slice(5,22) : '—';
+    // Get bearing to next
+    let bearing = '—';
+    if (i+wpStep < wpCoords.length) {
+      const [nLon,nLat] = wpCoords[Math.min(i+wpStep,wpCoords.length-1)];
+      bearing = Math.round(GEO.initialBearing(lat,lon,nLat,nLon))+'°';
+    }
+    wpRows.push({
+      no: Math.floor(i/wpStep)+1,
+      lat: lat.toFixed(4)+'°',
+      lon: lon.toFixed(4)+'°',
+      eta: etaStr,
+      dist: Math.round(cumNm)+' NM',
+      bearing,
+    });
+  }
+
+  // Get weather data from route cache if available
+  const wxRows = wxRouteCache?.segments?.map((seg,i) => {
+    const wx = seg.wx;
+    const val = wx?.val;
+    const windMs = wxMode==='wind'?val:null;
+    const bft = windMs!=null ? msToBft(windMs) : null;
+    return {
+      eta: seg.A.etaISO ? new Date(seg.A.etaISO).toUTCString().slice(5,22) : '—',
+      dist: seg.A.cumNm+' NM',
+      wind: bft!=null ? `Bft ${bft} (${(windMs*1.944).toFixed(1)} kn)` :
+            wxMode==='wave' && val!=null ? `${val.toFixed(1)} m` :
+            wxMode==='current' && val!=null ? `${val.toFixed(2)} m/s` : '—',
+      isClim: wx?.isClim || false,
+    };
+  }) || [];
+
+  // Build and open the print window
+  const printWin = window.open('', '_blank', 'width=900,height=700');
+  printWin.document.write(buildReportHTML({
+    vesselName, voyageNo, preparedBy,
+    fromName, toName, speed, depDate, etaText, transit,
+    totalNm, routeType, ecaNm,
+    calcDate: new Date().toUTCString().slice(5,22)+' UTC',
+    wpRows, wxRows,
+    wxMode: wxMode||'—',
+  }));
+  printWin.document.close();
+  printWin.focus();
+  setTimeout(() => printWin.print(), 800);
+}
+
+function buildReportHTML(d) {
+  const accentColor = '#1a3a5c';
+  const accentLight = '#2196f3';
+  const gold = '#f59e0b';
+
+  const wpTableRows = d.wpRows.map((r,i) => `
+    <tr style="background:${i%2===0?'#f8fafc':'#fff'}">
+      <td>${r.no}</td>
+      <td>${r.eta}</td>
+      <td>${r.lat}</td>
+      <td>${r.lon}</td>
+      <td>${r.dist}</td>
+      <td>${r.bearing}</td>
+    </tr>`).join('');
+
+  const wxTableRows = d.wxRows.length>0 ? d.wxRows.map((r,i) => `
+    <tr style="background:${i%2===0?'#f8fafc':'#fff'}">
+      <td>${r.eta}</td>
+      <td>${r.dist}</td>
+      <td>${r.wind}${r.isClim?' <span style="color:#888">★</span>':''}</td>
+    </tr>`).join('') :
+    '<tr><td colspan="3" style="color:#888;text-align:center">No weather data — toggle Wind/Wave/Current and recalculate</td></tr>';
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Voyage Report — ${d.vesselName}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; font-size: 10px; color: #1a1a2e; line-height: 1.4; }
+
+  /* Cover header */
+  .header { background: ${accentColor}; color: #fff; padding: 20px 24px; display: flex;
+    justify-content: space-between; align-items: flex-start; margin-bottom: 0; }
+  .header-title { font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+  .header-sub { font-size: 9px; opacity: 0.7; letter-spacing: 2px; text-transform: uppercase; margin-top: 3px; }
+  .header-right { text-align: right; font-size: 9px; opacity: 0.8; line-height: 1.8; }
+
+  /* Blue banner */
+  .banner { background: ${accentLight}; color: #fff; padding: 8px 24px;
+    display: flex; justify-content: space-between; font-size: 9px;
+    letter-spacing: 1px; text-transform: uppercase; }
+
+  /* Summary cards */
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 0; border: 1px solid #dde; margin: 16px 0; }
+  .summary-card { padding: 12px 14px; border-right: 1px solid #dde; }
+  .summary-card:last-child { border-right: none; }
+  .summary-label { font-size: 8px; color: #666; letter-spacing: 1.5px;
+    text-transform: uppercase; margin-bottom: 4px; }
+  .summary-value { font-size: 14px; font-weight: bold; color: ${accentColor}; }
+  .summary-value.accent { color: ${accentLight}; }
+  .summary-value.gold   { color: ${gold}; }
+
+  /* Route summary */
+  .route-box { border: 1px solid #dde; padding: 12px 16px; margin: 0 0 16px;
+    display: flex; justify-content: space-between; align-items: center; }
+  .route-arrow { font-size: 18px; color: ${accentLight}; margin: 0 16px; }
+  .port { text-align: center; flex: 1; }
+  .port-name { font-size: 14px; font-weight: bold; color: ${accentColor}; }
+  .port-date { font-size: 8px; color: #666; margin-top: 3px; }
+
+  /* Section */
+  .section { margin-bottom: 20px; }
+  .section-title { font-size: 10px; font-weight: bold; letter-spacing: 2px;
+    text-transform: uppercase; color: ${accentColor}; border-bottom: 2px solid ${accentLight};
+    padding-bottom: 4px; margin-bottom: 10px; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 8.5px; }
+  th { background: ${accentColor}; color: #fff; padding: 6px 8px; text-align: left;
+    font-size: 8px; letter-spacing: 0.5px; text-transform: uppercase; font-weight: normal; }
+  td { padding: 5px 8px; border-bottom: 1px solid #eee; }
+  tr:last-child td { border-bottom: none; }
+
+  /* Notice box */
+  .notice { background: #fff8e7; border-left: 3px solid ${gold}; padding: 8px 12px;
+    font-size: 8.5px; color: #5a4000; margin-bottom: 14px; line-height: 1.6; }
+
+  /* Footer */
+  .footer { border-top: 1px solid #dde; padding-top: 8px; margin-top: 20px;
+    display: flex; justify-content: space-between; font-size: 7.5px; color: #999; }
+
+  /* Page break */
+  .page-break { page-break-before: always; padding-top: 16px; }
+
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<div class="header">
+  <div>
+    <div class="header-title">⚓ ROUTEPLANNERPRO</div>
+    <div class="header-sub">Voyage Planning Report</div>
+    <div style="margin-top:14px;font-size:22px;font-weight:bold;letter-spacing:1px">${d.vesselName}</div>
+  </div>
+  <div class="header-right">
+    <div>Calculation Date: ${d.calcDate}</div>
+    <div>Voyage No: ${d.voyageNo}</div>
+    <div>Prepared By: ${d.preparedBy}</div>
+    <div style="margin-top:6px;font-size:8px;opacity:0.6">USE FOR PLANNING PURPOSES ONLY</div>
+  </div>
+</div>
+
+<div class="banner">
+  <span>From: ${d.fromName}</span>
+  <span>→</span>
+  <span>To: ${d.toName}</span>
+  <span>|</span>
+  <span>Total Distance: ${d.totalNm.toLocaleString()} NM</span>
+  <span>|</span>
+  <span>Route: ${d.routeType}</span>
+</div>
+
+<!-- ── SUMMARY CARDS ── -->
+<div class="summary">
+  <div class="summary-card">
+    <div class="summary-label">Vessel Speed</div>
+    <div class="summary-value accent">${d.speed.toFixed(1)} kn</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Departure</div>
+    <div class="summary-value" style="font-size:10px">${d.depDate}</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Transit Time</div>
+    <div class="summary-value gold">${d.transit}</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">ECA Miles</div>
+    <div class="summary-value">${d.ecaNm}</div>
+  </div>
+</div>
+
+<!-- ── NOTICE ── -->
+<div class="notice">
+  <strong>Important:</strong> This voyage plan is for guidance purposes only. The master is solely responsible
+  for the vessel's safe and proper navigation. Always use sound judgement and deviate from this plan
+  if and when deemed necessary for the safety of the vessel, crew, and cargo.
+</div>
+
+<!-- ── WAYPOINT TABLE ── -->
+<div class="section">
+  <div class="section-title">Route Waypoints</div>
+  <table>
+    <thead>
+      <tr>
+        <th>WP#</th>
+        <th>ETA (UTC)</th>
+        <th>Latitude</th>
+        <th>Longitude</th>
+        <th>Dist. from Origin</th>
+        <th>Course to Next</th>
+      </tr>
+    </thead>
+    <tbody>${wpTableRows}</tbody>
+  </table>
+</div>
+
+<!-- ── PAGE BREAK ── -->
+<div class="page-break"></div>
+
+<!-- ── WEATHER SECTION ── -->
+<div class="section">
+  <div class="section-title">Weather Along Route${d.wxMode!=='—'?' — '+d.wxMode.toUpperCase():''}</div>
+  ${d.wxRows.length===0?'<p style="color:#888;font-size:9px;margin-bottom:8px">Enable weather overlay and calculate route to include weather data.</p>':''}
+  <table>
+    <thead>
+      <tr>
+        <th>ETA at Position (UTC)</th>
+        <th>Distance from Origin</th>
+        <th>${d.wxMode==='wind'?'Wind (Beaufort / knots)':d.wxMode==='wave'?'Wave Height (m)':d.wxMode==='current'?'Current Speed':' Weather Value'}</th>
+      </tr>
+    </thead>
+    <tbody>${wxTableRows}</tbody>
+  </table>
+  ${d.wxRows.some(r=>r.isClim)?'<p style="font-size:7.5px;color:#888;margin-top:6px">★ = Climatological estimate (beyond 7-day forecast)</p>':''}
+</div>
+
+<!-- ── DATA SOURCES ── -->
+<div class="section">
+  <div class="section-title">Data Sources & Notes</div>
+  <table>
+    <thead><tr><th>Source</th><th>Data Type</th><th>Resolution</th><th>Update Frequency</th></tr></thead>
+    <tbody>
+      <tr style="background:#f8fafc"><td>MARNET / Oak Ridge National Labs</td><td>Sea Route Calculation</td><td>Network graph</td><td>Static</td></tr>
+      <tr><td>Copernicus Marine Service</td><td>Wind / Wave / Current</td><td>0.083°–0.125°</td><td>Hourly–6-hourly</td></tr>
+      <tr style="background:#f8fafc"><td>Open-Meteo (ECMWF)</td><td>Route Waypoint Forecast</td><td>Point forecast</td><td>Hourly</td></tr>
+      <tr><td>OpenSeaMap</td><td>Nautical Chart Overlay</td><td>Tile-based</td><td>Community updated</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── FOOTER ── -->
+<div class="footer">
+  <span>Generated by RoutePlannerPro | ${d.calcDate}</span>
+  <span>${d.vesselName} | Voyage No. ${d.voyageNo}</span>
+  <span>Use for planning purposes only — Master's authority overrides</span>
+</div>
+
+</body>
+</html>`;
 }
 
 
