@@ -1779,30 +1779,61 @@ function rebuildMarkersFromState(ecaTrans){
 // All rendering done server-side by Copernicus — smooth, global, instant
 
 // ── LAYER DEFINITIONS ────────────────────────────────────────────────────────
-// These match exactly what /api/cmems/status reports
-const CMEMS_LAYERS = {
+// Layer IDs are discovered dynamically from /api/cmems/discover on startup
+// Fallback IDs used if discovery fails
+const CMEMS_META = {
   wind: {
-    layer: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r/wind_velocity',
     style: 'vectorStyle:solidAndVector,cmap:speed,range=0/20',
     label: 'WIND — SPEED & DIRECTION',
     unit:  'm/s',
-    desc:  'Global Wind 0.125° · Hourly NRT · Copernicus Marine',
+    desc:  'Global Wind 0.125° · Hourly · Copernicus Marine',
+    fallback: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r/wind_velocity',
   },
   wave: {
-    layer: 'GLOBAL_ANALYSISFORECAST_WAV_001_027/cmems_mod_glo_wav_anfc_0.083deg_PT3H-i/VHM0',
     style: 'cmap:matter,range=0/8',
     label: 'WAVE HEIGHT (m)',
     unit:  'm',
     desc:  'Significant Wave Height 1/12° · 3-hourly · Copernicus Marine',
+    fallback: 'GLOBAL_ANALYSISFORECAST_WAV_001_027/cmems_mod_glo_wav_anfc_0.083deg_PT3H-i/VHM0',
   },
   current: {
-    layer: 'GLOBAL_ANALYSISFORECAST_PHY_001_024/cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i_202406/sea_water_velocity',
     style: 'vectorStyle:solidAndVector,cmap:thermal,range=0/2',
     label: 'OCEAN CURRENT (m/s)',
     unit:  'm/s',
     desc:  'Global Ocean Current 1/12° · 6-hourly · Copernicus Marine',
+    fallback: 'GLOBAL_ANALYSISFORECAST_PHY_001_024/cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i_202406/sea_water_velocity',
   },
 };
+
+// Live layer IDs — populated by discoverCmemsLayers() on page load
+const CMEMS_LAYERS = {
+  wind:    { ...CMEMS_META.wind,    layer: CMEMS_META.wind.fallback    },
+  wave:    { ...CMEMS_META.wave,    layer: CMEMS_META.wave.fallback    },
+  current: { ...CMEMS_META.current, layer: CMEMS_META.current.fallback },
+};
+
+// Discover exact current dataset names from server
+async function discoverCmemsLayers() {
+  try {
+    const r = await fetch(`${API}/api/cmems/discover`, {signal: AbortSignal.timeout(20000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.layers) {
+      ['wind','wave','current'].forEach(mode => {
+        if (d.layers[mode]) {
+          CMEMS_LAYERS[mode].layer = d.layers[mode];
+          console.log(`CMEMS ${mode} layer: ${d.layers[mode]}`);
+        }
+      });
+      console.log(`CMEMS discovery: ${d.total_available} layers available`);
+    }
+  } catch(e) {
+    console.warn('CMEMS layer discovery failed, using fallback IDs:', e);
+  }
+}
+
+// Run discovery on startup (non-blocking)
+discoverCmemsLayers();
 
 // Time steps for the 7-day forecast slider
 // We generate ISO timestamps at 6-hour intervals for up to 10 days
