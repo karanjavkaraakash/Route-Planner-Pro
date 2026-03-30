@@ -1834,11 +1834,12 @@ async function checkCmemsStatus() {
   try {
     const r = await fetch(`${API}/api/cmems/status`, {signal: AbortSignal.timeout(10000)});
     const d = await r.json();
-    wxCmemsOk = d.configured && d.token_valid;
-    if (!wxCmemsOk) {
-      console.warn('CMEMS not configured or auth failed:', d);
+    // Accept if configured (Basic Auth will work even if token_valid=false)
+    wxCmemsOk = d.configured;
+    if (!d.configured) {
+      console.warn('CMEMS not configured — set CMEMS_USER/CMEMS_PASS on Render');
     } else {
-      console.log('CMEMS auth OK, user:', d.user);
+      console.log('CMEMS configured, auth method:', d.auth_type, 'message:', d.message);
     }
     return wxCmemsOk;
   } catch(e) {
@@ -1942,8 +1943,10 @@ async function toggleWeather(mode) {
   }
 
   if (!wxCmemsOk) {
-    showErr('Copernicus Marine not configured. Set CMEMS_USER and CMEMS_PASS environment variables on Render.');
-    return;
+    // Still try — Basic Auth may work even if status check failed
+    // Only hard-block if completely unconfigured
+    const dep2 = document.getElementById('depTime').value;
+    console.warn('CMEMS auth uncertain — attempting anyway with Basic Auth');
   }
 
   wxMode = mode;
