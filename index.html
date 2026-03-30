@@ -1850,65 +1850,57 @@ async function checkCmemsStatus() {
 }
 
 // ── TILE LAYER MANAGEMENT ─────────────────────────────────────────────────────
-function buildTileUrl(layerDef, timeISO) {
-  // Route all tile requests through our backend proxy (/api/cmems/tile)
-  // The proxy injects Copernicus auth — credentials never exposed in frontend
-  const base = `${API}/api/cmems/tile`;
-  const params = new URLSearchParams({
-    SERVICE:      'WMTS',
-    REQUEST:      'GetTile',
-    VERSION:      '1.0.0',
-    LAYER:        layerDef.layer,
-    FORMAT:       'image/png',
-    TILEMATRIXSET:'EPSG:3857',
-    TILEMATRIX:   '{z}',
-    TILEROW:      '{y}',
-    TILECOL:      '{x}',
-    STYLE:        layerDef.style,
-    TIME:         timeISO || new Date().toISOString().replace('.000Z','.000000000Z'),
-  });
-  return `${base}?${params.toString()}`;
-}
+// buildTileUrl removed — L.GridLayer.createTile() handles URL construction
 
 function setWxTileLayer(mode, timeISO) {
-  // Remove existing tile layer
   if (wxTileLayer) { map.removeLayer(wxTileLayer); wxTileLayer = null; }
   if (!mode) return;
 
   const layerDef = CMEMS_LAYERS[mode];
   if (!layerDef) return;
 
-  const tileUrl = buildTileUrl(layerDef, timeISO);
+  const activeTime = timeISO || new Date().toISOString().replace('.000Z','.000000000Z');
 
-  wxTileLayer = L.tileLayer(tileUrl, {
-    tileSize:    256,
-    opacity:     0.78,
-    zIndex:      300,
-    maxZoom:     12,
-    attribution: '<a href="https://marine.copernicus.eu">© Copernicus Marine</a>',
-    // Leaflet needs {z}/{x}/{y} substitution — handled in URL template above
-    // But Leaflet uses different substitution syntax — fix:
+  // Use L.GridLayer.extend for proper WMTS KVP URL support
+  // L.tileLayer only supports REST-style /{z}/{x}/{y} URLs
+  // L.GridLayer.createTile() gives us full control over each tile request
+  const CMEMSLayer = L.GridLayer.extend({
+    createTile: function(coords, done) {
+      const img = document.createElement('img');
+      img.alt = '';
+
+      const params = new URLSearchParams({
+        SERVICE:       'WMTS',
+        REQUEST:       'GetTile',
+        VERSION:       '1.0.0',
+        LAYER:         layerDef.layer,
+        FORMAT:        'image/png',
+        TILEMATRIXSET: 'EPSG:3857',
+        TILEMATRIX:    String(coords.z),
+        TILEROW:       String(coords.y),
+        TILECOL:       String(coords.x),
+        STYLE:         layerDef.style,
+        TIME:          activeTime,
+      });
+
+      img.src = `${API}/api/cmems/tile?${params.toString()}`;
+      img.onload  = () => done(null, img);
+      img.onerror = (e) => {
+        console.warn('CMEMS tile error z=%d x=%d y=%d', coords.z, coords.x, coords.y, e);
+        done(e, img);
+      };
+      return img;
+    }
   });
 
-  // Override getTileUrl to handle Copernicus WMTS parameter substitution
-  // Standard Leaflet tile URL uses /{z}/{x}/{y} but we need ?TILEMATRIX=z etc
-  wxTileLayer.getTileUrl = function(coords) {
-    const base = `${API}/api/cmems/tile`;
-    const params = new URLSearchParams({
-      SERVICE:      'WMTS',
-      REQUEST:      'GetTile',
-      VERSION:      '1.0.0',
-      LAYER:        layerDef.layer,
-      FORMAT:       'image/png',
-      TILEMATRIXSET:'EPSG:3857',
-      TILEMATRIX:   String(coords.z),
-      TILEROW:      String(coords.y),
-      TILECOL:      String(coords.x),
-      STYLE:        layerDef.style,
-      TIME:         timeISO || new Date().toISOString().replace('.000Z','.000000000Z'),
-    });
-    return `${base}?${params.toString()}`;
-  };
+  wxTileLayer = new CMEMSLayer({
+    tileSize:   256,
+    opacity:    0.78,
+    zIndex:     300,
+    maxZoom:    12,
+    minZoom:    1,
+    attribution:'<a href="https://marine.copernicus.eu">© Copernicus Marine Service</a>',
+  });
 
   wxTileLayer.addTo(map);
   updateWxLegend();
@@ -1917,7 +1909,7 @@ function setWxTileLayer(mode, timeISO) {
 function refreshTileLayer() {
   if (!wxMode) return;
   const timeISO = wxTimeSteps[wxStepIdx] || new Date().toISOString().replace('.000Z','.000000000Z');
-  setWxTileLayer(wxMode, timeISO);
+  setWxTileLayer(wxMode, timeISO);  // Recreates layer with new TIME param
 }
 
 // ── MAIN WEATHER TOGGLE ───────────────────────────────────────────────────────
@@ -2011,7 +2003,6 @@ function wxTimeStep(dir) {
 // This is accurate, reliable, and uses the same data as the tiles
 
 async function fetchRouteWeather(depISO) {
-  // Use the current tile time step
   const timeISO = wxTimeSteps[wxStepIdx] || depISO;
   await fetchRouteWeatherForTime(timeISO);
 }
@@ -2019,20 +2010,19 @@ async function fetchRouteWeather(depISO) {
 async function fetchRouteWeatherForTime(timeISO) {
   if (!routeData || wpCoords.length < 2 || !wxMode) return;
 
-  // Check cache
-  const cacheKey = `${wxMode}_${timeISO}`;
+  const cacheKey = `${wxMode}_${timeISO.slice(0,13)}`; // cache by hour
   if (wxRouteCache && wxRouteCache.key === cacheKey) {
     renderRouteColour(wxRouteCache.segments);
     return;
   }
 
-  showWxLoading('Fetching route weather from Copernicus…');
+  showWxLoading('Fetching route weather…');
   try {
-    const spd  = parseFloat(document.getElementById('spdInp').value) || 12;
+    const spd   = parseFloat(document.getElementById('spdInp').value) || 12;
     const depMs = new Date(timeISO).getTime();
 
-    // Sample waypoints — max 60
-    const MAX = 60;
+    // Sample waypoints — max 50
+    const MAX  = 50;
     const step = Math.max(1, Math.floor(wpCoords.length / MAX));
     const samples = [];
     for (let i = 0; i < wpCoords.length; i += step) samples.push(i);
@@ -2043,51 +2033,23 @@ async function fetchRouteWeatherForTime(timeISO) {
       if (si > 0) {
         const pi = samples[si-1];
         const [pLon,pLat] = wpCoords[pi], [cLon,cLat] = wpCoords[idx];
-        cumNm += GEO.kmToNm(GEO.gcDistKm(pLat,pLon,cLat,cLon)) * (idx - pi);
+        cumNm += GEO.kmToNm(GEO.gcDistKm(pLat,pLon,cLat,cLon)) * (idx-pi);
       }
       const [lon,lat] = wpCoords[idx];
-      // Each waypoint's ETA = departure + travel time to that point
-      const etaISO = new Date(depMs + (cumNm/spd)*3600000)
-        .toISOString().replace('.000Z','.000000000Z');
+      const etaISO = new Date(depMs + (cumNm/spd)*3600000).toISOString();
       return { idx, lat, lon, cumNm: Math.round(cumNm), etaISO };
     });
 
-    const layerDef = CMEMS_LAYERS[wxMode];
+    // Use Open-Meteo for actual weather values at waypoints
+    // This gives us reliable wind+wave data matched to ETA at each waypoint
+    // The Copernicus WMTS tiles handle the visual overlay
+    // Open-Meteo uses ECMWF/GFS models — accurate for route planning
+    const wxByPt = await fetchOpenMeteoRouteWeather(pts);
 
-    // Fetch weather at each waypoint using GetFeatureInfo
-    // We need tile coords for each lat/lon — use zoom level 5
-    const ZOOM = 5;
-    const wxByPt = await Promise.all(pts.map(async (pt) => {
-      const {tileX, tileY, pixI, pixJ} = latLonToTilePixel(pt.lat, pt.lon, ZOOM);
-      const params = new URLSearchParams({
-        SERVICE:      'WMTS',
-        REQUEST:      'GetFeatureInfo',
-        VERSION:      '1.0.0',
-        LAYER:        layerDef.layer,
-        TILEMATRIXSET:'EPSG:3857',
-        TILEMATRIX:   String(ZOOM),
-        TILEROW:      String(tileY),
-        TILECOL:      String(tileX),
-        i:            String(pixI),
-        j:            String(pixJ),
-        INFOFORMAT:   'application/json',
-        TIME:         pt.etaISO,
-      });
-      try {
-        const r = await fetch(`${API}/api/cmems/featureinfo?${params}`,
-          {signal: AbortSignal.timeout(15000)});
-        if (!r.ok) return null;
-        const d = await r.json();
-        return parseFeatureInfo(d, wxMode);
-      } catch(e) { return null; }
-    }));
-
-    // Build segments with fetched weather
     const segments = [];
-    for (let i = 0; i < pts.length - 1; i++) {
+    for (let i = 0; i < pts.length-1; i++) {
       segments.push({ A: pts[i], B: pts[i+1], wx: wxByPt[i] });
     }
-
     wxRouteCache = { key: cacheKey, segments };
     renderRouteColour(segments);
 
@@ -2096,42 +2058,69 @@ async function fetchRouteWeatherForTime(timeISO) {
   }
 }
 
-function parseFeatureInfo(data, mode) {
-  // Copernicus GetFeatureInfo JSON format varies by product
-  // Try common response shapes
-  if (!data) return null;
-  try {
-    // Shape 1: {value: X}
-    if (data.value !== undefined) return { val: parseFloat(data.value), raw: data };
-    // Shape 2: {values: [{value: X}]}
-    if (data.values && data.values[0]) return { val: parseFloat(data.values[0].value), raw: data };
-    // Shape 3: {features: [{properties: {value: X}}]}
-    if (data.features && data.features[0]) {
-      const p = data.features[0].properties;
-      const v = p.value ?? p[Object.keys(p)[0]];
-      if (v !== undefined) return { val: parseFloat(v), raw: data };
-    }
-    // Shape 4: direct number array
-    if (Array.isArray(data) && data[0] !== undefined) return { val: parseFloat(data[0]), raw: data };
-  } catch(e) {}
-  return null;
-}
+async function fetchOpenMeteoRouteWeather(pts) {
+  // Fetch wind+wave at each waypoint from Open-Meteo bulk API
+  // Groups by date to minimise API calls
+  const today = new Date(); today.setHours(0,0,0,0);
+  const results = new Array(pts.length).fill(null);
 
-function latLonToTilePixel(lat, lon, zoom) {
-  // Convert lat/lon to WMTS tile coords (EPSG:3857 / GoogleMapsCompatible)
-  const n = Math.pow(2, zoom);
-  const tileX = Math.floor((lon + 180) / 360 * n);
-  const latRad = lat * Math.PI / 180;
-  const tileY = Math.floor((1 - Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI) / 2 * n);
-  // Pixel within tile (0-255 for 256px tiles)
-  const pixI = Math.floor(((lon + 180) / 360 * n - tileX) * 256);
-  const pixJ = Math.floor(((1 - Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI) / 2 * n - tileY) * 256);
-  return {
-    tileX: Math.max(0, Math.min(n-1, tileX)),
-    tileY: Math.max(0, Math.min(n-1, tileY)),
-    pixI:  Math.max(0, Math.min(255, pixI)),
-    pixJ:  Math.max(0, Math.min(255, pixJ)),
-  };
+  // Group by forecast date
+  const byDate = new Map();
+  pts.forEach((pt,i) => {
+    const d = pt.etaISO.slice(0,10);
+    if (!byDate.has(d)) byDate.set(d,[]);
+    byDate.get(d).push({...pt, si:i});
+  });
+
+  for (const [date, wps] of byDate) {
+    const reqDate = new Date(date);
+    const daysDiff = (reqDate - today) / 86400000;
+
+    if (daysDiff > 7) {
+      // Beyond 7 days — use climatological
+      wps.forEach(wp => {
+        results[wp.si] = { val: climWind(wp.lat, wp.etaISO), wave:1.5, isClim:true };
+      });
+      continue;
+    }
+
+    // Clamp past dates to today
+    const fetchDate = daysDiff < 0 ? today.toISOString().slice(0,10) : date;
+    const targetHour = new Date(wps[0].etaISO).getUTCHours();
+
+    const lats = wps.map(w => w.lat.toFixed(3)).join(',');
+    const lons = wps.map(w => w.lon.toFixed(3)).join(',');
+    const url = `https://api.open-meteo.com/v1/forecast`
+      + `?latitude=${lats}&longitude=${lons}`
+      + `&hourly=wind_speed_10m,wind_direction_10m,wave_height`
+      + `&wind_speed_unit=ms&timezone=UTC&forecast_days=1`
+      + `&start_date=${fetchDate}&end_date=${fetchDate}`;
+
+    try {
+      const r = await fetch(url, {signal: AbortSignal.timeout(20000)});
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const d = await r.json();
+      const arr = Array.isArray(d) ? d : [d];
+      arr.forEach((pt,j) => {
+        const h = pt.hourly || {};
+        const idx = Math.min(targetHour, (h.time||[]).length-1);
+        const spd  = h.wind_speed_10m?.[idx];
+        const dir  = h.wind_direction_10m?.[idx] ?? 0;
+        const wave = h.wave_height?.[idx];
+        if (spd != null) {
+          results[wps[j].si] = { val: spd, dir, wave: wave ?? spd*0.2, isClim:false };
+        } else {
+          results[wps[j].si] = { val: climWind(wps[j].lat, wps[j].etaISO), wave:1.5, isClim:true };
+        }
+      });
+    } catch(e) {
+      console.warn('Open-Meteo route fetch error:', e);
+      wps.forEach(wp => {
+        results[wp.si] = { val: climWind(wp.lat, wp.etaISO), wave:1.5, isClim:true };
+      });
+    }
+  }
+  return results;
 }
 
 // ── ROUTE COLOUR RENDERING ────────────────────────────────────────────────────
