@@ -355,12 +355,22 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
         </div>
       </div>
       <div id="oPortMode">
-        <div class="inp-wrap">
-          <input class="inp" id="oInp" type="text" placeholder="Search port…" autocomplete="off"
-            oninput="psearch(this,'oAC','o')"
-            onfocus="if(this.value)document.getElementById('oAC').classList.add('show')"
-            onblur="setTimeout(()=>document.getElementById('oAC').classList.remove('show'),200)">
-          <div class="ac" id="oAC"></div>
+        <div class="inp-wrap" style="display:flex;gap:4px;align-items:flex-start">
+          <div style="flex:1">
+            <input class="inp" id="oInp" type="text" placeholder="Search port…" autocomplete="off"
+              oninput="psearch(this,'oAC','o')"
+              onfocus="if(this.value)document.getElementById('oAC').classList.add('show')"
+              onblur="setTimeout(()=>document.getElementById('oAC').classList.remove('show'),200)">
+            <div class="ac" id="oAC"></div>
+          </div>
+          <button id="oPortMapPickBtn" title="Pick location on map"
+            onclick="activateMapPickFromPort('o')"
+            style="flex-shrink:0;width:30px;height:30px;padding:0;background:transparent;
+            border:1px solid var(--border2);border-radius:2px;color:var(--text-dim);
+            font-size:14px;cursor:pointer;transition:all .2s;display:flex;
+            align-items:center;justify-content:center">
+            📍
+          </button>
         </div>
       </div>
       <div id="oCoordMode" class="hidden">
@@ -368,7 +378,13 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
           <input class="inp" id="oLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
           <input class="inp" id="oLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
         </div>
-        <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:3px">Click map to set position</div>
+        <button id="oMapPickBtn" onclick="activateMapPick('o')"
+          style="margin-top:5px;width:100%;padding:5px;background:transparent;
+          border:1px solid var(--border2);border-radius:2px;color:var(--text-dim);
+          font-family:var(--mono);font-size:8px;letter-spacing:1px;cursor:pointer;
+          text-transform:uppercase;transition:all .2s">
+          📍 SELECT ON MAP
+        </button>
       </div>
     </div>
 
@@ -384,12 +400,22 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
         </div>
       </div>
       <div id="dPortMode">
-        <div class="inp-wrap">
-          <input class="inp" id="dInp" type="text" placeholder="Search port…" autocomplete="off"
-            oninput="psearch(this,'dAC','d')"
-            onfocus="if(this.value)document.getElementById('dAC').classList.add('show')"
-            onblur="setTimeout(()=>document.getElementById('dAC').classList.remove('show'),200)">
-          <div class="ac" id="dAC"></div>
+        <div class="inp-wrap" style="display:flex;gap:4px;align-items:flex-start">
+          <div style="flex:1">
+            <input class="inp" id="dInp" type="text" placeholder="Search port…" autocomplete="off"
+              oninput="psearch(this,'dAC','d')"
+              onfocus="if(this.value)document.getElementById('dAC').classList.add('show')"
+              onblur="setTimeout(()=>document.getElementById('dAC').classList.remove('show'),200)">
+            <div class="ac" id="dAC"></div>
+          </div>
+          <button id="dPortMapPickBtn" title="Pick location on map"
+            onclick="activateMapPickFromPort('d')"
+            style="flex-shrink:0;width:30px;height:30px;padding:0;background:transparent;
+            border:1px solid var(--border2);border-radius:2px;color:var(--text-dim);
+            font-size:14px;cursor:pointer;transition:all .2s;display:flex;
+            align-items:center;justify-content:center">
+            📍
+          </button>
         </div>
       </div>
       <div id="dCoordMode" class="hidden">
@@ -397,7 +423,13 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
           <input class="inp" id="dLat" type="number" step="0.0001" placeholder="Lat" min="-90" max="90">
           <input class="inp" id="dLon" type="number" step="0.0001" placeholder="Lon" min="-180" max="180">
         </div>
-        <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:3px">Click map to set position</div>
+        <button id="dMapPickBtn" onclick="activateMapPick('d')"
+          style="margin-top:5px;width:100%;padding:5px;background:transparent;
+          border:1px solid var(--border2);border-radius:2px;color:var(--text-dim);
+          font-family:var(--mono);font-size:8px;letter-spacing:1px;cursor:pointer;
+          text-transform:uppercase;transition:all .2s">
+          📍 SELECT ON MAP
+        </button>
       </div>
     </div>
 
@@ -1226,6 +1258,69 @@ let oMode='port', dMode='port'; // per-field mode: 'port' or 'coord'
 let oPort=null, dPort=null, routeData=null;
 let suezOK=true, panamaOK=true, kielOK=true;
 let mapClick='o';
+let mapPickActive = null; // 'o' | 'd' | null — only set when user clicks SELECT ON MAP
+
+// Called from the 📍 button in PORT mode — switches to coord, activates pick
+function activateMapPickFromPort(which) {
+  setFieldMode(which, 'coord');
+  activateMapPick(which);
+}
+
+function activateMapPick(which) {
+  mapPickActive = which;
+  mapClick = which;
+
+  // Style ALL pick buttons (coord-mode full button + port-mode pin icon)
+  ['o','d'].forEach(w => {
+    const btn      = document.getElementById(w+'MapPickBtn');      // coord mode button
+    const pinBtn   = document.getElementById(w+'PortMapPickBtn');  // port mode pin icon
+    const isActive = w === which;
+
+    if (btn) {
+      btn.style.background   = isActive ? 'rgba(33,150,243,.2)' : 'transparent';
+      btn.style.borderColor  = isActive ? 'var(--accent-l)'     : 'var(--border2)';
+      btn.style.color        = isActive ? 'var(--accent-l)'     : 'var(--text-dim)';
+      btn.textContent        = isActive
+        ? '🎯 CLICK MAP TO SET ' + (w==='o'?'ORIGIN':'DESTINATION')
+        : '📍 SELECT ON MAP';
+    }
+    if (pinBtn) {
+      pinBtn.style.background  = isActive ? 'rgba(33,150,243,.2)' : 'transparent';
+      pinBtn.style.borderColor = isActive ? 'var(--accent-l)'     : 'var(--border2)';
+      pinBtn.style.color       = isActive ? 'var(--accent-l)'     : 'var(--text-dim)';
+      pinBtn.title             = isActive
+        ? 'Click map to set ' + (w==='o'?'origin':'destination') + ' — press Esc to cancel'
+        : 'Pick location on map';
+    }
+  });
+
+  // Show crosshair cursor on map and hint banner
+  document.getElementById('map').style.cursor = 'crosshair';
+  showHint('📍 CLICK MAP TO SET ' + (which==='o' ? 'ORIGIN' : 'DESTINATION') + ' — ESC TO CANCEL');
+}
+
+function deactivateMapPick() {
+  mapPickActive = null;
+  document.getElementById('map').style.cursor = '';
+  hideHint();
+  // Reset ALL button styles
+  ['o','d'].forEach(w => {
+    const btn    = document.getElementById(w+'MapPickBtn');
+    const pinBtn = document.getElementById(w+'PortMapPickBtn');
+    if (btn) {
+      btn.style.background  = 'transparent';
+      btn.style.borderColor = 'var(--border2)';
+      btn.style.color       = 'var(--text-dim)';
+      btn.textContent       = '📍 SELECT ON MAP';
+    }
+    if (pinBtn) {
+      pinBtn.style.background  = 'transparent';
+      pinBtn.style.borderColor = 'var(--border2)';
+      pinBtn.style.color       = 'var(--text-dim)';
+      pinBtn.title             = 'Pick location on map';
+    }
+  });
+}
 let activeVia=new Set();
 let ecaVisible=true;
 
@@ -1266,6 +1361,11 @@ map.on('mousemove',e=>{
   document.getElementById('hLat').textContent=e.latlng.lat.toFixed(4);
   document.getElementById('hLon').textContent=e.latlng.lng.toFixed(4);
 });
+// Escape key cancels SELECT ON MAP mode
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && mapPickActive) deactivateMapPick();
+});
+
 map.on('click',e=>{
   const {lat,lng}=e.latlng;
 
@@ -1287,18 +1387,19 @@ map.on('click',e=>{
   }
 
   // ── COORDINATE INPUT MODE ─────────────────────────────────────────────────
-  // Only respond if at least one field is in coord mode
-  if(oMode!=='coord'&&dMode!=='coord') return;
-  if(mapClick==='o'&&oMode==='coord'){
-    document.getElementById('oLat').value=lat.toFixed(4);
-    document.getElementById('oLon').value=lng.toFixed(4);
-    placeEndMarker('o',lat,lng,'ORIGIN');
-    if(dMode==='coord'){mapClick='d';showHint('CLICK MAP TO SET DESTINATION');}
-    else hideHint();
-  } else if(mapClick==='d'&&dMode==='coord'){
-    document.getElementById('dLat').value=lat.toFixed(4);
-    document.getElementById('dLon').value=lng.toFixed(4);
-    placeEndMarker('d',lat,lng,'DEST'); mapClick='o'; hideHint();
+  // Only respond if user has explicitly activated SELECT ON MAP
+  if (!mapPickActive) return;
+
+  if (mapPickActive === 'o') {
+    document.getElementById('oLat').value = lat.toFixed(4);
+    document.getElementById('oLon').value = lng.toFixed(4);
+    placeEndMarker('o', lat, lng, `${lat.toFixed(3)}°, ${lng.toFixed(3)}°`);
+    deactivateMapPick();
+  } else if (mapPickActive === 'd') {
+    document.getElementById('dLat').value = lat.toFixed(4);
+    document.getElementById('dLon').value = lng.toFixed(4);
+    placeEndMarker('d', lat, lng, `${lat.toFixed(3)}°, ${lng.toFixed(3)}°`);
+    deactivateMapPick();
   }
 });
 
@@ -1386,6 +1487,8 @@ function findECATransitions(coords){
 
 // ── INPUT MODE ────────────────────────────────────────────────────────────────
 function setFieldMode(which,m){
+  // Deactivate pick if switching away from coord mode
+  if (m !== 'coord' && mapPickActive === which) deactivateMapPick();
   if(which==='o'){
     oMode=m;
     document.getElementById('oPortMode').classList.toggle('hidden',m!=='port');
