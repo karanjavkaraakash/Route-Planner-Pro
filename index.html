@@ -1507,6 +1507,13 @@ const GEO = {
       const z=A*Math.sin(φ1)+B*Math.sin(φ2);
       pts.push([d(Math.atan2(y,x)),d(Math.atan2(z,Math.sqrt(x*x+y*y)))]);
     }
+    // Unwrap longitudes so they stay continuous across the antimeridian
+    // Without this, Leaflet draws the segment the wrong way around the flat map
+    for(let i=1;i<pts.length;i++){
+      let dLon=pts[i][0]-pts[i-1][0];
+      if(dLon>180)  pts[i][0]-=360; // jumped east→west: shift back west
+      if(dLon<-180) pts[i][0]+=360; // jumped west→east: shift back east
+    }
     return pts; // [[lon,lat],...]
   },
 
@@ -1555,7 +1562,21 @@ function clearGCSegments(){
 function drawGCSegment(la1,lo1,la2,lo2,legIdx){
   const distKm=GEO.gcDistKm(la1,lo1,la2,lo2);
   const n=Math.max(4,Math.floor(distKm/300));
-  const pts=GEO.gcArc(la1,lo1,la2,lo2,n).map(c=>[c[1],c[0]]);
+
+  // Get arc points with unwrapped longitudes
+  const arcPts=GEO.gcArc(la1,lo1,la2,lo2,n);
+
+  // Anchor the arc to the same longitude hemisphere as the map view centre
+  // so Leaflet renders it on the correct side of the antimeridian
+  // Shift all points by multiples of 360 to minimise total longitude span
+  const mapCentreLon=map.getCenter().lng;
+  // Use first point as reference and shift whole arc if it's far from map centre
+  const firstLon=arcPts[0][0];
+  let shift=0;
+  if(firstLon-mapCentreLon>180)  shift=-360;
+  if(firstLon-mapCentreLon<-180) shift=360;
+  const pts=arcPts.map(c=>[c[1],c[0]+shift]); // [lat,lon] for Leaflet
+
   const line=L.polyline(pts,{color:'#42a5f5',weight:1.5,opacity:.95,dashArray:'8 4'}).addTo(map);
   line._wpIdx=legIdx;
   gcSegments.push(line);
