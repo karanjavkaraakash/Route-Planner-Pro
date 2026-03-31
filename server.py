@@ -373,7 +373,7 @@ def cmems_status():
         'layers': {
             'wind': {
                 'product':  'WIND_GLO_PHY_L4_NRT_012_004',
-                'dataset':  'cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r',
+                'dataset':  'cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r_202411',
                 'variable': 'wind_speed',
                 'vector':   'wind_speed',
                 'style':    'vectorStyle:solidAndVector,cmap:speed,range=0/20',
@@ -381,7 +381,7 @@ def cmems_status():
             },
             'wave': {
                 'product':  'GLOBAL_ANALYSISFORECAST_WAV_001_027',
-                'dataset':  'cmems_mod_glo_wav_anfc_0.083deg_PT3H-i',
+                'dataset':  'cmems_mod_glo_wav_anfc_0.083deg_PT3H-i_202411',
                 'variable': 'VHM0',
                 'style':    'cmap:matter,range=0/8',
                 'desc':     'Global Wave Height 1/12° 3-hourly',
