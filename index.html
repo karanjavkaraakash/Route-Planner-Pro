@@ -1811,8 +1811,8 @@ const CMEMS_META = {
     // TIME must snap to nearest hour (PT1H product)
     timeSnapH: 1,
     // Primary: scatterometer+model wind. Fallback: try wind_speed scalar if vector fails
-    fallback: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r/wind_speed',
-    fallback2: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r/wind_speed',
+    fallback: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r_202411/wind_speed',
+    fallback2: 'WIND_GLO_PHY_L4_NRT_012_004/cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r_202411/wind_speed',
   },
   wave: {
     style: 'cmap:matter,range=0/8',
@@ -1821,7 +1821,7 @@ const CMEMS_META = {
     desc:  'Significant Wave Height 1/12° · 3-hourly · Copernicus Marine',
     // TIME must snap to nearest 3h (PT3H product)
     timeSnapH: 3,
-    fallback: 'GLOBAL_ANALYSISFORECAST_WAV_001_027/cmems_mod_glo_wav_anfc_0.083deg_PT3H-i/VHM0',
+    fallback: 'GLOBAL_ANALYSISFORECAST_WAV_001_027/cmems_mod_glo_wav_anfc_0.083deg_PT3H-i_202411/VHM0',
   },
   current: {
     style: 'vectorStyle:solidAndVector,cmap:thermal,range=0/2',
