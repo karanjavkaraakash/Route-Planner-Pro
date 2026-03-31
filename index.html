@@ -711,6 +711,7 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
 // ══════════════════════════════════════════════════════════════════════════════
 
 const API = window.location.origin;
+const WINDY_API_KEY = 'vkqJyqD1v4Sn00SPKcBzqurIEsrT7Amg';
 
 // ── PORT DATABASE ─────────────────────────────────────────────────────────────
 const PORTS=[
@@ -1900,17 +1901,25 @@ function generateForecastTimes(depISO) {
   // 40 steps at sliderStepH intervals = up to 10 days
   for (let i = 0; i <= 40; i++) {
     const t = new Date(base.getTime() + i * sliderStepH * 3600000);
-    times.push(snapTimeISO(t, snapH));
+    times.push(snapTimeISO(t, snapH, CMEMS_LAYERS[wxMode||'current']?.maxLagH));
   }
   return times;
 }
 
 // Snap a Date to the nearest valid time for a given hourly interval
-function snapTimeISO(dt, snapH) {
+// Also clamps to maxLagH in the past if defined (for observational NRT products)
+function snapTimeISO(dt, snapH, maxLagH) {
   const snapped = new Date(dt);
   snapped.setUTCMinutes(0,0,0);
   const h = snapped.getUTCHours();
   snapped.setUTCHours(Math.floor(h/snapH)*snapH);
+  // Clamp to available data range for products with observation lag
+  if (maxLagH) {
+    const latest = new Date(Date.now() - maxLagH * 3600000);
+    latest.setUTCMinutes(0,0,0);
+    latest.setUTCHours(Math.floor(latest.getUTCHours()/snapH)*snapH);
+    if (snapped > latest) return latest.toISOString().replace('.000Z','.000000000Z');
+  }
   return snapped.toISOString().replace('.000Z','.000000000Z');
 }
 
@@ -1923,12 +1932,17 @@ function getCurrentTimeISO() {
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let wxMode       = null;          // 'wind'|'wave'|'current'|null
-let wxTileLayer  = null;          // Active Leaflet tile layer
+let wxTileLayer  = null;          // Active Leaflet tile layer (CMEMS)
 let wxTimeSteps  = [];            // Array of ISO timestamps
 let wxStepIdx    = 0;             // Current time step index
 let wxRoutePolylines = [];
 let wxRouteCache = null;          // {mode, depISO, segments}
 let wxCmemsOk    = null;          // null=unknown, true=auth ok, false=auth fail
+
+// Windy API state
+let windyAPI     = null;          // Windy API instance
+let windyLoaded  = false;         // Windy libBoot loaded
+let windyReady   = false;         // windyInit completed
 
 // ── AUTH CHECK ────────────────────────────────────────────────────────────────
 async function checkCmemsStatus() {
@@ -1960,11 +1974,12 @@ function setWxTileLayer(mode, timeISO) {
   const layerDef = CMEMS_LAYERS[mode];
   if (!layerDef) return;
 
-  // Snap time to valid interval for this product
+  // Snap time to valid interval and clamp to available data range
   const snapH = layerDef.timeSnapH || 6;
+  const maxLagH = layerDef.maxLagH || null;
   const activeTime = timeISO
-    ? snapTimeISO(new Date(timeISO), snapH)
-    : snapTimeISO(new Date(), snapH);
+    ? snapTimeISO(new Date(timeISO), snapH, maxLagH)
+    : snapTimeISO(new Date(), snapH, maxLagH);
 
   // Use L.GridLayer.extend for proper WMTS KVP URL support
   // L.tileLayer only supports REST-style /{z}/{x}/{y} URLs
@@ -2022,50 +2037,158 @@ async function toggleWeather(mode) {
   const BTN = {wind:'btnWind', wave:'btnWave', current:'btnCurrent'};
 
   if (wxMode === mode) {
-    // Turn off
     wxMode = null;
     Object.values(BTN).forEach(id => document.getElementById(id).classList.remove('active'));
     if (wxTileLayer) { map.removeLayer(wxTileLayer); wxTileLayer = null; }
     clearWxRouteColour();
     document.getElementById('wxLegend').style.display = 'none';
     hideWxTimeSlider();
+    hideWindyPanel();
     return;
-  }
-
-  // Check CMEMS auth on first use
-  if (wxCmemsOk === null) {
-    showWxLoading('Checking Copernicus Marine auth…');
-    await checkCmemsStatus();
-    hideWxLoading();
-  }
-
-  if (!wxCmemsOk) {
-    // Still try — Basic Auth may work even if status check failed
-    // Only hard-block if completely unconfigured
-    const dep2 = document.getElementById('depTime').value;
-    console.warn('CMEMS auth uncertain — attempting anyway with Basic Auth');
   }
 
   wxMode = mode;
   Object.entries(BTN).forEach(([k,id]) =>
     document.getElementById(id).classList.toggle('active', k === mode));
 
-  // Build time steps from departure time
   const dep = document.getElementById('depTime').value;
   const depISO = dep ? new Date(dep+':00Z').toISOString() : new Date().toISOString();
-  // Regenerate time steps for this mode's snap interval
+
+  if (mode === 'wind') {
+    // Wind: use Windy Map Forecast API (ECMWF 7-day forecast + animated particles)
+    await initWindyOverlay(depISO);
+    if (routeData && wpCoords.length > 1) await fetchRouteWeather(depISO);
+    return;
+  }
+
+  // Wave / Current: use CMEMS WMTS tiles
+  if (wxCmemsOk === null) {
+    showWxLoading('Checking Copernicus Marine auth…');
+    await checkCmemsStatus();
+    hideWxLoading();
+  }
+  hideWindyPanel();
   wxTimeSteps = generateForecastTimes(depISO);
   wxStepIdx = 0;
-
-  const timeISO = wxTimeSteps[0];
-  setWxTileLayer(mode, timeISO);
+  setWxTileLayer(mode, wxTimeSteps[0]);
   showWxTimeSlider();
+  if (routeData && wpCoords.length > 1) await fetchRouteWeather(depISO);
+}
 
-  // Then fetch route colouring if route exists
-  if (routeData && wpCoords.length > 1) {
-    await fetchRouteWeather(depISO);
+// ── WINDY MAP FORECAST INTEGRATION ──────────────────────────────────────────
+// Windy API provides ECMWF 7-day animated wind forecast
+// It runs in its own div overlaid on the main map, synced by lat/lon/zoom
+
+function hideWindyPanel() {
+  document.getElementById('windyPanel').style.display = 'none';
+  map.off('moveend.windy');
+}
+
+async function initWindyOverlay(depISO) {
+  showWxLoading('Loading Windy wind forecast…');
+  try {
+    // Dynamically load Windy libBoot.js on first use
+    if (!windyLoaded) {
+      await loadScript('https://api.windy.com/assets/map-forecast/libBoot.js');
+      windyLoaded = true;
+    }
+
+    // Show Windy panel over the map
+    document.getElementById('windyPanel').style.display = 'block';
+
+    const centre = map.getCenter();
+    const zoom   = map.getZoom();
+    const ts     = getWindyTimestamp(depISO);
+
+    if (windyReady && windyAPI) {
+      // Already initialised — just sync position and time
+      windyAPI.map.setView([centre.lat, centre.lng], zoom, {animate:false});
+      windyAPI.store.set('timestamp', ts);
+      showWindyLegend();
+      return;
+    }
+
+    // First init
+    await new Promise((resolve, reject) => {
+      try {
+        windyInit({
+          key:       WINDY_API_KEY,
+          verbose:   false,
+          lat:       centre.lat,
+          lon:       centre.lng,
+          zoom:      zoom,
+          overlay:   'wind',
+          level:     'surface',
+          timestamp: ts,
+        }, api => {
+          windyAPI   = api;
+          windyReady = true;
+
+          // Sync: Windy → main map
+          api.map.on('moveend', () => {
+            if (wxMode !== 'wind') return;
+            const c = api.map.getCenter();
+            map.setView([c.lat, c.lng], api.map.getZoom(), {animate:false});
+          });
+
+          // Sync: main map → Windy (on wind mode only)
+          map.on('moveend.windy', () => {
+            if (wxMode !== 'wind' || !windyReady) return;
+            const c = map.getCenter();
+            api.map.setView([c.lat, c.lng], map.getZoom(), {animate:false});
+          });
+
+          showWindyLegend();
+          resolve();
+        });
+      } catch(e) { reject(e); }
+    });
+
+  } catch(e) {
+    console.error('Windy init error:', e);
+    hideWindyPanel();
+    showErr('Windy wind forecast failed to load. Try refreshing.');
+  } finally {
+    hideWxLoading();
   }
 }
+
+function getWindyTimestamp(isoStr) {
+  const d   = isoStr ? new Date(isoStr) : new Date();
+  const now = new Date();
+  const max = new Date(now.getTime() + 7*24*3600000);
+  const clamped = d > max ? max : d < now ? now : d;
+  clamped.setUTCMinutes(0,0,0);
+  return clamped.getTime();
+}
+
+function showWindyLegend() {
+  const leg = document.getElementById('wxLegend');
+  if (!leg) return;
+  leg.style.display = 'block';
+  document.getElementById('wxLegendTitle').textContent = 'WIND SPEED & DIRECTION';
+  document.getElementById('wxLegendNote').textContent  = 'ECMWF 7-day forecast · Animated particles · Windy.com';
+  document.getElementById('wxLegendMin').textContent   = '0 m/s';
+  document.getElementById('wxLegendMax').textContent   = '30 m/s';
+  const ctx  = document.getElementById('wxLegendBar').getContext('2d');
+  const grad = ctx.createLinearGradient(0,0,140,0);
+  ['#3288bd','#66c2a5','#abdda4','#fdae61','#f46d43','#9e0142']
+    .forEach((c,i,a) => grad.addColorStop(i/(a.length-1), c));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,140,12);
+}
+
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${url}"]`)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = url; s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load: '+url));
+    document.head.appendChild(s);
+  });
+}
+
 
 // ── 7-DAY TIME SLIDER ─────────────────────────────────────────────────────────
 function showWxTimeSlider() {
@@ -3499,7 +3622,7 @@ function clearAll(){
   stopSimulation();
   wxMode=null;wxRouteCache=null;
   if(wxTileLayer){map.removeLayer(wxTileLayer);wxTileLayer=null;}
-  clearWxRouteColour();hideWxLoading();hideWxTimeSlider();
+  clearWxRouteColour();hideWxLoading();hideWxTimeSlider();hideWindyPanel();
   ['btnWind','btnWave','btnCurrent'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
   document.getElementById('wxLegend').style.display='none';
   ['btnWind','btnWave','btnCurrent'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
