@@ -335,7 +335,7 @@ def cmems_status():
                 'product':  'WIND_GLO_PHY_L4_NRT_012_004',
                 'dataset':  'cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r',
                 'variable': 'wind_speed',
-                'vector':   'wind_velocity',
+                'vector':   'wind_speed',
                 'style':    'vectorStyle:solidAndVector,cmap:speed,range=0/20',
                 'desc':     'Global Wind 0.125° hourly NRT',
             },
