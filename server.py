@@ -322,7 +322,7 @@ def cmems_layers():
                 layers.append(ident.text)
         
         # Filter to just wind/wave/current relevant layers
-        keywords = ['wind','wav','cur','WIND','WAV','CUR','PHY']
+        keywords = ['wind','wav','cur','WIND','WAV','CUR','PHY','NRT','L4']
         relevant = [l for l in layers if any(k in l for k in keywords)]
         
         text = f"Total layers: {len(layers)}\n"
@@ -373,8 +373,8 @@ def cmems_status():
         'layers': {
             'wind': {
                 'product':  'WIND_GLO_PHY_L4_NRT_012_004',
-                'dataset':  'cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H-r_202411',
-                'variable': 'wind_speed',
+                'dataset':  'cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H_202207/wind',
+                'variable': 'wind',
                 'vector':   'wind_speed',
                 'style':    'vectorStyle:solidAndVector,cmap:speed,range=0/20',
                 'desc':     'Global Wind 0.125° hourly NRT',
