@@ -299,6 +299,46 @@ def cmems_capabilities():
     return resp
 
 
+@app.route("/api/cmems/layers")
+def cmems_layers():
+    """
+    Fetch GetCapabilities and return ALL layer identifiers as plain text.
+    Use this to find the exact correct layer IDs for wind, wave, current.
+    """
+    params = {'SERVICE':'WMTS','REQUEST':'GetCapabilities','VERSION':'1.0.0'}
+    content, ctype, status = cmems_request(params)
+    if status != 200:
+        return Response(f"GetCapabilities failed: HTTP {status}\n{content[:500]}", 
+                       status=status, content_type='text/plain')
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(content)
+        ns = {'wmts':'http://www.opengis.net/wmts/1.0',
+              'ows': 'http://www.opengis.net/ows/1.1'}
+        layers = []
+        for el in root.findall('.//wmts:Layer', ns):
+            ident = el.find('ows:Identifier', ns)
+            if ident is not None and ident.text:
+                layers.append(ident.text)
+        
+        # Filter to just wind/wave/current relevant layers
+        keywords = ['wind','wav','cur','WIND','WAV','CUR','PHY']
+        relevant = [l for l in layers if any(k in l for k in keywords)]
+        
+        text = f"Total layers: {len(layers)}\n"
+        text += f"Wind/Wave/Current relevant ({len(relevant)}):\n"
+        text += "\n".join(relevant)
+        text += f"\n\nALL LAYERS ({len(layers)}):\n"
+        text += "\n".join(layers)
+        
+        r = Response(text, content_type='text/plain')
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r
+    except Exception as e:
+        return Response(f"Parse error: {e}\nRaw (first 2000):\n{content[:2000].decode('utf-8','ignore')}",
+                       content_type='text/plain')
+
+
 @app.route("/api/cmems/featureinfo")
 def cmems_featureinfo():
     """
