@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RoutePlannerPro — Professional Voyage Planning</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.4.0/dist/leaflet.css"/>
+<!-- Leaflet 1.4.0 required by Windy API; compatible with our main map -->
+  <script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js"></script>
 <style>
 :root{
   --bg:#0a0f18;--panel:#0f1825;--panel2:#141e2c;--border:#1a2a3d;--border2:#223348;
@@ -2115,6 +2116,13 @@ async function initWindyOverlay(depISO) {
     }
 
     // First init
+    // Windy needs the #windy div to exist and be visible before windyInit
+    // Make sure it's in the DOM
+    const windyDiv = document.getElementById('windy');
+    if (!windyDiv) {
+      throw new Error('#windy div not found in DOM');
+    }
+
     await new Promise((resolve, reject) => {
       try {
         windyInit({
@@ -2130,14 +2138,14 @@ async function initWindyOverlay(depISO) {
           windyAPI   = api;
           windyReady = true;
 
-          // Sync: Windy → main map
+          // Sync: Windy map pan/zoom → main map
           api.map.on('moveend', () => {
             if (wxMode !== 'wind') return;
             const c = api.map.getCenter();
             map.setView([c.lat, c.lng], api.map.getZoom(), {animate:false});
           });
 
-          // Sync: main map → Windy (on wind mode only)
+          // Sync: main map pan/zoom → Windy
           map.on('moveend.windy', () => {
             if (wxMode !== 'wind' || !windyReady) return;
             const c = map.getCenter();
@@ -2147,7 +2155,10 @@ async function initWindyOverlay(depISO) {
           showWindyLegend();
           resolve();
         });
-      } catch(e) { reject(e); }
+      } catch(e) {
+        console.error('windyInit failed:', e);
+        reject(e);
+      }
     });
 
   } catch(e) {
