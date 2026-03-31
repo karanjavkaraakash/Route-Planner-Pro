@@ -620,6 +620,11 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
     <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:4px" id="wxLegendNote"></div>
   </div>
 
+  <!-- Windy wind overlay — covers map when wind toggled, synced to main map -->
+  <div id="windyPanel" style="display:none;position:absolute;inset:0;z-index:500">
+    <div id="windy" style="width:100%;height:100%"></div>
+  </div>
+
   <!-- Weather time slider panel -->
   <div id="wxTimePanel" style="display:none;position:absolute;bottom:58px;left:50%;
     transform:translateX(-50%);background:rgba(10,15,24,.96);border:1px solid var(--border2);
@@ -2080,8 +2085,9 @@ async function toggleWeather(mode) {
 // It runs in its own div overlaid on the main map, synced by lat/lon/zoom
 
 function hideWindyPanel() {
-  document.getElementById('windyPanel').style.display = 'none';
-  map.off('moveend.windy');
+  const p = document.getElementById('windyPanel');
+  if (p) p.style.display = 'none';
+  try { map.off('moveend.windy'); } catch(e) {}
 }
 
 async function initWindyOverlay(depISO) {
