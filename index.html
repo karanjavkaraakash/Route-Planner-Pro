@@ -656,6 +656,9 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   <!-- Windy wind overlay — covers map area only, sidebar still interactive -->
   <div id="windyPanel" style="display:none;position:absolute;inset:0;z-index:490;pointer-events:none">
     <div id="windy" style="width:100%;height:100%;pointer-events:all"></div>
+    <!-- Separate Leaflet map for route overlay — sits above Windy, fully controlled by us -->
+    <div id="windyRouteMap" style="position:absolute;inset:0;z-index:600;
+      pointer-events:none;background:transparent"></div>
   </div>
 
   <!-- Weather time slider panel -->
@@ -2052,6 +2055,8 @@ let wxCmemsOk    = null;          // null=unknown, true=auth ok, false=auth fail
 let windyAPI     = null;          // Windy API instance
 let windyLoaded  = false;         // Windy libBoot loaded
 let windyReady   = false;         // windyInit completed
+let windyRouteMap = null;         // Separate Leaflet map for route overlay on Windy
+let windyRouteLayers = [];        // Route layers on windyRouteMap
 
 // ── AUTH CHECK ────────────────────────────────────────────────────────────────
 async function checkCmemsStatus() {
@@ -2196,6 +2201,9 @@ function hideWindyPanel() {
   const p = document.getElementById('windyPanel');
   if (p) p.style.display = 'none';
   try { map.off('moveend.windy'); } catch(e) {}
+  // Remove overlay route layers (windyRouteMap persists for reuse)
+  windyRouteLayers.forEach(l => { try { if(windyRouteMap) windyRouteMap.removeLayer(l); } catch(e){} });
+  windyRouteLayers = [];
 }
 
 async function initWindyOverlay(depISO) {
@@ -2215,10 +2223,11 @@ async function initWindyOverlay(depISO) {
     const ts     = getWindyTimestamp(depISO);
 
     if (windyReady && windyAPI) {
-      // Already initialised — sync position, time and redraw route
+      // Already initialised — sync position and time
       windyAPI.map.setView([centre.lat, centre.lng], zoom, {animate:false});
       windyAPI.store.set('timestamp', ts);
-      drawRouteOnWindy(windyAPI.map);
+      syncWindyRouteMap();
+      drawRouteOnWindyOverlay();
       showWindyLegend();
       return;
     }
@@ -2246,39 +2255,33 @@ async function initWindyOverlay(depISO) {
           windyAPI   = api;
           windyReady = true;
 
-          // Sync: Windy map pan/zoom → main map
-          // Also redraw route on every moveend — catches antimeridian reloads
-          api.map.on('moveend', () => {
+          // Sync: Windy map pan/zoom → main map + route overlay map
+          api.map.on('move', () => {
             if (wxMode !== 'wind') return;
             const c = api.map.getCenter();
-            map.setView([c.lat, c.lng], api.map.getZoom(), {animate:false});
-            // Redraw route — Windy may have cleared layers on internal re-render
-            drawRouteOnWindy(api.map);
-          });
-
-          // Windy fires 'redrawFinished' after internal tile reloads
-          // (including antimeridian crossings and layer changes)
-          api.broadcast.on('redrawFinished', () => {
-            if (wxMode !== 'wind') return;
-            drawRouteOnWindy(api.map);
-          });
-
-          // Also catch param changes (timestamp, overlay switch etc)
-          api.store.on('timestamp', () => {
-            if (wxMode !== 'wind') return;
-            // Small delay to let Windy finish rendering before overlaying
-            setTimeout(() => drawRouteOnWindy(api.map), 100);
+            const z = api.map.getZoom();
+            // Sync main map (no animation — instant)
+            map.setView([c.lat, c.lng], z, {animate:false});
+            // Sync route overlay map (instant — keeps route locked to Windy)
+            if (windyRouteMap) {
+              windyRouteMap.setView([c.lat, c.lng], z, {animate:false});
+            }
           });
 
           // Sync: main map pan/zoom → Windy
           map.on('moveend.windy', () => {
             if (wxMode !== 'wind' || !windyReady) return;
             const c = map.getCenter();
-            api.map.setView([c.lat, c.lng], map.getZoom(), {animate:false});
+            const z = map.getZoom();
+            api.map.setView([c.lat, c.lng], z, {animate:false});
+            if (windyRouteMap) windyRouteMap.setView([c.lat, c.lng], z, {animate:false});
           });
 
-          // Draw existing route on Windy's map
-          drawRouteOnWindy(api.map);
+          // Create the transparent route overlay map
+          initWindyRouteMap(centre, zoom);
+
+          // Draw route on our overlay map (not on Windy's map)
+          drawRouteOnWindyOverlay();
           showWindyLegend();
           resolve();
         });
@@ -2308,81 +2311,96 @@ function getWindyTimestamp(isoStr) {
 
 // Draw the current calculated route on a given Leaflet map instance
 // Used to overlay the route on Windy's map
-let windyRouteLayers = [];  // Track layers added to Windy map
+// ── WINDY ROUTE OVERLAY MAP ──────────────────────────────────────────────────
+// A separate transparent Leaflet map locked to #windyRouteMap div.
+// This map has NO tiles — only our route polylines and markers.
+// Because it's a separate Leaflet instance, Windy can never affect it.
 
-// Debounce timer for drawRouteOnWindy to prevent flicker on rapid events
-let _drawWindyTimer = null;
+function initWindyRouteMap(centre, zoom) {
+  // Destroy previous instance if exists
+  if (windyRouteMap) {
+    try { windyRouteMap.remove(); } catch(e){}
+    windyRouteMap = null;
+  }
+  const el = document.getElementById('windyRouteMap');
+  if (!el) return;
 
-function drawRouteOnWindy(wmap) {
-  if (!wmap) return;
-  // Debounce — wait 80ms after last call before actually drawing
-  if (_drawWindyTimer) clearTimeout(_drawWindyTimer);
-  _drawWindyTimer = setTimeout(() => _drawRouteOnWindyNow(wmap), 80);
+  // Create a new Leaflet map with NO tiles and NO controls
+  windyRouteMap = L.map('windyRouteMap', {
+    center:          [centre.lat, centre.lng],
+    zoom:            zoom,
+    zoomControl:     false,
+    attributionControl: false,
+    dragging:        false,   // movement controlled by Windy
+    scrollWheelZoom: false,
+    doubleClickZoom: false,
+    keyboard:        false,
+    touchZoom:       false,
+    boxZoom:         false,
+  });
+  // Transparent background — no base tiles
 }
 
-function _drawRouteOnWindyNow(wmap) {
-  if (!wmap) return;
-  // Remove old route layers from Windy map
-  windyRouteLayers.forEach(l => { try { wmap.removeLayer(l); } catch(e){} });
+function syncWindyRouteMap() {
+  if (!windyRouteMap || !windyAPI) return;
+  const c = windyAPI.map.getCenter();
+  const z = windyAPI.map.getZoom();
+  windyRouteMap.setView([c.lat, c.lng], z, {animate:false});
+}
+
+function drawRouteOnWindyOverlay() {
+  if (!windyRouteMap) return;
+
+  // Clear existing route layers from our overlay map
+  windyRouteLayers.forEach(l => { try { windyRouteMap.removeLayer(l); } catch(e){} });
   windyRouteLayers = [];
 
   if (!wpCoords || wpCoords.length < 2) return;
 
-  // Draw the main route polyline
-  const lls = wpCoords.map(c => [c[1], c[0]]);
-
-  // Draw in segments with weather colouring if available, else solid line
+  // Draw route segments with weather colouring
   if (wxRouteCache && wxRouteCache.segments && wxRouteCache.segments.length > 0) {
     wxRouteCache.segments.forEach(seg => {
       if (!seg || !seg.A || !seg.B) return;
-      const wx = seg.wx;
-      const val = wx?.val;
+      const val = seg.wx?.val;
       let color = '#42a5f5';
-      if (val != null && !isNaN(val)) {
-        const bft = msToBft(val);
-        color = bftColor(bft);
-      }
-      const distNm = GEO.kmToNm(GEO.gcDistKm(seg.A.lat,seg.A.lon,seg.B.lat,seg.B.lon));
-      const nPts = Math.max(2, Math.ceil(distNm/60));
+      if (val != null && !isNaN(val)) color = bftColor(msToBft(val));
+      const nPts = Math.max(2, Math.ceil(
+        GEO.kmToNm(GEO.gcDistKm(seg.A.lat,seg.A.lon,seg.B.lat,seg.B.lon))/60));
       const segLls = [];
       for (let t=0; t<=nPts; t++) {
         const f = t/nPts;
         segLls.push([seg.A.lat+(seg.B.lat-seg.A.lat)*f,
                      seg.A.lon+(seg.B.lon-seg.A.lon)*f]);
       }
-      const l = L.polyline(segLls, {color, weight:4, opacity:0.9}).addTo(wmap);
-      windyRouteLayers.push(l);
+      windyRouteLayers.push(
+        L.polyline(segLls,{color,weight:4,opacity:0.92}).addTo(windyRouteMap));
     });
   } else {
-    // Solid blue route
-    const l = L.polyline(lls, {color:'#42a5f5', weight:4, opacity:0.9,
-                                dashArray:'8 4'}).addTo(wmap);
-    windyRouteLayers.push(l);
+    // Plain route line
+    const lls = wpCoords.map(c=>[c[1],c[0]]);
+    windyRouteLayers.push(
+      L.polyline(lls,{color:'#42a5f5',weight:4,opacity:0.9,dashArray:'8 4'})
+       .addTo(windyRouteMap));
   }
 
-  // Draw waypoint markers (origin, dest, intermediate)
-  wpCoords.forEach((c, i) => {
-    const isOrigin = i === 0;
-    const isDest   = i === wpCoords.length - 1;
-    const color    = isOrigin ? '#10b981' : isDest ? '#f59e0b' : '#2196f3';
-    const size     = (isOrigin || isDest) ? 12 : 7;
-    const icon = L.divIcon({
-      className: '',
-      iconSize:  [size, size],
-      iconAnchor:[size/2, size/2],
-      html: `<div style="width:${size}px;height:${size}px;border-radius:50%;
-             background:${color};border:2px solid #fff;
-             box-shadow:0 0 4px ${color}"></div>`
-    });
-    const m = L.marker([c[1], c[0]], {icon, interactive:false}).addTo(wmap);
-    windyRouteLayers.push(m);
+  // Waypoint markers
+  wpCoords.forEach((c,i) => {
+    const isO = i===0, isD = i===wpCoords.length-1;
+    const color = isO?'#10b981':isD?'#f59e0b':'#2196f3';
+    const s = (isO||isD)?12:7;
+    const icon = L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],
+      html:`<div style="width:${s}px;height:${s}px;border-radius:50%;background:${color};
+            border:2px solid #fff;box-shadow:0 0 6px ${color}"></div>`});
+    windyRouteLayers.push(
+      L.marker([c[1],c[0]],{icon,interactive:false}).addTo(windyRouteMap));
   });
-}  // end _drawRouteOnWindyNow
+}
 
 // Call drawRouteOnWindy after route is calculated (if wind mode active)
 function onRouteCalculated_WindyHook() {
   if (wxMode === 'wind' && windyReady && windyAPI) {
-    drawRouteOnWindy(windyAPI.map);
+    syncWindyRouteMap();
+    drawRouteOnWindyOverlay();
   }
 }
 
