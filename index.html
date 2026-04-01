@@ -2247,10 +2247,27 @@ async function initWindyOverlay(depISO) {
           windyReady = true;
 
           // Sync: Windy map pan/zoom → main map
+          // Also redraw route on every moveend — catches antimeridian reloads
           api.map.on('moveend', () => {
             if (wxMode !== 'wind') return;
             const c = api.map.getCenter();
             map.setView([c.lat, c.lng], api.map.getZoom(), {animate:false});
+            // Redraw route — Windy may have cleared layers on internal re-render
+            drawRouteOnWindy(api.map);
+          });
+
+          // Windy fires 'redrawFinished' after internal tile reloads
+          // (including antimeridian crossings and layer changes)
+          api.broadcast.on('redrawFinished', () => {
+            if (wxMode !== 'wind') return;
+            drawRouteOnWindy(api.map);
+          });
+
+          // Also catch param changes (timestamp, overlay switch etc)
+          api.store.on('timestamp', () => {
+            if (wxMode !== 'wind') return;
+            // Small delay to let Windy finish rendering before overlaying
+            setTimeout(() => drawRouteOnWindy(api.map), 100);
           });
 
           // Sync: main map pan/zoom → Windy
@@ -2293,7 +2310,17 @@ function getWindyTimestamp(isoStr) {
 // Used to overlay the route on Windy's map
 let windyRouteLayers = [];  // Track layers added to Windy map
 
+// Debounce timer for drawRouteOnWindy to prevent flicker on rapid events
+let _drawWindyTimer = null;
+
 function drawRouteOnWindy(wmap) {
+  if (!wmap) return;
+  // Debounce — wait 80ms after last call before actually drawing
+  if (_drawWindyTimer) clearTimeout(_drawWindyTimer);
+  _drawWindyTimer = setTimeout(() => _drawRouteOnWindyNow(wmap), 80);
+}
+
+function _drawRouteOnWindyNow(wmap) {
   if (!wmap) return;
   // Remove old route layers from Windy map
   windyRouteLayers.forEach(l => { try { wmap.removeLayer(l); } catch(e){} });
@@ -2350,7 +2377,7 @@ function drawRouteOnWindy(wmap) {
     const m = L.marker([c[1], c[0]], {icon, interactive:false}).addTo(wmap);
     windyRouteLayers.push(m);
   });
-}
+}  // end _drawRouteOnWindyNow
 
 // Call drawRouteOnWindy after route is calculated (if wind mode active)
 function onRouteCalculated_WindyHook() {
