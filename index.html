@@ -656,9 +656,9 @@ header{background:var(--panel);border-bottom:2px solid var(--border2);padding:0 
   <!-- Windy wind overlay — covers map area only, sidebar still interactive -->
   <div id="windyPanel" style="display:none;position:absolute;inset:0;z-index:490;pointer-events:none">
     <div id="windy" style="width:100%;height:100%;pointer-events:all"></div>
-    <!-- Separate Leaflet map for route overlay — sits above Windy, fully controlled by us -->
-    <div id="windyRouteMap" style="position:absolute;inset:0;z-index:600;
-      pointer-events:none;background:transparent"></div>
+    <!-- SVG route overlay — drawn directly over Windy using lat/lon→pixel projection -->
+    <svg id="windyRouteSVG" style="position:absolute;inset:0;width:100%;height:100%;
+      z-index:600;pointer-events:none;overflow:visible"></svg>
   </div>
 
   <!-- Weather time slider panel -->
@@ -2055,8 +2055,8 @@ let wxCmemsOk    = null;          // null=unknown, true=auth ok, false=auth fail
 let windyAPI     = null;          // Windy API instance
 let windyLoaded  = false;         // Windy libBoot loaded
 let windyReady   = false;         // windyInit completed
-let windyRouteMap = null;         // Separate Leaflet map for route overlay on Windy
-let windyRouteLayers = [];        // Route layers on windyRouteMap
+// windyRouteMap: SVG-based, no separate map needed
+let windyRouteLayers = [];        // Kept for cleanup compat
 
 // ── AUTH CHECK ────────────────────────────────────────────────────────────────
 async function checkCmemsStatus() {
@@ -2201,8 +2201,9 @@ function hideWindyPanel() {
   const p = document.getElementById('windyPanel');
   if (p) p.style.display = 'none';
   try { map.off('moveend.windy'); } catch(e) {}
-  // Remove overlay route layers (windyRouteMap persists for reuse)
-  windyRouteLayers.forEach(l => { try { if(windyRouteMap) windyRouteMap.removeLayer(l); } catch(e){} });
+  // Clear SVG route overlay
+  const svg = document.getElementById('windyRouteSVG');
+  if (svg) while (svg.firstChild) svg.removeChild(svg.firstChild);
   windyRouteLayers = [];
 }
 
@@ -2260,12 +2261,10 @@ async function initWindyOverlay(depISO) {
             if (wxMode !== 'wind') return;
             const c = api.map.getCenter();
             const z = api.map.getZoom();
-            // Sync main map (no animation — instant)
+            // Sync main map
             map.setView([c.lat, c.lng], z, {animate:false});
-            // Sync route overlay map (instant — keeps route locked to Windy)
-            if (windyRouteMap) {
-              windyRouteMap.setView([c.lat, c.lng], z, {animate:false});
-            }
+            // Redraw SVG route (cheap — just recalculates pixel positions)
+            drawRouteOnWindyOverlay();
           });
 
           // Sync: main map pan/zoom → Windy
@@ -2274,7 +2273,7 @@ async function initWindyOverlay(depISO) {
             const c = map.getCenter();
             const z = map.getZoom();
             api.map.setView([c.lat, c.lng], z, {animate:false});
-            if (windyRouteMap) windyRouteMap.setView([c.lat, c.lng], z, {animate:false});
+            drawRouteOnWindyOverlay();
           });
 
           // Create the transparent route overlay map
@@ -2311,89 +2310,108 @@ function getWindyTimestamp(isoStr) {
 
 // Draw the current calculated route on a given Leaflet map instance
 // Used to overlay the route on Windy's map
-// ── WINDY ROUTE OVERLAY MAP ──────────────────────────────────────────────────
-// A separate transparent Leaflet map locked to #windyRouteMap div.
-// This map has NO tiles — only our route polylines and markers.
-// Because it's a separate Leaflet instance, Windy can never affect it.
+// ── WINDY ROUTE SVG OVERLAY ──────────────────────────────────────────────────
+// Draws the route as SVG directly over the Windy panel.
+// Converts lat/lon to pixel positions using Windy's Leaflet map projection.
+// SVG is always in sync — redrawn on every pan/zoom. Windy cannot affect it.
 
-function initWindyRouteMap(centre, zoom) {
-  // Destroy previous instance if exists
-  if (windyRouteMap) {
-    try { windyRouteMap.remove(); } catch(e){}
-    windyRouteMap = null;
-  }
-  const el = document.getElementById('windyRouteMap');
-  if (!el) return;
-
-  // Create a new Leaflet map with NO tiles and NO controls
-  windyRouteMap = L.map('windyRouteMap', {
-    center:          [centre.lat, centre.lng],
-    zoom:            zoom,
-    zoomControl:     false,
-    attributionControl: false,
-    dragging:        false,   // movement controlled by Windy
-    scrollWheelZoom: false,
-    doubleClickZoom: false,
-    keyboard:        false,
-    touchZoom:       false,
-    boxZoom:         false,
-  });
-  // Transparent background — no base tiles
-}
-
-function syncWindyRouteMap() {
-  if (!windyRouteMap || !windyAPI) return;
-  const c = windyAPI.map.getCenter();
-  const z = windyAPI.map.getZoom();
-  windyRouteMap.setView([c.lat, c.lng], z, {animate:false});
+function latLonToWindyPixel(lat, lon) {
+  // Use Windy's Leaflet map instance to project lat/lon → container pixel
+  if (!windyAPI) return null;
+  const pt = windyAPI.map.latLngToContainerPoint([lat, lon]);
+  return pt;
 }
 
 function drawRouteOnWindyOverlay() {
-  if (!windyRouteMap) return;
+  const svg = document.getElementById('windyRouteSVG');
+  if (!svg || !windyAPI) return;
 
-  // Clear existing route layers from our overlay map
-  windyRouteLayers.forEach(l => { try { windyRouteMap.removeLayer(l); } catch(e){} });
-  windyRouteLayers = [];
-
+  // Clear SVG
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
   if (!wpCoords || wpCoords.length < 2) return;
 
-  // Draw route segments with weather colouring
+  // Helper: create SVG element
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs) => {
+    const e = document.createElementNS(ns, tag);
+    Object.entries(attrs).forEach(([k,v]) => e.setAttribute(k,v));
+    return e;
+  };
+
+  // Draw route as polyline segments
+  const drawSegment = (lls, color, dashArray) => {
+    // Convert lat/lon array to pixel points string, skip points off-screen
+    const pts = lls.map(([lat,lon]) => {
+      const p = latLonToWindyPixel(lat, lon);
+      return p ? `${p.x.toFixed(1)},${p.y.toFixed(1)}` : null;
+    }).filter(Boolean);
+    if (pts.length < 2) return;
+    const polyline = el('polyline', {
+      points:         pts.join(' '),
+      fill:           'none',
+      stroke:         color,
+      'stroke-width': '4',
+      'stroke-opacity':'0.92',
+      'stroke-linecap':'round',
+      'stroke-linejoin':'round',
+      ...(dashArray ? {'stroke-dasharray': dashArray} : {}),
+    });
+    svg.appendChild(polyline);
+  };
+
+  // Draw with weather colouring if available
   if (wxRouteCache && wxRouteCache.segments && wxRouteCache.segments.length > 0) {
     wxRouteCache.segments.forEach(seg => {
-      if (!seg || !seg.A || !seg.B) return;
+      if (!seg?.A || !seg?.B) return;
       const val = seg.wx?.val;
-      let color = '#42a5f5';
-      if (val != null && !isNaN(val)) color = bftColor(msToBft(val));
+      const color = (val!=null&&!isNaN(val)) ? bftColor(msToBft(val)) : '#42a5f5';
+      // Build interpolated lat/lon points for this segment
       const nPts = Math.max(2, Math.ceil(
-        GEO.kmToNm(GEO.gcDistKm(seg.A.lat,seg.A.lon,seg.B.lat,seg.B.lon))/60));
-      const segLls = [];
+        GEO.kmToNm(GEO.gcDistKm(seg.A.lat,seg.A.lon,seg.B.lat,seg.B.lon))/30));
+      const lls = [];
       for (let t=0; t<=nPts; t++) {
         const f = t/nPts;
-        segLls.push([seg.A.lat+(seg.B.lat-seg.A.lat)*f,
-                     seg.A.lon+(seg.B.lon-seg.A.lon)*f]);
+        lls.push([
+          seg.A.lat+(seg.B.lat-seg.A.lat)*f,
+          seg.A.lon+(seg.B.lon-seg.A.lon)*f,
+        ]);
       }
-      windyRouteLayers.push(
-        L.polyline(segLls,{color,weight:4,opacity:0.92}).addTo(windyRouteMap));
+      drawSegment(lls, color, null);
     });
   } else {
-    // Plain route line
+    // Plain dashed blue route
     const lls = wpCoords.map(c=>[c[1],c[0]]);
-    windyRouteLayers.push(
-      L.polyline(lls,{color:'#42a5f5',weight:4,opacity:0.9,dashArray:'8 4'})
-       .addTo(windyRouteMap));
+    drawSegment(lls, '#42a5f5', '10 5');
   }
 
-  // Waypoint markers
-  wpCoords.forEach((c,i) => {
+  // Draw waypoint circles
+  wpCoords.forEach((c, i) => {
     const isO = i===0, isD = i===wpCoords.length-1;
+    const p = latLonToWindyPixel(c[1], c[0]);
+    if (!p) return;
     const color = isO?'#10b981':isD?'#f59e0b':'#2196f3';
-    const s = (isO||isD)?12:7;
-    const icon = L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],
-      html:`<div style="width:${s}px;height:${s}px;border-radius:50%;background:${color};
-            border:2px solid #fff;box-shadow:0 0 6px ${color}"></div>`});
-    windyRouteLayers.push(
-      L.marker([c[1],c[0]],{icon,interactive:false}).addTo(windyRouteMap));
+    const r = (isO||isD) ? 7 : 4;
+    // Glow circle
+    svg.appendChild(el('circle', {
+      cx:String(p.x.toFixed(1)), cy:String(p.y.toFixed(1)),
+      r:String(r+3), fill:color, opacity:'0.25',
+    }));
+    // Main circle
+    svg.appendChild(el('circle', {
+      cx:String(p.x.toFixed(1)), cy:String(p.y.toFixed(1)),
+      r:String(r), fill:color, stroke:'white', 'stroke-width':'2',
+    }));
   });
+}
+
+function syncWindyRouteMap() {
+  // No-op — SVG approach doesn't need a separate map to sync
+  drawRouteOnWindyOverlay();
+}
+
+function initWindyRouteMap(centre, zoom) {
+  // No-op — SVG approach needs no separate map initialisation
+  drawRouteOnWindyOverlay();
 }
 
 // Call drawRouteOnWindy after route is calculated (if wind mode active)
