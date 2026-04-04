@@ -830,14 +830,14 @@ function addWindLayer(){
   try {
     windLayer = new W.WindLayer({ id: 'wind-layer', opacity: 0.8 });
     map.addLayer(windLayer);
-    // Start animated forecast playback immediately (1 model-hour per real second)
-    if(typeof windLayer.animateByFactor === 'function'){
-      windLayer.animateByFactor(3600);
-    }
-    // Once source data arrives, rebuild slider with real date range
-    windLayer.on('sourcedata', ()=>{
-      if(wxMode === 'wind') buildWindTimeSteps();
-    });
+
+    // Start animated playback: 3600 = each real-second advances 1 model-hour
+    windLayer.animateByFactor(3600);
+
+    // Once data loads, rebuild slider with the real forecast date range
+    // and start syncing the slider display to the animation position
+    windLayer.on('tick', onWindTick);
+
   } catch(e){
     console.error('WindLayer error:', e);
     notify('Wind layer error: '+e.message,'err');
@@ -845,9 +845,48 @@ function addWindLayer(){
   }
 }
 
+// Called every animation frame — keeps slider thumb and time label in sync with the layer
+let _windSliderSyncing = false;
+function onWindTick(e){
+  if(!windLayer || wxMode !== 'wind') return;
+
+  // On first tick, populate real date range from layer
+  if(!_windSliderSyncing){
+    _windSliderSyncing = true;
+    buildWindTimeSteps();
+    document.getElementById('wx-slider-label').textContent = 'WIND FORECAST';
+    document.getElementById('wx-slider-wrap').classList.add('visible');
+  }
+
+  // Get current animation time from the layer itself (Unix seconds)
+  const nowSec = typeof windLayer.getAnimationTime === 'function'
+    ? windLayer.getAnimationTime()
+    : (e.time ?? null);
+  if(nowSec == null) return;
+
+  // Update slider thumb position
+  const slider = document.getElementById('wx-slider');
+  if(wxTimeSteps.length > 1){
+    const startMs = wxTimeSteps[0].getTime();
+    const endMs   = wxTimeSteps[wxTimeSteps.length - 1].getTime();
+    const nowMs   = nowSec * 1000;
+    const frac    = Math.max(0, Math.min(1, (nowMs - startMs) / (endMs - startMs)));
+    slider.value  = Math.round(frac * (wxTimeSteps.length - 1));
+  }
+
+  // Update time display from actual layer position
+  const d = new Date(nowSec * 1000);
+  document.getElementById('wx-time-display').textContent =
+    d.toUTCString().replace(' GMT','') + ' UTC';
+}
+
 function removeWindLayer(){
   if(!windLayer) return;
-  try { map.removeLayer('wind-layer'); } catch(_){}
+  _windSliderSyncing = false;
+  try {
+    windLayer.off('tick', onWindTick);
+    map.removeLayer('wind-layer');
+  } catch(_){}
   windLayer = null;
 }
 
@@ -878,8 +917,9 @@ function toggleWx(mode){
 
   if(wxMode === 'wind'){
     addWindLayer();
-    // Wind layer handles its own time; no slider needed
-    // But we can show a slider to advance forecast time if WindLayer supports it
+    // Show slider immediately with fallback steps.
+    // The tick event listener in addWindLayer will refine these once
+    // the layer reports its real date range.
     buildWindTimeSteps();
     showSlider();
   } else {
@@ -892,25 +932,34 @@ function toggleWx(mode){
 }
 
 function buildWindTimeSteps(){
-  wxTimeSteps = [];
-  // Use the WindLayer's own date range if available
-  if(windLayer && typeof windLayer.getAnimationStartDate === 'function'){
-    const start = windLayer.getAnimationStartDate();
-    const end   = windLayer.getAnimationEndDate();
-    if(start && end){
-      const stepMs = 6 * 3600 * 1000; // 6h steps
-      for(let t = start.getTime(); t <= end.getTime(); t += stepMs){
-        wxTimeSteps.push(new Date(t));
+  // Use getAnimationStart/End (returns Unix seconds) — the correct low-level API
+  if(windLayer){
+    const startSec = typeof windLayer.getAnimationStart === 'function' ? windLayer.getAnimationStart() : null;
+    const endSec   = typeof windLayer.getAnimationEnd   === 'function' ? windLayer.getAnimationEnd()   : null;
+    if(startSec && endSec && endSec > startSec){
+      wxTimeSteps = [];
+      const stepSec = 3600; // 1h steps — matches wind data resolution
+      for(let t = startSec; t <= endSec; t += stepSec){
+        wxTimeSteps.push(new Date(t * 1000));
       }
+      const slider = document.getElementById('wx-slider');
+      slider.max = wxTimeSteps.length - 1;
+      // Position thumb at current layer time
+      const curSec = typeof windLayer.getAnimationTime === 'function' ? windLayer.getAnimationTime() : startSec;
+      const idx = Math.max(0, Math.min(wxTimeSteps.length-1, Math.round((curSec - startSec) / stepSec)));
+      slider.value = idx;
+      wxStepIdx = idx;
+      return;
     }
   }
-  // Fallback: generate 40×6h steps from now
-  if(!wxTimeSteps.length){
-    const now = new Date();
-    for(let i=0;i<40;i++) wxTimeSteps.push(new Date(now.getTime() + i*6*3600*1000));
-  }
+  // Fallback: 5-day/120h window in 1h steps
+  wxTimeSteps = [];
+  const now = new Date();
+  for(let i=0; i<120; i++) wxTimeSteps.push(new Date(now.getTime() + i*3600*1000));
+  const slider = document.getElementById('wx-slider');
+  slider.max = wxTimeSteps.length - 1;
+  slider.value = 0;
   wxStepIdx = 0;
-  updateSliderDisplay();
 }
 
 function buildCmemsTimeSteps(variable){
@@ -931,27 +980,36 @@ function buildCmemsTimeSteps(variable){
 
 function showSlider(){
   const slider = document.getElementById('wx-slider');
-  slider.max = wxTimeSteps.length - 1;
+  slider.max = Math.max(1, wxTimeSteps.length - 1);
   slider.value = wxStepIdx;
+  const label = wxMode === 'wind' ? 'WIND FORECAST' :
+                wxMode === 'wave' ? 'WAVE FORECAST' : 'CURRENT FORECAST';
+  document.getElementById('wx-slider-label').textContent = label;
   document.getElementById('wx-slider-wrap').classList.add('visible');
-  updateSliderDisplay();
+  if(wxMode !== 'wind') updateSliderDisplay();
 }
 
+let _windResumeTimer = null;
 function onWxSliderMove(val){
   wxStepIdx = parseInt(val);
-  updateSliderDisplay();
+  // For CMEMS layers, update tiles immediately
   if(wxMode === 'wave' || wxMode === 'current'){
     updateCmemsLayer(wxMode, wxStepIdx);
+    updateSliderDisplay();
   } else if(wxMode === 'wind'){
+    // Scrub wind layer to chosen time, then auto-resume playback after 2s of inactivity
     advanceWindTime();
+    clearTimeout(_windResumeTimer);
+    _windResumeTimer = setTimeout(resumeWindAnimation, 2000);
   }
 }
 
 function updateSliderDisplay(){
+  // For wind mode, display is driven by onWindTick (real-time layer sync)
+  if(wxMode === 'wind') return;
   const t = wxTimeSteps[wxStepIdx];
   if(!t) return;
-  const label = wxMode === 'wind' ? 'WIND FORECAST' :
-                wxMode === 'wave' ? 'WAVE FORECAST' : 'CURRENT FORECAST';
+  const label = wxMode === 'wave' ? 'WAVE FORECAST' : 'CURRENT FORECAST';
   document.getElementById('wx-slider-label').textContent = label;
   document.getElementById('wx-time-display').textContent = t.toUTCString().replace(' GMT','') + ' UTC';
 }
@@ -997,11 +1055,15 @@ function advanceWindTime(){
   if(!windLayer) return;
   const t = wxTimeSteps[wxStepIdx];
   if(!t) return;
-  // Stop auto-animation when user scrubs the slider
-  if(typeof windLayer.animateByFactor === 'function') windLayer.animateByFactor(0);
-  // Seek to the chosen time
-  if(typeof windLayer.setTime === 'function') windLayer.setTime(t);
-  else if(typeof windLayer.setAnimationTime === 'function') windLayer.setAnimationTime(t.getTime());
+  // Pause auto-playback while user scrubs
+  windLayer.animateByFactor(0);
+  // setAnimationTime expects Unix timestamp in SECONDS (not ms)
+  windLayer.setAnimationTime(t.getTime() / 1000);
+}
+
+function resumeWindAnimation(){
+  if(!windLayer || wxMode !== 'wind') return;
+  windLayer.animateByFactor(3600);
 }
 
 function snapTime(date, stepH){
@@ -1425,79 +1487,143 @@ function calcEcaMiles(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   OPEN-METEO ROUTE WEATHER (unchanged from v1)
+   ROUTE WEATHER — SIDEBAR
+   Wind: MapTiler Weather API (identical source to map WindLayer)
+   Wave: Open-Meteo Marine API (/v1/marine) — correct endpoint for wave_height
+   No climatological fallbacks — show honest N/A for beyond-forecast legs.
    ═══════════════════════════════════════════════════════════════ */
-async function fetchOpenMeteoRouteWeather(){
-  if(wpCoords.length<2) return;
-  document.getElementById('wx-route-section').style.display='block';
-  document.getElementById('wx-route-rows').innerHTML='<div style="color:var(--muted);font-size:11px">Loading weather…</div>';
-  const speed=parseFloat(document.getElementById('speed').value)||14;
-  const depStr=document.getElementById('dep-time').value;
-  const dep=depStr?new Date(depStr):new Date();
 
-  let timeAcc=0;
-  const results=[];
-  for(let i=0;i<wpCoords.length-1;i++){
-    const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
-    const distNm=GEO.kmToNm(GEO.gcDistKm(la1,lo1,la2,lo2));
-    const midLon=(lo1+lo2)/2, midLat=(la1+la2)/2;
-    const tArr=new Date(dep.getTime()+timeAcc*3600*1000);
-    timeAcc+=distNm/speed;
-    const tArrDate=tArr.toISOString().slice(0,10);
-    const now=new Date();
-    const diffDays=(tArr-now)/(86400*1000);
-    let windKn='—',waveM='—',color='#3b82f6';
-    if(diffDays<=6.5){  // stay within Open-Meteo's 7-day window with margin
-      try{
-        // Clamp the fetch date to today..today+6
-        const now2=new Date();
-        const maxDate=new Date(now2.getTime()+6*86400*1000);
-        const fetchDate=tArr<now2?now2:(tArr>maxDate?maxDate:tArr);
-        const fetchDateStr=fetchDate.toISOString().slice(0,10);
-        const url=`https://api.open-meteo.com/v1/forecast?latitude=${midLat.toFixed(4)}&longitude=${midLon.toFixed(4)}&hourly=wind_speed_10m,wave_height&wind_speed_unit=kn&timezone=UTC&start_date=${fetchDateStr}&end_date=${fetchDateStr}&forecast_days=1`;
-        const r=await fetch(url);
-        if(r.ok){
-          const d=await r.json();
-          const hr=tArr.getUTCHours();
-          if(d.hourly){
-            const ws=d.hourly.wind_speed_10m?.[hr];
-            const wh=d.hourly.wave_height?.[hr];
-            if(ws!=null) windKn=ws.toFixed(1);
-            if(wh!=null) waveM=wh.toFixed(2);
-            const wsNum=parseFloat(windKn);
-            color=wsNum<10?'#22c55e':wsNum<20?'#f59e0b':wsNum<30?'#f97316':'#ef4444';
-          }
-        }
-      }catch(e){ console.warn('Open-Meteo leg',i,e); }
-    } else {
-      // Climatological placeholder
-      color='#64748b'; windKn='~12'; waveM='~1.5';
+// Fetch wind speed (kn) at a lat/lon/time from MapTiler Weather API
+// Uses the same GFS dataset as the WindLayer on the map.
+// MapTiler Weather point API: GET /weather/point.json?latlng=lat,lon&key=KEY
+// Returns { data: [ { timestamp, wind_speed_ms, ... }, ... ] }
+async function fetchMapTilerWind(lat, lon, targetDate){
+  try {
+    const url = `https://api.maptiler.com/weather/point.json?latlng=${lat.toFixed(4)},${lon.toFixed(4)}&key=${MAPTILER_KEY}`;
+    const r = await fetch(url);
+    if(!r.ok){
+      console.warn(`MapTiler Weather ${r.status} for ${lat.toFixed(2)},${lon.toFixed(2)}`);
+      return null;
     }
-    results.push({i,midLon,midLat,windKn,waveM,color});
+    const d = await r.json();
+    // Response shape: { data: [ { timestamp: "2024-04-04T06:00:00Z", wind_speed_ms: 5.2, ... } ] }
+    const entries = d.data ?? d.hourly ?? d.items ?? [];
+    if(!entries.length) return null;
+
+    const targetMs = targetDate.getTime();
+    let best = null, bestDiff = Infinity;
+    for(const entry of entries){
+      // Field name varies: timestamp or date_time
+      const ts = entry.timestamp ?? entry.date_time ?? entry.time ?? null;
+      if(!ts) continue;
+      const diff = Math.abs(new Date(ts).getTime() - targetMs);
+      if(diff < bestDiff){ bestDiff = diff; best = entry; }
+    }
+    // Reject if best match is more than 3h away from target time
+    if(!best || bestDiff > 3 * 3600 * 1000) return null;
+
+    // Wind speed field: wind_speed_ms (m/s) — convert to knots (×1.94384)
+    const ms = best.wind_speed_ms ?? best.wind_speed ?? null;
+    if(ms == null) return null;
+    return (parseFloat(ms) * 1.94384).toFixed(1);
+  } catch(e){
+    console.warn('MapTiler Weather API error:', e.message);
+    return null;
+  }
+}
+
+// Fetch wave height (m) at a lat/lon/time from Open-Meteo Marine API
+async function fetchOpenMeteoWave(lat, lon, targetDate){
+  const diffDays = (targetDate - new Date()) / 86400000;
+  if(diffDays < -1 || diffDays > 6.5) return null; // outside 7-day marine window
+  try {
+    const dateStr = targetDate.toISOString().slice(0,10);
+    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}&hourly=wave_height,wind_wave_height&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}`;
+    const r = await fetch(url);
+    if(!r.ok) return null;
+    const d = await r.json();
+    if(!d.hourly) return null;
+    const hr = targetDate.getUTCHours();
+    const wh = d.hourly.wave_height?.[hr] ?? d.hourly.wind_wave_height?.[hr] ?? null;
+    return wh != null ? wh.toFixed(2) : null;
+  } catch(e){
+    console.warn('Open-Meteo Marine:', e);
+    return null;
+  }
+}
+
+async function fetchRouteWeather(){
+  if(wpCoords.length < 2) return;
+  document.getElementById('wx-route-section').style.display = 'block';
+  document.getElementById('wx-route-rows').innerHTML =
+    '<div style="color:var(--muted);font-size:11px;padding:4px 0">⏳ Loading forecast data…</div>';
+
+  const speed  = parseFloat(document.getElementById('speed').value) || 14;
+  const depStr = document.getElementById('dep-time').value;
+  const dep    = depStr ? new Date(depStr) : new Date();
+
+  let timeAccH = 0;
+  const results = [];
+
+  for(let i = 0; i < wpCoords.length - 1; i++){
+    const [lo1, la1] = wpCoords[i];
+    const [lo2, la2] = wpCoords[i+1];
+    const distNm  = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+    const midLon  = (lo1 + lo2) / 2;
+    const midLat  = (la1 + la2) / 2;
+    const tArr    = new Date(dep.getTime() + timeAccH * 3600 * 1000);
+    timeAccH     += distNm / speed;
+
+    // Fetch from both sources in parallel for speed
+    const [windKnRaw, waveMRaw] = await Promise.all([
+      fetchMapTilerWind(midLat, midLon, tArr),
+      fetchOpenMeteoWave(midLat, midLon, tArr)
+    ]);
+
+    const windKn = windKnRaw ?? null;
+    const waveM  = waveMRaw ?? null;
+
+    // Color-code by wind speed (green→amber→orange→red)
+    let color = '#3b82f6'; // default blue = no data
+    if(windKn != null){
+      const ws = parseFloat(windKn);
+      color = ws < 10 ? '#22c55e' : ws < 20 ? '#f59e0b' : ws < 30 ? '#f97316' : '#ef4444';
+    }
+
+    results.push({ i, midLon, midLat, tArr, windKn, waveM, color });
   }
 
-  // Cache for route colouring
+  // Update route line colours
   wxRouteCache = {
-    segments: results.map((r,idx)=>{
-      const [lo1,la1]=wpCoords[idx];
-      const [lo2,la2]=wpCoords[idx+1]||wpCoords[idx];
-      const arc=GEO.gcArc(la1,lo1,la2,lo2,32);
-      return {coords:arc, color:r.color};
+    segments: results.map((r, idx) => {
+      const [lo1, la1] = wpCoords[idx];
+      const [lo2, la2] = (wpCoords[idx+1] || wpCoords[idx]);
+      return { coords: GEO.gcArc(la1, lo1, la2, lo2, 32), color: r.color };
     })
   };
   redrawRouteGeoJSON();
 
-  // Render weather rows
-  const rowsEl=document.getElementById('wx-route-rows');
-  rowsEl.innerHTML=results.map(r=>
-    `<div class="wx-row">
+  // Render sidebar rows
+  const rowsEl = document.getElementById('wx-route-rows');
+  if(!results.length){
+    rowsEl.innerHTML = '<div style="color:var(--muted);font-size:11px">No legs to display.</div>';
+    return;
+  }
+  rowsEl.innerHTML = results.map(r => {
+    const windStr = r.windKn != null ? `💨 ${r.windKn} kn` : `💨 <span style="color:var(--muted)">No data</span>`;
+    const waveStr = r.waveM  != null ? `🌊 ${r.waveM} m`   : `🌊 <span style="color:var(--muted)">No data</span>`;
+    const etaStr  = r.tArr.toUTCString().slice(5,22) + 'Z';
+    return `<div class="wx-row">
       <div class="wx-dot" style="background:${r.color}"></div>
-      <div class="wx-leg">Leg ${r.i+1}</div>
-      <div class="wx-val">💨${r.windKn}kn</div>
-      <div class="wx-val">🌊${r.waveM}m</div>
-    </div>`
-  ).join('');
+      <div class="wx-leg" title="ETA: ${etaStr}">Leg ${r.i+1}<br><span style="font-size:10px;color:var(--muted)">${etaStr}</span></div>
+      <div class="wx-val">${windStr}</div>
+      <div class="wx-val">${waveStr}</div>
+    </div>`;
+  }).join('');
 }
+
+// Keep backward-compat alias
+const fetchOpenMeteoRouteWeather = fetchRouteWeather;
 
 /* ═══════════════════════════════════════════════════════════════
    CLEAR ALL
