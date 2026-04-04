@@ -722,7 +722,7 @@ function initMap(){
     maxZoom: 18,
     attributionControl: true,
     pitchWithRotate: false,
-    preserveDrawingBuffer: true   // required for canvas.toDataURL() in PDF snapshots
+    preserveDrawingBuffer: true   // kept for potential future canvas operations
   });
 
   map.on('load', () => {
@@ -1759,68 +1759,98 @@ function fmtCoord(lat, lon){
 function fmtLat(lat){ return `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}`; }
 function fmtLon(lon){ lon = normLon(lon); return `${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`; }
 
-// ── Open-Meteo batch wind fetch — grouped by DATE to avoid rate limits ────────
-// Instead of one API call per leg (145 parallel calls = rate limited),
-// we group legs by calendar day and make ONE call per day covering all legs
-// on that date. Each day call returns 24 hourly values; we read the right hour.
-// Max ~16 calls total (one per voyage day) instead of ~144 concurrent calls.
+// ── MapTiler WindLayer wind fetch — sequential per-leg with proper time seeking ──
+// Key insight: pickAt() only works when:
+//   1. The WindLayer has been added and its tiles are loaded (onSourceReadyAsync)
+//   2. The animation is seeked to the target time AND a small grace period given
+//      for the GPU to update the particle field before sampling
+// We sample legs sequentially (not in parallel) to avoid seeking conflicts.
 async function fetchOpenMeteoWindBatch(legs){
   if(!legs.length) return legs.map(() => null);
   const results = new Array(legs.length).fill(null);
 
-  // Group leg indices by (dateStr, rounded lat/lon 2dp) — one API call per group
-  // We cluster by 2° grid cells to allow nearby legs to share one API call
-  const groups = new Map(); // key → { url, indices[] }
+  // If no wind layer, fall back to Open-Meteo for the whole batch
+  if(!windLayer){
+    return fetchOpenMeteoWindFallback(legs);
+  }
+
+  const startSec = windLayer.getAnimationStart?.() ?? null;
+  const endSec   = windLayer.getAnimationEnd?.()   ?? null;
+  if(!startSec || !endSec){
+    return fetchOpenMeteoWindFallback(legs);
+  }
+
+  const origSec = windLayer.getAnimationTime?.() ?? startSec;
+  windLayer.animateByFactor(0); // pause animation during sampling
+
+  for(let idx = 0; idx < legs.length; idx++){
+    const { lat, lon, date } = legs[idx];
+    const nlon = normLon(lon);
+    const targetSec = date.getTime() / 1000;
+
+    // Only sample if within the WindLayer's 5-day forecast window
+    if(targetSec < startSec - 3600 || targetSec > endSec + 3600){
+      // Beyond MapTiler range — leave as null (will show "—" for day 5+)
+      continue;
+    }
+
+    // Seek to the leg's ETA time
+    windLayer.setAnimationTime(targetSec);
+    // Brief pause — WindLayer needs a moment to update particle field after seek
+    await new Promise(r => setTimeout(r, 60));
+
+    try {
+      const val = windLayer.pickAt(nlon, lat);
+      if(val?.speedMetersPerSecond != null){
+        results[idx] = {
+          windKn:  (val.speedMetersPerSecond * 1.94384).toFixed(1),
+          windDir: val.directionDegrees != null ? Math.round(val.directionDegrees) : null
+        };
+      }
+    } catch(_){}
+  }
+
+  // Restore original animation state
+  windLayer.setAnimationTime(origSec);
+  windLayer.animateByFactor(3600);
+
+  return results;
+}
+
+// Open-Meteo fallback wind fetch when WindLayer is unavailable
+// Uses date-grouped batches to avoid rate limiting
+async function fetchOpenMeteoWindFallback(legs){
+  const results = new Array(legs.length).fill(null);
+  const groups = new Map();
   legs.forEach(({ lat, lon, date }, idx) => {
     const nlon = normLon(lon);
     const diffDays = (date - new Date()) / 86400000;
     if(diffDays < -1 || diffDays > 15.5) return;
-    // Cluster key: 2° lat/lon grid + date, so nearby legs share one API call
     const gLat = (Math.round(lat * 0.5) / 0.5).toFixed(1);
     const gLon = (Math.round(nlon * 0.5) / 0.5).toFixed(1);
     const dateStr = date.toISOString().slice(0,10);
     const key = `${gLat}|${gLon}|${dateStr}`;
-    if(!groups.has(key)){
-      groups.set(key, {
-        lat: parseFloat(gLat),
-        lon: parseFloat(gLon),
-        dateStr,
-        indices: []
-      });
-    }
+    if(!groups.has(key)) groups.set(key, { lat: parseFloat(gLat), lon: parseFloat(gLon), dateStr, indices: [] });
     groups.get(key).indices.push(idx);
   });
-
-  // Fetch all groups sequentially in small batches (4 at a time) to stay under rate limits
   const groupList = [...groups.values()];
-  const BATCH = 4;
-  for(let i = 0; i < groupList.length; i += BATCH){
-    const batch = groupList.slice(i, i + BATCH);
-    await Promise.all(batch.map(async g => {
+  for(let i = 0; i < groupList.length; i += 4){
+    await Promise.all(groupList.slice(i, i+4).map(async g => {
       try {
-        const url = `https://api.open-meteo.com/v1/forecast` +
-          `?latitude=${g.lat.toFixed(2)}&longitude=${g.lon.toFixed(2)}` +
-          `&hourly=wind_speed_10m,wind_direction_10m` +
-          `&wind_speed_unit=kn&timezone=UTC` +
-          `&start_date=${g.dateStr}&end_date=${g.dateStr}&forecast_days=1`;
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${g.lat.toFixed(2)}&longitude=${g.lon.toFixed(2)}&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn&timezone=UTC&start_date=${g.dateStr}&end_date=${g.dateStr}&forecast_days=1`;
         const r = await fetch(url);
         if(!r.ok) return;
         const d = await r.json();
         if(!d.hourly?.wind_speed_10m) return;
-        // Apply result to all legs in this group
         g.indices.forEach(idx => {
           const hr = legs[idx].date.getUTCHours();
           const ws = d.hourly.wind_speed_10m[hr];
           const wd = d.hourly.wind_direction_10m?.[hr];
-          if(ws != null) results[idx] = {
-            windKn:  parseFloat(ws).toFixed(1),
-            windDir: wd != null ? Math.round(wd) : null
-          };
+          if(ws != null) results[idx] = { windKn: parseFloat(ws).toFixed(1), windDir: wd != null ? Math.round(wd) : null };
         });
-      } catch(e){ console.warn('Wind batch group error:', e.message); }
+      } catch(_){}
     }));
-    // Small delay between batches to respect rate limits
-    if(i + BATCH < groupList.length) await new Promise(r => setTimeout(r, 120));
+    if(i + 4 < groupList.length) await new Promise(r => setTimeout(r, 150));
   }
   return results;
 }
@@ -2021,171 +2051,29 @@ async function generateVoyageReport(){
 
   closeModal('export-modal');
 
-  // ── Step 1: Fetch weather data ──────────────────────────────────
-  notify('Step 1/3 — Fetching forecast weather along route…');
+  // ── Step 1: Ensure WindLayer loaded and tiles ready ─────────────────────────
+  // Wind source: MapTiler GFS WindLayer — tiles must be loaded before pickAt works.
+  // We add the layer if absent, then wait for onSourceReadyAsync (signals tiles loaded).
+  notify('Step 1/2 — Loading wind data (MapTiler)…');
+  if(!windLayer){ addWindLayer(); }
+  if(windLayer){
+    try{
+      // onSourceReadyAsync fires when the current time-step tiles are in memory
+      await Promise.race([
+        windLayer.onSourceReadyAsync?.() ?? Promise.resolve(),
+        new Promise(r => setTimeout(r, 12000)) // max 12s wait
+      ]);
+    } catch(_){}
+  }
+  // Additional 800ms grace — MapTiler fills tile neighbours asynchronously
+  await new Promise(r => setTimeout(r, 800));
+
+  // ── Step 2: Fetch weather data ──────────────────────────────────────────────
+  notify('Step 2/2 — Fetching weather along route…');
   await fetchRouteWeather();
   const wxResults = window._wxResults || [];
 
-  // ── Step 2: Route map via MapTiler Static Maps API ───────────────
-  // Using MapTiler Static Maps REST API instead of canvas.toDataURL()
-  // Reason: canvas.toDataURL() fails on WebGL maps because cross-origin tiles
-  // (MapTiler CDN, Copernicus) mark the canvas as "tainted" by browser security policy.
-  // The Static Maps API generates the image server-side — no canvas, no taint.
-  notify('Step 2/3 — Generating route map image…');
-  let routeMapDataUrl = null;
-
-  try {
-    // Build the route path for Static Maps API
-    // Format: lon,lat|lon,lat|... (up to ~150 points, so sample every 3rd waypoint)
-    const sample = wpCoords.filter((_,i) => i % Math.max(1, Math.floor(wpCoords.length / 50)) === 0);
-    const pathStr = sample.map(([lo,la]) => `${normLon(lo).toFixed(3)},${la.toFixed(3)}`).join('|');
-
-    // Calculate bounding box for auto-zoom
-    const lons = wpCoords.map(([lo]) => normLon(lo));
-    const lats = wpCoords.map(([,la]) => la);
-    const minLon = Math.min(...lons) - 3, maxLon = Math.max(...lons) + 3;
-    const minLat = Math.min(...lats) - 2, maxLat = Math.max(...lats) + 2;
-    const centreLon = ((minLon + maxLon) / 2).toFixed(3);
-    const centreLat = ((minLat + maxLat) / 2).toFixed(3);
-
-    // Compute zoom to fit route (rough approximation)
-    const lonSpan = maxLon - minLon;
-    const latSpan = maxLat - minLat;
-    const span = Math.max(lonSpan, latSpan);
-    const zoom = Math.max(1, Math.min(6, Math.floor(Math.log2(360 / span) + 0.5)));
-
-    // MapTiler Static Maps API with route path overlay
-    // Docs: https://docs.maptiler.com/cloud/api/static-maps/
-    const staticUrl = `https://api.maptiler.com/maps/streets-v2/static/${centreLon},${centreLat},${zoom}/840x420.png` +
-      `?key=${MAPTILER_KEY}` +
-      `&path=color:0xff7316cc|weight:3|${pathStr}` +
-      // Start marker (green) and end marker (red)
-      `&marker=${normLon(wpCoords[0][0]).toFixed(3)},${wpCoords[0][1].toFixed(3)},small,positive` +
-      `&marker=${normLon(wpCoords[wpCoords.length-1][0]).toFixed(3)},${wpCoords[wpCoords.length-1][1].toFixed(3)},small,negative`;
-
-    const imgResp = await fetch(staticUrl);
-    if(imgResp.ok){
-      const blob = await imgResp.blob();
-      routeMapDataUrl = await new Promise(res => {
-        const reader = new FileReader();
-        reader.onload = e => res(e.target.result);
-        reader.readAsDataURL(blob);
-      });
-    } else {
-      console.warn('Static map failed:', imgResp.status, imgResp.statusText);
-    }
-  } catch(e){ console.warn('Static map error:', e); }
-
-  // ── Step 4: Wind snapshots via Static Maps API with wind arrows ──
-  // We generate 4 static map images (+0h, +6h, +12h, +18h) using Open-Meteo
-  // wind data sampled along the route, then draw wind barbs as path overlays.
-  notify('Step 3/3 — Generating wind forecast maps…');
-  let snapHtml = '';
-
-  try {
-    // Fetch wind data at 12 evenly-spaced route points for 4 time steps
-    const snapPoints = [];
-    const step = Math.max(1, Math.floor(wpCoords.length / 12));
-    for(let i = 0; i < wpCoords.length; i += step){
-      snapPoints.push({ lon: normLon(wpCoords[i][0]), lat: wpCoords[i][1] });
-    }
-
-    const now = new Date();
-    const snaps = [];
-    for(const h of [0, 6, 12, 18]){
-      const snapTime = new Date(now.getTime() + h * 3600 * 1000);
-      const dateStr = snapTime.toISOString().slice(0,10);
-      const snapLabel = fmtDate(snapTime);
-
-      // Fetch wind for all snap points in parallel
-      const windData = await Promise.all(snapPoints.map(async pt => {
-        try {
-          const url = `https://api.open-meteo.com/v1/forecast` +
-            `?latitude=${pt.lat.toFixed(2)}&longitude=${pt.lon.toFixed(2)}` +
-            `&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn` +
-            `&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}&forecast_days=1`;
-          const r = await fetch(url);
-          if(!r.ok) return null;
-          const d = await r.json();
-          const hr = snapTime.getUTCHours();
-          return {
-            lon: pt.lon, lat: pt.lat,
-            spd: d.hourly?.wind_speed_10m?.[hr] ?? null,
-            dir: d.hourly?.wind_direction_10m?.[hr] ?? null
-          };
-        } catch(_){ return null; }
-      }));
-
-      // Build colour-coded speed markers for wind speed
-      // MapTiler Static Maps doesn't support arrows, so we use coloured circle markers
-      // sized and coloured by wind speed
-      const markerParams = windData.filter(w => w?.spd != null).map(w => {
-        const spd = parseFloat(w.spd);
-        // Colour by Beaufort: <10kt=green, 10-20=amber, 20-30=orange, >30=red
-        const col = spd < 10 ? 'positive' : spd < 20 ? 'orange' : spd < 30 ? 'hotpink' : 'negative';
-        return `&marker=${w.lon.toFixed(2)},${w.lat.toFixed(2)},small,${col}`;
-      }).join('');
-
-      // Static map with route + wind speed markers
-      const lons2 = wpCoords.map(([lo]) => normLon(lo));
-      const lats2 = wpCoords.map(([,la]) => la);
-      const cLon = ((Math.min(...lons2) + Math.max(...lons2)) / 2).toFixed(3);
-      const cLat = ((Math.min(...lats2) + Math.max(...lats2)) / 2).toFixed(3);
-      const lonSpan2 = Math.max(...lons2) - Math.min(...lons2) + 6;
-      const latSpan2 = Math.max(...lats2) - Math.min(...lats2) + 4;
-      const zoom2 = Math.max(1, Math.min(5, Math.floor(Math.log2(360 / Math.max(lonSpan2, latSpan2)) + 0.5)));
-
-      const sample2 = wpCoords.filter((_,i) => i % Math.max(1, Math.floor(wpCoords.length / 50)) === 0);
-      const pathStr2 = sample2.map(([lo,la]) => `${normLon(lo).toFixed(3)},${la.toFixed(3)}`).join('|');
-
-      const snapUrl = `https://api.maptiler.com/maps/streets-v2/static/${cLon},${cLat},${zoom2}/800x420.png` +
-        `?key=${MAPTILER_KEY}` +
-        `&path=color:0xff7316aa|weight:2|${pathStr2}` +
-        markerParams;
-
-      try {
-        const imgResp = await fetch(snapUrl);
-        if(imgResp.ok){
-          const blob = await imgResp.blob();
-          const dataUrl = await new Promise(res => {
-            const reader = new FileReader();
-            reader.onload = e => res(e.target.result);
-            reader.readAsDataURL(blob);
-          });
-          snaps.push({ h, label: snapLabel, url: dataUrl, windData });
-        } else {
-          snaps.push({ h, label: snapLabel, url: null, windData });
-        }
-      } catch(_){ snaps.push({ h, label: snapLabel, url: null, windData }); }
-
-      // Small delay between snap requests
-      if(h < 18) await new Promise(r => setTimeout(r, 200));
-    }
-
-    if(snaps.some(s => s.url)){
-      snapHtml = `
-      <div class="page-break"></div>
-      <div class="section-head" style="margin-top:0">Wind Forecast Maps — Next 24 Hours</div>
-      <p class="sub">
-        Open-Meteo ECMWF IFS 9km · Route shown in orange · Coloured dots = wind speed at sampled points ·
-        <span style="color:#16a34a">●</span>&lt;10kt &nbsp;
-        <span style="color:#f59e0b">●</span>10–20kt &nbsp;
-        <span style="color:#f97316">●</span>20–30kt &nbsp;
-        <span style="color:#dc2626">●</span>&gt;30kt
-      </p>
-      <div class="snap-grid">
-        ${snaps.map(s => `
-        <div class="snap-card">
-          <div class="snap-label">+${s.h}h — ${s.label}</div>
-          ${s.url
-            ? `<img src="${s.url}" class="snap-img"/>`
-            : `<div class="snap-placeholder">Map unavailable for this time step</div>`}
-        </div>`).join('')}
-      </div>`;
-    }
-  } catch(e){ console.warn('Wind snap error:', e); }
-
-  // ── Build data ───────────────────────────────────────────────────
+  // ── Build data ───────────────────────────────────────────────────────────────
 
   const maxWindLeg = wxResults.reduce((b,r)=>r.windKn!=null&&parseFloat(r.windKn)>(b?.v??0)?{v:parseFloat(r.windKn),r}:b, null);
   const maxWaveLeg = wxResults.reduce((b,r)=>r.waveM !=null&&parseFloat(r.waveM) >(b?.v??0)?{v:parseFloat(r.waveM), r}:b, null);
@@ -2270,8 +2158,6 @@ async function generateVoyageReport(){
   .stat-v{font-size:17px;font-weight:800;color:#0f172a;line-height:1.2}
   .stat-k{font-size:8px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
   .stat-sub{font-size:9px;color:#94a3b8;margin-top:2px}
-  .route-map{width:100%;border-radius:8px;border:1px solid #e2e8f0;display:block}
-  .map-caption{font-size:9px;color:#94a3b8;text-align:center;margin-top:4px}
   .content{padding:28px 36px}
   .page-break{page-break-before:always;padding-top:28px}
   .section-head{font-size:13px;font-weight:800;color:#0f172a;border-left:4px solid #0284c7;padding-left:10px;margin:16px 0 7px}
@@ -2285,11 +2171,6 @@ async function generateVoyageReport(){
   .badge{font-size:8px;font-weight:700;padding:1px 5px;border-radius:6px;margin-left:3px;vertical-align:middle}
   .badge-entry{background:#fef08a;color:#854d0e}
   .badge-exit{background:#bfdbfe;color:#1e3a8a}
-  .snap-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}
-  .snap-card{border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}
-  .snap-label{background:#0f172a;color:#fff;font-size:9px;font-weight:700;padding:5px 10px;letter-spacing:.5px}
-  .snap-img{width:100%;display:block}
-  .snap-placeholder{height:130px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8;text-align:center;padding:10px}
   .footer{margin-top:20px;font-size:9px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px;text-align:center}
   @media print{
     .page-break{page-break-before:always}
@@ -2326,14 +2207,16 @@ async function generateVoyageReport(){
     <tr><td>ECA Miles</td><td>${Math.round(ecaMiles).toLocaleString()} nm (${ecaPct}% of voyage)</td></tr>
     <tr><td>Total Waypoints</td><td>${wpCoords.length}</td></tr>
     <tr><td>Route Type</td><td>Great Circle (sea routing via MARNET)</td></tr>
+    <tr><td>Wind Data Source</td><td>MapTiler GFS (5-day, same as live map layer)</td></tr>
+    <tr><td>Wave/Current Source</td><td>Open-Meteo Marine / Copernicus SMOC (7-day)</td></tr>
   </table>
   <div class="stat-row">
-    <div class="stat-box ${maxWind>=35?'danger':maxWind>=20?'warn':'success'}">
+    <div class="stat-box ${maxWind>=35?'danger':maxWind>=20?'warn':maxWind>0?'success':'neutral'}">
       <div class="stat-v" style="color:${windColor(maxWind)}">${maxWind>0?maxWind.toFixed(1)+' kt':'—'}</div>
       <div class="stat-k">Max Wind on Route</div>
       ${maxWindLeg?`<div class="stat-sub">${fmtDate(maxWindLeg.r.tArr).slice(0,11)}</div>`:''}
     </div>
-    <div class="stat-box ${maxWave>=5?'danger':maxWave>=3?'warn':'success'}">
+    <div class="stat-box ${maxWave>=5?'danger':maxWave>=3?'warn':maxWave>0?'success':'neutral'}">
       <div class="stat-v" style="color:${waveColor(maxWave)}">${maxWave>0?maxWave.toFixed(2)+' m':'—'}</div>
       <div class="stat-k">Max Wave on Route</div>
       ${maxWaveLeg?`<div class="stat-sub">${fmtDate(maxWaveLeg.r.tArr).slice(0,11)}</div>`:''}
@@ -2347,10 +2230,6 @@ async function generateVoyageReport(){
       <div class="stat-k">ECA Miles (${ecaPct}%)</div>
     </div>
   </div>
-  ${routeMapDataUrl
-    ? `<img src="${routeMapDataUrl}" class="route-map" alt="Route overview"/>
-       <div class="map-caption">Route overview — clean basemap, no weather overlay · RoutePlannerPro v2</div>`
-    : `<div style="height:140px;background:#f1f5f9;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px">Route map snapshot unavailable</div>`}
 </div>
 
 <div class="content page-break">
@@ -2362,17 +2241,15 @@ async function generateVoyageReport(){
   </table>
   ${wxFiltered.length ? `
   <div class="section-head">Forecast Weather Along Route</div>
-  <p class="sub">Wind: Open-Meteo ECMWF IFS 9km (up to 16 days) · Wave &amp; Current: Open-Meteo Marine / Copernicus SMOC (up to 7 days) · Wind dir = degrees true (0°=N, 90°=E) · "—" = beyond forecast range</p>
+  <p class="sub">Wind: MapTiler GFS (same as live map layer, up to 5 days) · Wave &amp; Current: Open-Meteo Marine / Copernicus SMOC (up to 7 days) · Wind dir = degrees true (0°=N, 90°=E) · "—" = beyond forecast range or land point</p>
   <table>
     <thead><tr><th>Leg</th><th>ETA (UTC)</th><th>Position</th><th>Wind</th><th>Wave Ht</th><th>Current</th></tr></thead>
     <tbody>${wxRows5d}</tbody>
-  </table>` : `<p style="color:#94a3b8;font-size:11px;margin-top:8px">No weather data available.</p>`}
+  </table>` : `<p style="color:#94a3b8;font-size:11px;margin-top:8px">No weather data available — ensure Wind layer was active before generating report.</p>`}
 </div>
 
-${snapHtml}
-
 <div class="content">
-  <div class="footer">RoutePlannerPro v2 · MapLibre GL JS / MapTiler · Routing: MARNET/searoute-py · Wind: Open-Meteo ECMWF IFS · Wave/Current: Open-Meteo Marine / Copernicus · ${fmtDate(new Date())}</div>
+  <div class="footer">RoutePlannerPro v2 · MapLibre GL JS / MapTiler · Routing: MARNET/searoute-py · Wind: MapTiler GFS WindLayer · Wave/Current: Open-Meteo Marine / Copernicus · ${fmtDate(new Date())}</div>
 </div>
 </body></html>`;
 
