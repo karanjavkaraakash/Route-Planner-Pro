@@ -261,7 +261,47 @@ body.adding-wp #map { cursor: cell; }
 .maplibregl-marker { cursor: grab; }
 .maplibregl-marker:active { cursor: grabbing; }
 
-/* ═══════════ ECA LEGEND ═══════════ */
+/* ═══════════ WIND HOVER TILE ═══════════ */
+#wind-hover-tile {
+  position: absolute; bottom: 90px; left: 12px; z-index: 600;
+  background: rgba(11,15,26,.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 12px; display: none; min-width: 140px;
+  backdrop-filter: blur(6px); pointer-events: none;
+}
+#wind-hover-tile.visible { display: block; }
+.wind-hover-row { display: flex; justify-content: space-between; gap: 16px; }
+.wind-hover-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.wind-hover-val { font-weight: 700; color: var(--accent2); font-size: 14px; }
+
+/* ═══════════ LAYER LEGEND PANEL ═══════════ */
+#layer-legend {
+  position: absolute; right: 12px; bottom: 90px; z-index: 600;
+  background: rgba(11,15,26,.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; font-size: 11px; display: none; min-width: 180px;
+  backdrop-filter: blur(6px);
+}
+#layer-legend.visible { display: block; }
+#layer-legend-title { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
+.legend-gradient { height: 10px; border-radius: 3px; margin: 4px 0; }
+.legend-scale { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); }
+
+/* ═══════════ MAX STATS CARDS ═══════════ */
+.max-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.max-stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+.max-stat-card .val { font-size: 16px; font-weight: 700; color: var(--danger); }
+.max-stat-card .key { font-size: 9px; color: var(--muted); margin-top: 1px; }
+
+/* ═══════════ SCROLLABLE WAYPOINT TABLE ═══════════ */
+#wp-table-wrap { max-height: 160px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 5px; }
+#wp-table-wrap::-webkit-scrollbar { width: 4px; }
+#wp-table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ═══════════ ECA HIGHLIGHT ROW ═══════════ */
+.wp-table tr.eca-entry td { background: rgba(255,200,0,.12); }
+.wp-table tr.eca-exit td  { background: rgba(100,200,255,.12); }
+.eca-badge { font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 700; margin-left: 4px; }
+.eca-badge.entry { background: rgba(255,200,0,.25); color: #ffc800; }
+.eca-badge.exit  { background: rgba(100,200,255,.25); color: #64c8ff; }
 #eca-legend {
   position: absolute; right: 12px; top: 12px; z-index: 600;
   background: rgba(11,15,26,.88); border: 1px solid var(--border); border-radius: 8px;
@@ -394,16 +434,21 @@ body.adding-wp #map { cursor: cell; }
           <div class="metric-card"><div class="val" id="m-transit">—</div><div class="key">Transit (days)</div></div>
           <div class="metric-card"><div class="val" id="m-eca">—</div><div class="key">ECA Miles</div></div>
         </div>
-        <div style="overflow-x:auto; margin-top:6px">
+        <!-- Max wind / wave highlight cards -->
+        <div class="max-stat-grid" id="max-stat-section" style="display:none">
+          <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kn) on route</div></div>
+          <div class="max-stat-card"><div class="val" id="m-maxwave" style="color:var(--accent2)">—</div><div class="key">Max Wave (m) on route</div></div>
+        </div>
+        <!-- Scrollable waypoint table -->
+        <div id="wp-table-wrap">
           <table class="wp-table" id="wp-table">
-            <thead><tr><th>#</th><th>Position</th><th>Bearing</th><th>Dist nm</th><th>ECA</th></tr></thead>
+            <thead><tr><th>#</th><th>Position</th><th>Brg</th><th>nm</th><th>ECA</th></tr></thead>
             <tbody id="wp-tbody"></tbody>
           </table>
         </div>
 
-        <!-- WEATHER ALONG ROUTE -->
-        <div id="wx-route-section">
-          <div class="section-title" style="margin-top:12px">🌦 Weather Along Route</div>
+        <!-- WEATHER ALONG ROUTE — hidden from sidebar, used only for PDF export -->
+        <div id="wx-route-section" style="display:none">
           <div id="wx-route-rows"></div>
         </div>
 
@@ -441,6 +486,7 @@ body.adding-wp #map { cursor: cell; }
       <button class="tool-btn" id="tb-wave"    title="Wave (Copernicus)"  onclick="toggleWx('wave')">🌊</button>
       <button class="tool-btn" id="tb-current" title="Current (Copernicus)" onclick="toggleWx('current')">🌀</button>
       <button class="tool-btn" id="tb-legend"  title="ECA Legend"   onclick="toggleEcaLegend()">◉</button>
+      <button class="tool-btn" id="tb-wxlegend" title="Layer Legend" onclick="toggleLayerLegend()">🎨</button>
     </div>
 
     <!-- ECA LEGEND -->
@@ -456,6 +502,27 @@ body.adding-wp #map { cursor: cell; }
       <div id="wx-slider-label">FORECAST TIME</div>
       <input type="range" id="wx-slider" min="0" max="39" step="1" value="0" oninput="onWxSliderMove(this.value)"/>
       <div id="wx-time-display">—</div>
+    </div>
+
+    <!-- WIND HOVER TILE -->
+    <div id="wind-hover-tile">
+      <div class="wind-hover-label">At cursor</div>
+      <div class="wind-hover-row" style="margin-top:4px">
+        <div>
+          <div class="wind-hover-label">SPEED</div>
+          <div class="wind-hover-val" id="wh-speed">—</div>
+        </div>
+        <div>
+          <div class="wind-hover-label">DIR</div>
+          <div class="wind-hover-val" id="wh-dir">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LAYER LEGEND PANEL -->
+    <div id="layer-legend">
+      <div id="layer-legend-title">LEGEND</div>
+      <div id="layer-legend-body"></div>
     </div>
 
     <!-- NOTIFICATION AREA -->
@@ -648,7 +715,7 @@ function initMap(){
   maptilersdk.config.apiKey = MAPTILER_KEY;
   map = new maptilersdk.Map({
     container: 'map',
-    style: maptilersdk.MapStyle.OCEAN,  // dark nautical style, great for voyage planning
+    style: maptilersdk.MapStyle.STREETS.DARK,  // OSM-based dark streets style
     center: [10, 30],
     zoom: 2,
     minZoom: 1,
@@ -664,6 +731,7 @@ function initMap(){
     addCmemsRasterSource();
     map.on('click', onMapClick);
     map.on('mousemove', onMapMouseMove);
+    map.on('mouseleave', ()=>{ document.getElementById('wind-hover-tile').classList.remove('visible'); });
     checkCmemsStatus();
     setNowDeparture();
   });
@@ -696,6 +764,18 @@ function addRouteLayer(){
     data:{ type:'FeatureCollection', features:[] }
   });
   // Main route line
+  // Glow/shadow underneath route for contrast on any basemap
+  map.addLayer({
+    id:'route-line-glow', type:'line', source:'route',
+    filter:['==',['get','role'],'route'],
+    layout:{'line-join':'round','line-cap':'round'},
+    paint:{
+      'line-color':'rgba(0,0,0,0.55)',
+      'line-width':['interpolate',['linear'],['zoom'],2,8,8,14],
+      'line-opacity':0.35,
+      'line-blur':4
+    }
+  });
   map.addLayer({
     id:'route-line', type:'line', source:'route',
     filter:['==',['get','role'],'route'],
@@ -703,10 +783,10 @@ function addRouteLayer(){
     paint:{
       'line-color':['case',
         ['has','color'],['get','color'],
-        '#3b82f6'
+        '#f97316'
       ],
-      'line-width':['interpolate',['linear'],['zoom'],2,2,8,4],
-      'line-opacity':0.9
+      'line-width':['interpolate',['linear'],['zoom'],2,3,8,6],
+      'line-opacity':1.0
     }
   });
   // GC arc preview (dashed)
@@ -1000,21 +1080,18 @@ function toggleWx(mode){
 
   if(wxMode === 'wind'){
     addWindLayer();
-    // Show slider immediately with fallback steps.
-    // The tick event listener in addWindLayer will refine these once
-    // the layer reports its real date range.
     buildWindTimeSteps();
     showSlider();
   } else {
-    // CMEMS wave or current
     buildCmemsTimeSteps(wxMode);
     updateCmemsLayer(wxMode, wxStepIdx);
     map.setLayoutProperty(`cmems-${wxMode}-layer`, 'visibility', 'visible');
     showSlider();
-    // Background-prefetch all forecast tiles so slider feels instant
     precacheCmemsTiles(wxMode);
     showCacheProgress(wxMode);
   }
+  // Refresh layer legend if visible
+  if(document.getElementById('layer-legend').classList.contains('visible')) updateLayerLegend();
 }
 
 function buildWindTimeSteps(){
@@ -1205,6 +1282,46 @@ function toggleEcaLegend(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   LAYER LEGEND (wind / wave / current colour scale)
+   ═══════════════════════════════════════════════════════════════ */
+function toggleLayerLegend(){
+  const el = document.getElementById('layer-legend');
+  el.classList.toggle('visible');
+  if(el.classList.contains('visible')) updateLayerLegend();
+}
+function updateLayerLegend(){
+  const body = document.getElementById('layer-legend-body');
+  const title = document.getElementById('layer-legend-title');
+  if(!wxMode){ body.innerHTML='<div style="color:var(--muted);font-size:11px">Enable a weather layer first.</div>'; return; }
+  const configs = {
+    wind:{
+      label:'WIND SPEED', unit:'knots',
+      stops:['0','5','10','15','20','25+'],
+      gradient:'linear-gradient(to right,#0ea5e9,#22c55e,#eab308,#f97316,#ef4444,#dc2626)'
+    },
+    wave:{
+      label:'WAVE HEIGHT', unit:'meters',
+      stops:['0','1','2','3','4','5','6','7','8+'],
+      gradient:'linear-gradient(to right,#0c4a6e,#0284c7,#22c55e,#facc15,#f97316,#dc2626,#7e22ce)'
+    },
+    current:{
+      label:'CURRENT SPEED', unit:'m/s',
+      stops:['0','0.5','1','1.5','2+'],
+      gradient:'linear-gradient(to right,#064e3b,#065f46,#059669,#f59e0b,#dc2626)'
+    }
+  };
+  const c = configs[wxMode];
+  title.textContent = c.label;
+  body.innerHTML = `
+    <div class="legend-gradient" style="background:${c.gradient}"></div>
+    <div class="legend-scale">
+      ${c.stops.map(s=>`<span>${s}</span>`).join('')}
+    </div>
+    <div style="color:var(--muted);font-size:10px;margin-top:6px">${c.unit}</div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    MAP CLICK & MOUSE EVENTS
    ═══════════════════════════════════════════════════════════════ */
 function onMapClick(e){
@@ -1239,7 +1356,20 @@ function onMapClick(e){
 }
 
 function onMapMouseMove(e){
-  // Could update coordinate display in future; placeholder for now
+  if(!windLayer || wxMode !== 'wind') return;
+  const tile = document.getElementById('wind-hover-tile');
+  try {
+    const val = windLayer.pickAt(e.lngLat.lng, e.lngLat.lat);
+    if(val && val.speedMetersPerSecond != null){
+      const kn = (val.speedMetersPerSecond * 1.94384).toFixed(1);
+      const dir = val.directionDegrees != null ? Math.round(val.directionDegrees) + '°' : '—';
+      document.getElementById('wh-speed').textContent = kn + ' kn';
+      document.getElementById('wh-dir').textContent = dir;
+      tile.classList.add('visible');
+    } else {
+      tile.classList.remove('visible');
+    }
+  } catch(_){ tile.classList.remove('visible'); }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1266,8 +1396,13 @@ const endpointMarkers = {};
 function placeEndpointMarker(which, lon, lat){
   if(endpointMarkers[which]) endpointMarkers[which].remove();
   const el = document.createElement('div');
-  el.innerHTML = which==='o' ? '🟢' : '🔴';
-  el.style.cssText = 'font-size:22px;cursor:default;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))';
+  el.style.cssText = `
+    width:14px;height:14px;border-radius:50%;
+    background:${which==='o'?'#22c55e':'#ef4444'};
+    border:2.5px solid #fff;
+    box-shadow:0 2px 6px rgba(0,0,0,.6);
+    cursor:default;
+  `;
   endpointMarkers[which] = new maptilersdk.Marker({element:el, anchor:'center'})
     .setLngLat([lon,lat])
     .addTo(map);
@@ -1280,9 +1415,9 @@ function addWaypointMarker(lon, lat, idx){
   const el = document.createElement('div');
   el.className = 'wp-marker';
   el.style.cssText = `
-    width:12px;height:12px;border-radius:50%;
+    width:8px;height:8px;border-radius:50%;
     background:#f59e0b;border:2px solid #fff;
-    cursor:grab;box-shadow:0 2px 4px rgba(0,0,0,.5);
+    cursor:grab;box-shadow:0 1px 4px rgba(0,0,0,.5);
   `;
   el.title = `WP${idx+1}: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
 
@@ -1541,17 +1676,28 @@ function recalcMetrics(){
 function buildWpTable(){
   const tbody=document.getElementById('wp-tbody');
   tbody.innerHTML='';
+  let prevEca = null;
   wpCoords.forEach(([lo,la],i)=>{
     const nextI=i<wpCoords.length-1?i+1:null;
     const bearing=nextI!=null?GEO.initialBearing(la,lo,wpCoords[nextI][1],wpCoords[nextI][0]).toFixed(0)+'°':'—';
     const dist=nextI!=null?GEO.kmToNm(GEO.gcDistKm(la,lo,wpCoords[nextI][1],wpCoords[nextI][0])).toFixed(0):'—';
     const eca=getEcaType(lo,la);
-    tbody.innerHTML+=`<tr>
+    // Detect ECA transitions for row highlighting
+    let rowClass='', ecaBadge='';
+    if(eca && !prevEca){
+      rowClass='eca-entry';
+      ecaBadge=`<span class="eca-badge entry">ENTRY</span>`;
+    } else if(!eca && prevEca){
+      rowClass='eca-exit';
+      ecaBadge=`<span class="eca-badge exit">EXIT</span>`;
+    }
+    prevEca=eca;
+    tbody.innerHTML+=`<tr class="${rowClass}">
       <td>${i+1}</td>
-      <td>${la.toFixed(3)}, ${lo.toFixed(3)}</td>
+      <td>${la.toFixed(3)},${lo.toFixed(3)}</td>
       <td>${bearing}</td>
       <td>${dist}</td>
-      <td class="${eca?'eca':''}">${eca||'—'}</td>
+      <td class="${eca?'eca':''}">${eca||'—'}${ecaBadge}</td>
     </tr>`;
   });
 }
@@ -1705,27 +1851,23 @@ async function fetchRouteWeather(){
   };
   redrawRouteGeoJSON();
 
-  // Render sidebar rows
-  const rowsEl = document.getElementById('wx-route-rows');
-  if(!results.length){
-    rowsEl.innerHTML = '<div style="color:var(--muted);font-size:11px">No legs to display.</div>';
-    return;
+  // Store results for PDF export
+  window._wxResults = results;
+
+  // Compute and show max wind / max wave stat cards
+  const maxWind = results.reduce((m,r)=>r.windKn!=null?Math.max(m,parseFloat(r.windKn)):m, 0);
+  const maxWave = results.reduce((m,r)=>r.waveM!=null?Math.max(m,parseFloat(r.waveM)):m, 0);
+  if(maxWind > 0 || maxWave > 0){
+    document.getElementById('m-maxwind').textContent = maxWind > 0 ? maxWind.toFixed(1) : '—';
+    document.getElementById('m-maxwave').textContent = maxWave > 0 ? maxWave.toFixed(2) : '—';
+    document.getElementById('max-stat-section').style.display = 'grid';
   }
-  const windHint = !windLayer
-    ? `<div style="color:var(--muted);font-size:10px;margin-bottom:6px">
-        💨 Enable Wind overlay (💨 button) to populate wind speed from the map layer.
-       </div>`
-    : '';
-  rowsEl.innerHTML = windHint + results.map(r => {
-    const windStr = r.windKn != null ? `💨 ${r.windKn} kn` : `💨 <span style="color:var(--muted)">No data</span>`;
-    const waveStr = r.waveM  != null ? `🌊 ${r.waveM} m`   : `🌊 <span style="color:var(--muted)">No data</span>`;
-    const etaStr  = r.tArr.toUTCString().slice(5,22) + 'Z';
-    return `<div class="wx-row">
-      <div class="wx-dot" style="background:${r.color}"></div>
-      <div class="wx-leg" title="ETA: ${etaStr}">Leg ${r.i+1}<br><span style="font-size:10px;color:var(--muted)">${etaStr}</span></div>
-      <div class="wx-val">${windStr}</div>
-      <div class="wx-val">${waveStr}</div>
-    </div>`;
+
+  // Keep hidden wx-route-rows populated for PDF
+  const rowsEl = document.getElementById('wx-route-rows');
+  rowsEl.innerHTML = results.map(r => {
+    const etaStr = r.tArr.toUTCString().slice(5,22) + 'Z';
+    return `<tr data-leg="${r.i}" data-wind="${r.windKn??''}" data-wave="${r.waveM??''}" data-color="${r.color}" data-eta="${etaStr}"></tr>`;
   }).join('');
 }
 
@@ -1744,6 +1886,8 @@ function clearAll(){
   Object.keys(endpointMarkers).forEach(k=>delete endpointMarkers[k]);
   if(map.getSource('route')) map.getSource('route').setData({type:'FeatureCollection',features:[]});
   document.getElementById('metrics-section').style.display='none';
+  document.getElementById('max-stat-section').style.display='none';
+  window._wxResults = null;
   document.getElementById('wx-route-section').style.display='none';
   document.getElementById('o-port-input').value='';
   document.getElementById('d-port-input').value='';
@@ -1800,39 +1944,137 @@ function openExportModal(){
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 
 /* ═══════════════════════════════════════════════════════════════
-   PDF VOYAGE REPORT (unchanged logic from v1)
+   PDF VOYAGE REPORT — full rewrite with weather forecast table
+   and wind map snapshots (4 × 6-hourly)
    ═══════════════════════════════════════════════════════════════ */
-function generateVoyageReport(){
+async function generateVoyageReport(){
   if(!routeData){ notify('No route data','err'); return; }
-  const vessel=document.getElementById('pdf-vessel').value||'Unknown Vessel';
-  const voyage=document.getElementById('pdf-voyage').value||'—';
-  const prep=document.getElementById('pdf-prepby').value||'—';
-  const speed=parseFloat(document.getElementById('speed').value)||14;
-  const depStr=document.getElementById('dep-time').value;
-  const dep=depStr?new Date(depStr):new Date();
-  const dist=routeData.distance_nm;
-  const transitH=dist/speed;
-  const eta=new Date(dep.getTime()+transitH*3600*1000);
 
-  const wpRows=wpCoords.map(([lo,la],i)=>{
-    const next=wpCoords[i+1];
-    const d=next?GEO.kmToNm(GEO.gcDistKm(la,lo,next[1],next[0])).toFixed(0):'—';
-    return `<tr><td>${i+1}</td><td>${la.toFixed(4)}</td><td>${lo.toFixed(4)}</td><td>${d}</td></tr>`;
+  const vessel  = document.getElementById('pdf-vessel').value || 'Unknown Vessel';
+  const voyage  = document.getElementById('pdf-voyage').value || '—';
+  const prep    = document.getElementById('pdf-prepby').value || '—';
+  const speed   = parseFloat(document.getElementById('speed').value) || 14;
+  const depStr  = document.getElementById('dep-time').value;
+  const dep     = depStr ? new Date(depStr) : new Date();
+  const dist    = routeData.distance_nm;
+  const transitH = dist / speed;
+  const eta     = new Date(dep.getTime() + transitH * 3600 * 1000);
+
+  // --- Ensure weather data is fetched ---
+  closeModal('export-modal');
+  notify('Gathering weather data for PDF…');
+
+  // If wind layer isn't active, enable it now so pickAt works
+  let windWasOff = false;
+  if(!windLayer){
+    windWasOff = true;
+    addWindLayer();
+    // Wait up to 8s for layer to load
+    await new Promise(res => {
+      let tries = 0;
+      const t = setInterval(()=>{
+        tries++;
+        if((windLayer && windLayer.getAnimationStart?.()) || tries > 16){ clearInterval(t); res(); }
+      }, 500);
+    });
+  }
+
+  // Always re-fetch weather so PDF has fresh data
+  await fetchRouteWeather();
+  const wxResults = window._wxResults || [];
+
+  notify('Generating PDF…');
+
+  // --- Waypoint table rows ---
+  let prevEca2 = null;
+  const wpRows = wpCoords.map(([lo, la], i) => {
+    const next = wpCoords[i+1];
+    const d = next ? GEO.kmToNm(GEO.gcDistKm(la, lo, next[1], next[0])).toFixed(0) : '—';
+    const eca = getEcaType(lo, la);
+    let rowStyle = '';
+    if(eca && !prevEca2) rowStyle = 'background:#fff9e6';
+    else if(!eca && prevEca2) rowStyle = 'background:#e6f7ff';
+    prevEca2 = eca;
+    return `<tr style="${rowStyle}">
+      <td>${i+1}</td><td>${la.toFixed(4)}</td><td>${lo.toFixed(4)}</td>
+      <td>${d}</td><td>${eca || '—'}</td>
+    </tr>`;
   }).join('');
 
-  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8">
+  // --- Weather table (next 5 days of legs, up to 40 rows) ---
+  const wxRows5d = wxResults.slice(0, 40).map(r => {
+    const etaStr = r.tArr.toUTCString().slice(5, 22) + 'Z';
+    const wColor = r.windKn != null
+      ? (parseFloat(r.windKn) < 10 ? '#16a34a' : parseFloat(r.windKn) < 20 ? '#d97706' : parseFloat(r.windKn) < 30 ? '#ea580c' : '#dc2626')
+      : '#888';
+    return `<tr>
+      <td>${r.i + 1}</td>
+      <td>${etaStr}</td>
+      <td>${r.midLat.toFixed(2)}°, ${r.midLon.toFixed(2)}°</td>
+      <td style="color:${wColor};font-weight:600">${r.windKn != null ? r.windKn + ' kn' : 'N/A'}</td>
+      <td>${r.waveM  != null ? r.waveM  + ' m'  : 'N/A'}</td>
+    </tr>`;
+  }).join('');
+
+  // --- Wind snapshot images (capture 4 × 6h steps from WindLayer) ---
+  let snapHtml = '';
+  if(windLayer){
+    const snaps = [];
+    const startSec = windLayer.getAnimationStart?.() ?? (Date.now()/1000);
+    const steps    = [0, 6, 12, 18]; // hours ahead
+    const origSec  = windLayer.getAnimationTime?.() ?? startSec;
+    windLayer.animateByFactor(0);
+    for(const h of steps){
+      windLayer.setAnimationTime(startSec + h * 3600);
+      await new Promise(r => setTimeout(r, 800)); // let WebGL render
+      const snapTime = new Date((startSec + h * 3600) * 1000).toUTCString().slice(5, 22) + 'Z';
+      try {
+        // Capture map canvas as data URL
+        const canvas = map.getCanvas();
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+        snaps.push({ t: snapTime, url: dataUrl, h });
+      } catch(e){ snaps.push({ t: snapTime, url: null, h }); }
+    }
+    // Restore
+    windLayer.setAnimationTime(origSec);
+    windLayer.animateByFactor(3600);
+    if(snaps.some(s => s.url)){
+      snapHtml = `
+      <h2 style="color:#1e3a5f;margin:24px 0 12px;border-top:2px solid #1e3a5f;padding-top:12px">Wind Forecast Maps (Next 24h)</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+        ${snaps.map(s => `<div style="border:1px solid #ddd;border-radius:6px;overflow:hidden">
+          <div style="background:#1e3a5f;color:#fff;font-size:11px;padding:5px 8px;font-weight:600">+${s.h}h — ${s.t}</div>
+          ${s.url ? `<img src="${s.url}" style="width:100%;display:block"/>` : '<div style="height:120px;background:#f0f4f8;display:flex;align-items:center;justify-content:center;font-size:11px;color:#999">Snapshot unavailable</div>'}
+        </div>`).join('')}
+      </div>`;
+    }
+  }
+
+  // --- Max wind / wave summary ---
+  const maxWind = wxResults.reduce((m,r)=>r.windKn!=null?Math.max(m,parseFloat(r.windKn)):m, 0);
+  const maxWave = wxResults.reduce((m,r)=>r.waveM!=null?Math.max(m,parseFloat(r.waveM)):m, 0);
+  const maxColor = (v, t1, t2) => v <= 0 ? '#888' : v < t1 ? '#16a34a' : v < t2 ? '#ea580c' : '#dc2626';
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
   <title>Voyage Report — ${vessel}</title>
   <style>
-    body{font-family:Arial,sans-serif;padding:30px;color:#111;max-width:800px;margin:0 auto}
-    h1{color:#1e3a5f;border-bottom:2px solid #1e3a5f;padding-bottom:8px}
-    .meta{display:flex;gap:20px;flex-wrap:wrap;margin:16px 0;font-size:13px}
-    .meta div{flex:1;min-width:160px;background:#f0f4f8;padding:10px;border-radius:6px}
-    .meta div b{display:block;margin-bottom:4px;color:#1e3a5f}
-    table{width:100%;border-collapse:collapse;font-size:12px;margin:14px 0}
-    th{background:#1e3a5f;color:#fff;padding:7px;text-align:left}
-    td{padding:6px 8px;border-bottom:1px solid #ddd}
-    tr:nth-child(even)td{background:#f8f9fa}
-    .footer{margin-top:24px;font-size:11px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    body{font-family:Arial,sans-serif;padding:30px;color:#111;max-width:900px;margin:0 auto;font-size:13px}
+    h1{color:#1e3a5f;border-bottom:3px solid #1e3a5f;padding-bottom:8px;margin-bottom:16px}
+    h2{color:#1e3a5f;font-size:14px;margin:20px 0 8px}
+    .meta{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+    .meta div{flex:1;min-width:140px;background:#f0f4f8;padding:10px;border-radius:6px}
+    .meta div b{display:block;margin-bottom:3px;color:#1e3a5f;font-size:11px;text-transform:uppercase}
+    .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}
+    .stat-card{background:#f0f4f8;border-radius:8px;padding:12px;text-align:center}
+    .stat-card .v{font-size:22px;font-weight:700;color:#1e3a5f}
+    .stat-card .k{font-size:10px;color:#666;margin-top:3px}
+    .max-card .v{font-size:22px;font-weight:700}
+    table{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+    th{background:#1e3a5f;color:#fff;padding:7px 8px;text-align:left;font-size:11px}
+    td{padding:5px 8px;border-bottom:1px solid #ddd;vertical-align:top}
+    tr:nth-child(even) td{background:#f8f9fa}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    @media print{body{padding:10px} h2{page-break-before:auto}}
   </style></head><body>
   <h1>⚓ Voyage Report</h1>
   <div class="meta">
@@ -1841,27 +2083,46 @@ function generateVoyageReport(){
     <div><b>Prepared By</b>${prep}</div>
     <div><b>Generated</b>${new Date().toUTCString()}</div>
   </div>
-  <div class="meta">
-    <div><b>Distance</b>${Math.round(dist).toLocaleString()} nm</div>
-    <div><b>Speed</b>${speed} knots</div>
-    <div><b>Departure</b>${dep.toUTCString()}</div>
-    <div><b>ETA</b>${eta.toUTCString()}</div>
-    <div><b>Transit</b>${(transitH/24).toFixed(1)} days</div>
+  <div class="stat-grid">
+    <div class="stat-card"><div class="v">${Math.round(dist).toLocaleString()}</div><div class="k">Distance (nm)</div></div>
+    <div class="stat-card"><div class="v">${speed}</div><div class="k">Speed (knots)</div></div>
+    <div class="stat-card"><div class="v">${(transitH/24).toFixed(1)}</div><div class="k">Transit (days)</div></div>
+    <div class="stat-card"><div class="v">${eta.toUTCString().slice(5,22)}Z</div><div class="k">ETA (UTC)</div></div>
+    <div class="stat-card max-card"><div class="v" style="color:${maxColor(maxWind,20,35)}">${maxWind>0?maxWind.toFixed(1)+' kn':'—'}</div><div class="k">Max Wind on Route</div></div>
+    <div class="stat-card max-card"><div class="v" style="color:${maxColor(maxWave,3,5)}">${maxWave>0?maxWave.toFixed(2)+' m':'—'}</div><div class="k">Max Wave on Route</div></div>
+    <div class="stat-card"><div class="v">${dep.toUTCString().slice(5,22)}Z</div><div class="k">Departure (UTC)</div></div>
+    <div class="stat-card"><div class="v">${document.getElementById('m-eca').textContent}</div><div class="k">ECA Miles</div></div>
   </div>
+
   <h2>Waypoints</h2>
-  <table><thead><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Dist to next (nm)</th></tr></thead>
+  <table><thead><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Dist to next (nm)</th><th>ECA Zone</th></tr></thead>
   <tbody>${wpRows}</tbody></table>
-  <div class="footer">Generated by RoutePlannerPro v2 (MapLibre / MapTiler) &bull; Data: MARNET/searoute, Copernicus Marine, Open-Meteo</div>
+
+  ${wxRows5d ? `
+  <h2>Forecast Weather Along Route (Next 5 Days)</h2>
+  <p style="font-size:11px;color:#666;margin-bottom:8px">Wind data from MapTiler GFS (same as map layer). Wave data from Open-Meteo Marine API.</p>
+  <table>
+    <thead><tr><th>Leg</th><th>ETA (UTC)</th><th>Position</th><th>Wind Speed</th><th>Wave Height</th></tr></thead>
+    <tbody>${wxRows5d}</tbody>
+  </table>` : '<p style="color:#888;font-size:12px">No weather forecast data available — enable Wind overlay before generating report.</p>'}
+
+  ${snapHtml}
+
+  <div class="footer">
+    Generated by RoutePlannerPro v2 (MapLibre / MapTiler) &bull;
+    Data: MARNET/searoute, Copernicus Marine, MapTiler Weather (GFS), Open-Meteo Marine &bull;
+    ${new Date().toUTCString()}
+  </div>
   </body></html>`;
 
-  try{
-    const blob=new Blob([html],{type:'text/html'});
-    const url=URL.createObjectURL(blob);
-    const w=window.open(url,'_blank');
-    if(w){ setTimeout(()=>w.print(),500); }
-    closeModal('export-modal');
+  try {
+    const blob = new Blob([html], {type:'text/html'});
+    const url  = URL.createObjectURL(blob);
+    const w    = window.open(url, '_blank');
+    if(w) setTimeout(()=>w.print(), 800);
+    notify('Voyage Report ready ✓', 'ok');
   } catch(e){
-    notify('PDF generation failed: '+e.message,'err');
+    notify('PDF generation failed: ' + e.message, 'err');
   }
 }
 
