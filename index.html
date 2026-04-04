@@ -1759,44 +1759,77 @@ function fmtCoord(lat, lon){
 function fmtLat(lat){ return `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}`; }
 function fmtLon(lon){ lon = normLon(lon); return `${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`; }
 
-// ── MapTiler WindLayer wind fetch — sequential per-leg with proper time seeking ──
-// Key insight: pickAt() only works when:
-//   1. The WindLayer has been added and its tiles are loaded (onSourceReadyAsync)
-//   2. The animation is seeked to the target time AND a small grace period given
-//      for the GPU to update the particle field before sampling
-// We sample legs sequentially (not in parallel) to avoid seeking conflicts.
+// ── MapTiler WindLayer wind fetch ─────────────────────────────────────────────
+// Strategy:
+//   1. Always add wind layer (if not already active) — user need not toggle it
+//   2. Fit map to the full route extent so MapTiler loads tiles across the whole route
+//   3. Wait for windLayer 'tick' event which confirms live data is streaming
+//   4. Sample each leg sequentially with a 60ms settle time after each seek
+//   5. Restore map view and animation state
+//   6. If wind layer unavailable, fall back to Open-Meteo
 async function fetchOpenMeteoWindBatch(legs){
   if(!legs.length) return legs.map(() => null);
   const results = new Array(legs.length).fill(null);
 
-  // If no wind layer, fall back to Open-Meteo for the whole batch
+  // ── Ensure wind layer is loaded ──────────────────────────────────
+  const wasActive = !!windLayer;
+  if(!windLayer){ addWindLayer(); }
+
   if(!windLayer){
+    console.warn('WindLayer could not be created — falling back to Open-Meteo');
     return fetchOpenMeteoWindFallback(legs);
   }
 
+  // ── Fit map to full route extent so tiles load across whole route ──
+  // MapTiler only loads tiles for the current viewport — we need the whole route
+  const lons = wpCoords.map(([lo]) => normLon(lo));
+  const lats = wpCoords.map(([,la]) => la);
+  const bbox = [
+    Math.min(...lons) - 5, Math.min(...lats) - 3,
+    Math.max(...lons) + 5, Math.max(...lats) + 3
+  ];
+  // Fit bounds to load tiles across the full route
+  try {
+    map.fitBounds([[bbox[0],bbox[1]],[bbox[2],bbox[3]]], { duration: 0, padding: 20 });
+  } catch(_){}
+
+  // ── Wait for wind layer to emit 'tick' (means data is streaming) ──
+  // 'tick' fires on each animation step — first tick means tiles loaded + data live
+  await new Promise(res => {
+    let resolved = false;
+    const onTick = () => {
+      if(!resolved){ resolved = true; windLayer?.off('tick', onTick); res(); }
+    };
+    windLayer.on('tick', onTick);
+    // Hard timeout: 15 seconds max
+    setTimeout(() => { if(!resolved){ resolved = true; windLayer?.off('tick', onTick); res(); } }, 15000);
+  });
+
+  // Additional 500ms — tiles for far waypoints may still be streaming in
+  await new Promise(r => setTimeout(r, 500));
+
+  // ── Sequential sampling ───────────────────────────────────────────
   const startSec = windLayer.getAnimationStart?.() ?? null;
   const endSec   = windLayer.getAnimationEnd?.()   ?? null;
+
   if(!startSec || !endSec){
+    if(!wasActive) removeWindLayer();
     return fetchOpenMeteoWindFallback(legs);
   }
 
   const origSec = windLayer.getAnimationTime?.() ?? startSec;
-  windLayer.animateByFactor(0); // pause animation during sampling
+  windLayer.animateByFactor(0); // pause — prevents seek conflicts during sampling
 
   for(let idx = 0; idx < legs.length; idx++){
     const { lat, lon, date } = legs[idx];
     const nlon = normLon(lon);
     const targetSec = date.getTime() / 1000;
 
-    // Only sample if within the WindLayer's 5-day forecast window
-    if(targetSec < startSec - 3600 || targetSec > endSec + 3600){
-      // Beyond MapTiler range — leave as null (will show "—" for day 5+)
-      continue;
-    }
+    // Only sample within MapTiler's 5-day forecast window
+    if(targetSec < startSec - 3600 || targetSec > endSec + 3600) continue;
 
-    // Seek to the leg's ETA time
     windLayer.setAnimationTime(targetSec);
-    // Brief pause — WindLayer needs a moment to update particle field after seek
+    // 60ms grace — WindLayer updates its particle/data field after seek
     await new Promise(r => setTimeout(r, 60));
 
     try {
@@ -1810,9 +1843,12 @@ async function fetchOpenMeteoWindBatch(legs){
     } catch(_){}
   }
 
-  // Restore original animation state
+  // ── Restore state ─────────────────────────────────────────────────
   windLayer.setAnimationTime(origSec);
   windLayer.animateByFactor(3600);
+
+  // If wind wasn't active before, remove the layer (keep map clean)
+  if(!wasActive) removeWindLayer();
 
   return results;
 }
@@ -2051,25 +2087,11 @@ async function generateVoyageReport(){
 
   closeModal('export-modal');
 
-  // ── Step 1: Ensure WindLayer loaded and tiles ready ─────────────────────────
-  // Wind source: MapTiler GFS WindLayer — tiles must be loaded before pickAt works.
-  // We add the layer if absent, then wait for onSourceReadyAsync (signals tiles loaded).
-  notify('Step 1/2 — Loading wind data (MapTiler)…');
-  if(!windLayer){ addWindLayer(); }
-  if(windLayer){
-    try{
-      // onSourceReadyAsync fires when the current time-step tiles are in memory
-      await Promise.race([
-        windLayer.onSourceReadyAsync?.() ?? Promise.resolve(),
-        new Promise(r => setTimeout(r, 12000)) // max 12s wait
-      ]);
-    } catch(_){}
-  }
-  // Additional 800ms grace — MapTiler fills tile neighbours asynchronously
-  await new Promise(r => setTimeout(r, 800));
-
-  // ── Step 2: Fetch weather data ──────────────────────────────────────────────
-  notify('Step 2/2 — Fetching weather along route…');
+  // ── Fetch weather data ──────────────────────────────────────────────────────
+  // Wind layer is loaded automatically inside fetchRouteWeather regardless of
+  // whether the user had the overlay active. The map is fitted to the full route
+  // extent to ensure tiles load across the whole route before sampling.
+  notify('Fetching weather data for all waypoints — please wait…');
   await fetchRouteWeather();
   const wxResults = window._wxResults || [];
 
@@ -2172,9 +2194,12 @@ async function generateVoyageReport(){
   .badge-entry{background:#fef08a;color:#854d0e}
   .badge-exit{background:#bfdbfe;color:#1e3a8a}
   .footer{margin-top:20px;font-size:9px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px;text-align:center}
+  @page { size: A4 landscape; margin: 15mm 18mm; }
   @media print{
-    .page-break{page-break-before:always}
+    .page-break{page-break-before:always;break-before:page}
     body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .cover{padding:20px 24px}
+    .content{padding:20px 24px}
   }
 </style></head><body>
 <div class="cover">
