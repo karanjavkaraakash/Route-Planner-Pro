@@ -12,8 +12,8 @@
      ═══════════════════════════════════════════════════════════════ -->
 <link href="https://cdn.maptiler.com/maptiler-sdk-js/v3.11.1/maptiler-sdk.css" rel="stylesheet"/>
 <script src="https://cdn.maptiler.com/maptiler-sdk-js/v3.11.1/maptiler-sdk.umd.min.js"></script>
-<!-- Weather module - UMD exposes global: maptilerweather -->
-<script src="https://cdn.jsdelivr.net/npm/@maptiler/weather@3.1.1/dist/maptiler-weather.umd.min.js"></script>
+<!-- Weather module from MapTiler CDN (UMD — global: maptilerWeather) -->
+<script src="https://cdn.maptiler.com/maptiler-weather/v3.1.1/maptiler-weather.umd.min.js"></script>
 
 <style>
 /* ═══════════ RESET & ROOT ═══════════ */
@@ -786,37 +786,61 @@ function addCmemsRasterSource(){
 function buildCmemsTileUrl(variable, date){
   const m = CMEMS_META[variable];
   const iso = snapTime(date, m.stepH);
+  // IMPORTANT: Use WMTS parameter names exactly as Copernicus expects.
+  // MapLibre substitutes {z}/{x}/{y} in the URL template — we put them in
+  // TILEMATRIX/TILEROW/TILECOL query params which server.py forwards verbatim.
+  // Copernicus WMTS uses EPSG:3857 tile matrix set.
   const layer = encodeURIComponent(m.layer);
   const style = encodeURIComponent(m.style);
-  return `/api/cmems/tile?layer=${layer}&style=${style}&TIME=${iso}&z={z}&x={x}&y={y}`;
+  return (
+    `/api/cmems/tile?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
+    `&LAYER=${layer}&STYLE=${style}` +
+    `&FORMAT=image%2Fpng` +
+    `&TILEMATRIXSET=EPSG%3A3857` +
+    `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}` +
+    `&TIME=${encodeURIComponent(iso)}`
+  );
 }
 
 /* ═══════════════════════════════════════════════════════════════
    MAPTILER WIND LAYER
+   @maptiler/weather UMD exports as: maptilerWeather (capital W)
+   Defensive: also check maptilerweather (lowercase) as fallback
    ═══════════════════════════════════════════════════════════════ */
+function getWeatherLib(){
+  // Try the canonical UMD name first (capital W, as built by MapTiler)
+  if(typeof maptilerWeather !== 'undefined' && maptilerWeather.WindLayer) return maptilerWeather;
+  // Fallback: lowercase (some CDN builds)
+  if(typeof maptilerweather !== 'undefined' && maptilerweather.WindLayer) return maptilerweather;
+  // Last resort: check window explicitly
+  if(window.maptilerWeather?.WindLayer) return window.maptilerWeather;
+  if(window.maptilerweather?.WindLayer) return window.maptilerweather;
+  return null;
+}
+
 function addWindLayer(){
   if(windLayer) return;
-  if(typeof maptilerweather === 'undefined' || !maptilerweather.WindLayer){
-    notify('Wind layer module not loaded','err');
+  const W = getWeatherLib();
+  if(!W){
+    notify('Wind layer: @maptiler/weather not loaded. Check browser console.','err');
+    console.error('maptilerWeather global not found. Globals present:',
+      Object.keys(window).filter(k=>k.toLowerCase().includes('maptiler')));
     return;
   }
   try {
-    windLayer = new maptilerweather.WindLayer({
-      id: 'wind-layer',
-      opacity: 0.8,
-    });
+    windLayer = new W.WindLayer({ id: 'wind-layer', opacity: 0.8 });
     map.addLayer(windLayer);
-    // Start animation immediately so particles are visible
+    // Start animated forecast playback immediately (1 model-hour per real second)
     if(typeof windLayer.animateByFactor === 'function'){
-      windLayer.animateByFactor(3600); // 1 hour advance per real second
+      windLayer.animateByFactor(3600);
     }
-    // Rebuild time steps once layer has data available
+    // Once source data arrives, rebuild slider with real date range
     windLayer.on('sourcedata', ()=>{
       if(wxMode === 'wind') buildWindTimeSteps();
     });
   } catch(e){
     console.error('WindLayer error:', e);
-    notify('Wind layer failed: '+e.message,'err');
+    notify('Wind layer error: '+e.message,'err');
     windLayer = null;
   }
 }
@@ -939,13 +963,18 @@ function updateCmemsLayer(variable, stepIdx){
   const iso = snapTime(t, m.stepH);
   const layer = encodeURIComponent(m.layer);
   const style = encodeURIComponent(m.style);
-  const url = `/api/cmems/tile?layer=${layer}&style=${style}&TIME=${iso}&z={z}&x={x}&y={y}`;
-  // Update tiles by removing & re-adding source (MapLibre doesn't support setTiles directly on raster sources)
-  // Workaround: use map.getSource().setTiles() which IS supported in MapLibre GL JS
+  const url = (
+    `/api/cmems/tile?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
+    `&LAYER=${layer}&STYLE=${style}` +
+    `&FORMAT=image%2Fpng` +
+    `&TILEMATRIXSET=EPSG%3A3857` +
+    `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}` +
+    `&TIME=${encodeURIComponent(iso)}`
+  );
   try {
     map.getSource(`cmems-${variable}`).setTiles([url]);
   } catch(e){
-    console.warn('setTiles not available, rebuilding source:', e.message);
+    console.warn('setTiles fallback:', e.message);
     rebuildCmemsSource(variable, url);
   }
 }
@@ -953,12 +982,13 @@ function updateCmemsLayer(variable, stepIdx){
 function rebuildCmemsSource(variable, url){
   const layerId = `cmems-${variable}-layer`;
   const srcId = `cmems-${variable}`;
+  const wasVisible = map.getLayoutProperty(layerId, 'visibility') === 'visible';
   try { map.removeLayer(layerId); } catch(_){}
   try { map.removeSource(srcId); } catch(_){}
-  map.addSource(srcId, { type:'raster', tiles:[url], tileSize:256 });
+  map.addSource(srcId, { type:'raster', tiles:[url], tileSize:256, attribution:'© Copernicus Marine Service' });
   map.addLayer({
     id:layerId, type:'raster', source:srcId,
-    layout:{ visibility:'visible' },
+    layout:{ visibility: wasVisible ? 'visible' : 'none' },
     paint:{ 'raster-opacity':0.75 }
   });
 }
@@ -1417,9 +1447,14 @@ async function fetchOpenMeteoRouteWeather(){
     const now=new Date();
     const diffDays=(tArr-now)/(86400*1000);
     let windKn='—',waveM='—',color='#3b82f6';
-    if(diffDays<=7){
+    if(diffDays<=6.5){  // stay within Open-Meteo's 7-day window with margin
       try{
-        const url=`https://api.open-meteo.com/v1/forecast?latitude=${midLat}&longitude=${midLon}&hourly=wind_speed_10m,wave_height&wind_speed_unit=kn&timezone=UTC&start_date=${tArrDate}&end_date=${tArrDate}&forecast_days=7`;
+        // Clamp the fetch date to today..today+6
+        const now2=new Date();
+        const maxDate=new Date(now2.getTime()+6*86400*1000);
+        const fetchDate=tArr<now2?now2:(tArr>maxDate?maxDate:tArr);
+        const fetchDateStr=fetchDate.toISOString().slice(0,10);
+        const url=`https://api.open-meteo.com/v1/forecast?latitude=${midLat.toFixed(4)}&longitude=${midLon.toFixed(4)}&hourly=wind_speed_10m,wave_height&wind_speed_unit=kn&timezone=UTC&start_date=${fetchDateStr}&end_date=${fetchDateStr}&forecast_days=1`;
         const r=await fetch(url);
         if(r.ok){
           const d=await r.json();
@@ -1695,7 +1730,9 @@ async function checkCmemsStatus(){
     const r=await fetch('/api/cmems/status');
     if(r.ok){
       const d=await r.json();
-      if(d.ok) notify('Copernicus auth OK','ok');
+      // server.py returns 'token_valid' not 'ok'
+      if(d.token_valid) notify('Copernicus auth OK ✓','ok');
+      else if(!d.configured) notify('Copernicus not configured — wave/current unavailable','warn');
       else notify('Copernicus auth failed — wave/current unavailable','warn');
     }
   } catch(e){ console.warn('CMEMS status check failed',e); }
