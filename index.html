@@ -436,7 +436,7 @@ body.adding-wp #map { cursor: cell; }
         </div>
         <!-- Max wind / wave highlight cards -->
         <div class="max-stat-grid" id="max-stat-section" style="display:none">
-          <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kn) on route</div></div>
+          <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kt) on route</div></div>
           <div class="max-stat-card"><div class="val" id="m-maxwave" style="color:var(--accent2)">—</div><div class="key">Max Wave (m) on route</div></div>
         </div>
         <!-- Scrollable waypoint table -->
@@ -721,7 +721,8 @@ function initMap(){
     minZoom: 1,
     maxZoom: 18,
     attributionControl: true,
-    pitchWithRotate: false
+    pitchWithRotate: false,
+    preserveDrawingBuffer: true   // required for canvas.toDataURL() in PDF snapshots
   });
 
   map.on('load', () => {
@@ -1769,7 +1770,7 @@ async function fetchMapTilerWind(lat, lon, targetDate){
     windLayer.animateByFactor(3600);
 
     if(!val || val.speedMetersPerSecond == null) return null;
-    return (val.speedMetersPerSecond * 1.94384).toFixed(1); // m/s → knots
+    return (val.speedMetersPerSecond * 1.94384).toFixed(1); // m/s → kt
   } catch(e){
     console.warn('WindLayer.pickAt error:', e.message);
     return null;
@@ -1947,179 +1948,353 @@ function closeModal(id){ document.getElementById(id).classList.remove('open'); }
    PDF VOYAGE REPORT — full rewrite with weather forecast table
    and wind map snapshots (4 × 6-hourly)
    ═══════════════════════════════════════════════════════════════ */
+
+// Format a Date as "04 Apr 2026, 14:30 UTC" — no trailing Z, no GMT
+function fmtDate(d){
+  const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dd = String(d.getUTCDate()).padStart(2,'0');
+  const mon = months[d.getUTCMonth()];
+  const yyyy = d.getUTCFullYear();
+  const hh = String(d.getUTCHours()).padStart(2,'0');
+  const mm = String(d.getUTCMinutes()).padStart(2,'0');
+  return `${dd} ${mon} ${yyyy}, ${hh}:${mm} UTC`;
+}
 async function generateVoyageReport(){
   if(!routeData){ notify('No route data','err'); return; }
 
-  const vessel  = document.getElementById('pdf-vessel').value || 'Unknown Vessel';
-  const voyage  = document.getElementById('pdf-voyage').value || '—';
-  const prep    = document.getElementById('pdf-prepby').value || '—';
-  const speed   = parseFloat(document.getElementById('speed').value) || 14;
-  const depStr  = document.getElementById('dep-time').value;
-  const dep     = depStr ? new Date(depStr) : new Date();
-  const dist    = routeData.distance_nm;
+  const vessel   = document.getElementById('pdf-vessel').value || 'Unknown Vessel';
+  const voyage   = document.getElementById('pdf-voyage').value || '—';
+  const prep     = document.getElementById('pdf-prepby').value || '—';
+  const speed    = parseFloat(document.getElementById('speed').value) || 14;
+  const depStr   = document.getElementById('dep-time').value;
+  const dep      = depStr ? new Date(depStr) : new Date();
+  const dist     = routeData.distance_nm;
   const transitH = dist / speed;
-  const eta     = new Date(dep.getTime() + transitH * 3600 * 1000);
+  const eta      = new Date(dep.getTime() + transitH * 3600 * 1000);
 
-  // --- Ensure weather data is fetched ---
+  // Origin / destination port names
+  const originName = oPort?.name || (getOriginCoords() ? `${getOriginCoords().la.toFixed(2)}°N ${getOriginCoords().lo.toFixed(2)}°E` : 'Origin');
+  const destName   = dPort?.name || (getDestCoords()   ? `${getDestCoords().la.toFixed(2)}°N ${getDestCoords().lo.toFixed(2)}°E`   : 'Destination');
+
   closeModal('export-modal');
-  notify('Gathering weather data for PDF…');
+  notify('Enabling wind layer & gathering weather data…');
 
-  // If wind layer isn't active, enable it now so pickAt works
-  let windWasOff = false;
+  // ── Step 1: Ensure WindLayer is loaded and source-ready ──────────
   if(!windLayer){
-    windWasOff = true;
     addWindLayer();
-    // Wait up to 8s for layer to load
-    await new Promise(res => {
-      let tries = 0;
-      const t = setInterval(()=>{
-        tries++;
-        if((windLayer && windLayer.getAnimationStart?.()) || tries > 16){ clearInterval(t); res(); }
-      }, 500);
-    });
+  }
+  // Wait for WindLayer source to be ready (pickAt only works after this)
+  if(windLayer){
+    try {
+      if(typeof windLayer.onSourceReadyAsync === 'function'){
+        await Promise.race([
+          windLayer.onSourceReadyAsync(),
+          new Promise(r => setTimeout(r, 10000)) // 10s max
+        ]);
+      } else {
+        // Fallback: poll for getAnimationStart
+        await new Promise(res => {
+          let tries = 0;
+          const t = setInterval(()=>{
+            tries++;
+            if((windLayer?.getAnimationStart?.()) || tries > 20){ clearInterval(t); res(); }
+          }, 500);
+        });
+      }
+    } catch(_){}
   }
 
-  // Always re-fetch weather so PDF has fresh data
+  // ── Step 2: Fetch fresh weather data ────────────────────────────
+  notify('Fetching forecast weather along route…');
   await fetchRouteWeather();
   const wxResults = window._wxResults || [];
 
-  notify('Generating PDF…');
+  // ── Step 3: Capture map + wind snapshots ────────────────────────
+  notify('Capturing wind forecast maps…');
 
-  // --- Waypoint table rows ---
-  let prevEca2 = null;
-  const wpRows = wpCoords.map(([lo, la], i) => {
-    const next = wpCoords[i+1];
-    const d = next ? GEO.kmToNm(GEO.gcDistKm(la, lo, next[1], next[0])).toFixed(0) : '—';
-    const eca = getEcaType(lo, la);
-    let rowStyle = '';
-    if(eca && !prevEca2) rowStyle = 'background:#fff9e6';
-    else if(!eca && prevEca2) rowStyle = 'background:#e6f7ff';
-    prevEca2 = eca;
-    return `<tr style="${rowStyle}">
-      <td>${i+1}</td><td>${la.toFixed(4)}</td><td>${lo.toFixed(4)}</td>
-      <td>${d}</td><td>${eca || '—'}</td>
-    </tr>`;
-  }).join('');
+  // Take a base route map screenshot (no wind overlay)
+  let routeMapDataUrl = null;
+  try {
+    // Ensure wind is paused for clean screenshot, map fully rendered
+    if(windLayer) windLayer.animateByFactor(0);
+    await new Promise(r => setTimeout(r, 400));
+    routeMapDataUrl = map.getCanvas().toDataURL('image/jpeg', 0.82);
+  } catch(e){ console.warn('Route map snapshot failed:', e); }
 
-  // --- Weather table (next 5 days of legs, up to 40 rows) ---
-  const wxRows5d = wxResults.slice(0, 40).map(r => {
-    const etaStr = r.tArr.toUTCString().slice(5, 22) + 'Z';
-    const wColor = r.windKn != null
-      ? (parseFloat(r.windKn) < 10 ? '#16a34a' : parseFloat(r.windKn) < 20 ? '#d97706' : parseFloat(r.windKn) < 30 ? '#ea580c' : '#dc2626')
-      : '#888';
-    return `<tr>
-      <td>${r.i + 1}</td>
-      <td>${etaStr}</td>
-      <td>${r.midLat.toFixed(2)}°, ${r.midLon.toFixed(2)}°</td>
-      <td style="color:${wColor};font-weight:600">${r.windKn != null ? r.windKn + ' kn' : 'N/A'}</td>
-      <td>${r.waveM  != null ? r.waveM  + ' m'  : 'N/A'}</td>
-    </tr>`;
-  }).join('');
-
-  // --- Wind snapshot images (capture 4 × 6h steps from WindLayer) ---
+  // Capture 4 wind snapshots (+0h, +6h, +12h, +18h)
   let snapHtml = '';
   if(windLayer){
     const snaps = [];
     const startSec = windLayer.getAnimationStart?.() ?? (Date.now()/1000);
-    const steps    = [0, 6, 12, 18]; // hours ahead
-    const origSec  = windLayer.getAnimationTime?.() ?? startSec;
-    windLayer.animateByFactor(0);
-    for(const h of steps){
+    const origSec  = windLayer.getAnimationTime?.()  ?? startSec;
+
+    for(const h of [0, 6, 12, 18]){
       windLayer.setAnimationTime(startSec + h * 3600);
-      await new Promise(r => setTimeout(r, 800)); // let WebGL render
-      const snapTime = new Date((startSec + h * 3600) * 1000).toUTCString().slice(5, 22) + 'Z';
-      try {
-        // Capture map canvas as data URL
-        const canvas = map.getCanvas();
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
-        snaps.push({ t: snapTime, url: dataUrl, h });
-      } catch(e){ snaps.push({ t: snapTime, url: null, h }); }
+      map.triggerRepaint();
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 350)));
+      const snapLabel = fmtDate(new Date((startSec + h * 3600) * 1000));
+      let dataUrl = null;
+      try { dataUrl = map.getCanvas().toDataURL('image/jpeg', 0.78); } catch(_){}
+      snaps.push({ h, label: snapLabel, url: dataUrl });
     }
-    // Restore
+    // Restore playback
     windLayer.setAnimationTime(origSec);
     windLayer.animateByFactor(3600);
+
     if(snaps.some(s => s.url)){
       snapHtml = `
-      <h2 style="color:#1e3a5f;margin:24px 0 12px;border-top:2px solid #1e3a5f;padding-top:12px">Wind Forecast Maps (Next 24h)</h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
-        ${snaps.map(s => `<div style="border:1px solid #ddd;border-radius:6px;overflow:hidden">
-          <div style="background:#1e3a5f;color:#fff;font-size:11px;padding:5px 8px;font-weight:600">+${s.h}h — ${s.t}</div>
-          ${s.url ? `<img src="${s.url}" style="width:100%;display:block"/>` : '<div style="height:120px;background:#f0f4f8;display:flex;align-items:center;justify-content:center;font-size:11px;color:#999">Snapshot unavailable</div>'}
+      <div class="page-break"></div>
+      <h2 class="section-head">Wind Forecast Maps — Next 24 Hours</h2>
+      <p class="sub">GFS 28km resolution · MapTiler Weather</p>
+      <div class="snap-grid">
+        ${snaps.map(s => `
+        <div class="snap-card">
+          <div class="snap-label">+${s.h}h &mdash; ${s.label}</div>
+          ${s.url
+            ? `<img src="${s.url}" class="snap-img"/>`
+            : `<div class="snap-placeholder">Snapshot unavailable</div>`}
         </div>`).join('')}
       </div>`;
     }
   }
 
-  // --- Max wind / wave summary ---
-  const maxWind = wxResults.reduce((m,r)=>r.windKn!=null?Math.max(m,parseFloat(r.windKn)):m, 0);
-  const maxWave = wxResults.reduce((m,r)=>r.waveM!=null?Math.max(m,parseFloat(r.waveM)):m, 0);
-  const maxColor = (v, t1, t2) => v <= 0 ? '#888' : v < t1 ? '#16a34a' : v < t2 ? '#ea580c' : '#dc2626';
+  // ── Step 4: Build data ───────────────────────────────────────────
 
+  // Max wind/wave + positions
+  const maxWindLeg = wxResults.reduce((best, r) => r.windKn != null && parseFloat(r.windKn) > (best?.v ?? 0) ? {v: parseFloat(r.windKn), r} : best, null);
+  const maxWaveLeg = wxResults.reduce((best, r) => r.waveM  != null && parseFloat(r.waveM)  > (best?.v ?? 0) ? {v: parseFloat(r.waveM),  r} : best, null);
+  const maxWind = maxWindLeg?.v ?? 0;
+  const maxWave = maxWaveLeg?.v ?? 0;
+  const windColor = v => v <= 0 ? '#888' : v < 15 ? '#16a34a' : v < 25 ? '#d97706' : v < 35 ? '#ea580c' : '#dc2626';
+  const waveColor = v => v <= 0 ? '#888' : v < 2   ? '#16a34a' : v < 4   ? '#d97706' : v < 6   ? '#ea580c' : '#dc2626';
+
+  const maxWindStr = maxWindLeg
+    ? `${maxWind.toFixed(1)} kt @ ${fmtDate(maxWindLeg.r.tArr)}<br><span style="font-size:10px;color:#666">${maxWindLeg.r.midLat.toFixed(1)}°N, ${maxWindLeg.r.midLon.toFixed(1)}°`
+    : '—';
+  const maxWaveStr = maxWaveLeg
+    ? `${maxWave.toFixed(2)} m @ ${fmtDate(maxWaveLeg.r.tArr)}<br><span style="font-size:10px;color:#666">${maxWaveLeg.r.midLat.toFixed(1)}°N, ${maxWaveLeg.r.midLon.toFixed(1)}°`
+    : '—';
+
+  // ECA miles + pct
+  const ecaMiles  = parseFloat(document.getElementById('m-eca').textContent) || 0;
+  const ecaPct    = dist > 0 ? (ecaMiles / dist * 100).toFixed(1) : '0';
+
+  // Deduplicated waypoints for table (skip if < 0.5 nm from previous)
+  const majorWps = [];
+  let cumDist = 0;
+  wpCoords.forEach(([lo, la], i) => {
+    if(i > 0){
+      const d = GEO.kmToNm(GEO.gcDistKm(la, lo, wpCoords[i-1][1], wpCoords[i-1][0]));
+      if(d < 0.5) return; // skip near-duplicates
+      cumDist += d;
+    }
+    majorWps.push({ i, la, lo });
+  });
+
+  // Build waypoint table (only major waypoints, ECA entry/exit highlighted)
+  let prevEca3 = null;
+  const wpRows = majorWps.map(({ i, la, lo }, idx) => {
+    const next = wpCoords[i+1];
+    const d = next ? GEO.kmToNm(GEO.gcDistKm(la, lo, next[1], next[0])).toFixed(0) : '—';
+    const eca = getEcaType(lo, la);
+    let rowCls = '', badge = '';
+    if(eca && !prevEca3){ rowCls = 'eca-entry'; badge = '<span class="badge badge-entry">ECA ENTRY</span>'; }
+    else if(!eca && prevEca3){ rowCls = 'eca-exit';  badge = '<span class="badge badge-exit">ECA EXIT</span>';  }
+    prevEca3 = eca;
+    return `<tr class="${rowCls}">
+      <td>${i+1}</td>
+      <td>${la.toFixed(4)}</td>
+      <td>${lo.toFixed(4)}</td>
+      <td>${d}</td>
+      <td>${eca ? eca.toUpperCase() : '—'}${badge}</td>
+    </tr>`;
+  }).join('');
+
+  // Weather table — filter out rows that have BOTH wind and wave as null
+  const wxFiltered = wxResults.slice(0, 40).filter(r => r.windKn != null || r.waveM != null);
+  const wxRows5d = wxFiltered.map(r => {
+    const wc = r.windKn != null ? windColor(parseFloat(r.windKn)) : '#888';
+    return `<tr>
+      <td>${r.i + 1}</td>
+      <td>${fmtDate(r.tArr)}</td>
+      <td>${r.midLat.toFixed(2)}°N, ${r.midLon.toFixed(2)}°</td>
+      <td style="color:${wc};font-weight:600">${r.windKn != null ? r.windKn + ' kt' : '—'}</td>
+      <td>${r.waveM != null ? r.waveM + ' m' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // ── Step 5: Build HTML ───────────────────────────────────────────
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Voyage Report — ${vessel}</title>
-  <style>
-    body{font-family:Arial,sans-serif;padding:30px;color:#111;max-width:900px;margin:0 auto;font-size:13px}
-    h1{color:#1e3a5f;border-bottom:3px solid #1e3a5f;padding-bottom:8px;margin-bottom:16px}
-    h2{color:#1e3a5f;font-size:14px;margin:20px 0 8px}
-    .meta{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
-    .meta div{flex:1;min-width:140px;background:#f0f4f8;padding:10px;border-radius:6px}
-    .meta div b{display:block;margin-bottom:3px;color:#1e3a5f;font-size:11px;text-transform:uppercase}
-    .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}
-    .stat-card{background:#f0f4f8;border-radius:8px;padding:12px;text-align:center}
-    .stat-card .v{font-size:22px;font-weight:700;color:#1e3a5f}
-    .stat-card .k{font-size:10px;color:#666;margin-top:3px}
-    .max-card .v{font-size:22px;font-weight:700}
-    table{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
-    th{background:#1e3a5f;color:#fff;padding:7px 8px;text-align:left;font-size:11px}
-    td{padding:5px 8px;border-bottom:1px solid #ddd;vertical-align:top}
-    tr:nth-child(even) td{background:#f8f9fa}
-    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
-    @media print{body{padding:10px} h2{page-break-before:auto}}
-  </style></head><body>
-  <h1>⚓ Voyage Report</h1>
-  <div class="meta">
-    <div><b>Vessel</b>${vessel}</div>
-    <div><b>Voyage #</b>${voyage}</div>
-    <div><b>Prepared By</b>${prep}</div>
-    <div><b>Generated</b>${new Date().toUTCString()}</div>
-  </div>
-  <div class="stat-grid">
-    <div class="stat-card"><div class="v">${Math.round(dist).toLocaleString()}</div><div class="k">Distance (nm)</div></div>
-    <div class="stat-card"><div class="v">${speed}</div><div class="k">Speed (knots)</div></div>
-    <div class="stat-card"><div class="v">${(transitH/24).toFixed(1)}</div><div class="k">Transit (days)</div></div>
-    <div class="stat-card"><div class="v">${eta.toUTCString().slice(5,22)}Z</div><div class="k">ETA (UTC)</div></div>
-    <div class="stat-card max-card"><div class="v" style="color:${maxColor(maxWind,20,35)}">${maxWind>0?maxWind.toFixed(1)+' kn':'—'}</div><div class="k">Max Wind on Route</div></div>
-    <div class="stat-card max-card"><div class="v" style="color:${maxColor(maxWave,3,5)}">${maxWave>0?maxWave.toFixed(2)+' m':'—'}</div><div class="k">Max Wave on Route</div></div>
-    <div class="stat-card"><div class="v">${dep.toUTCString().slice(5,22)}Z</div><div class="k">Departure (UTC)</div></div>
-    <div class="stat-card"><div class="v">${document.getElementById('m-eca').textContent}</div><div class="k">ECA Miles</div></div>
+<title>Voyage Report — ${vessel}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;color:#1a1a2e;background:#fff;font-size:13px}
+  /* PAGE 1 — hero cover */
+  .cover{padding:36px 40px;min-height:100vh;display:flex;flex-direction:column}
+  .cover-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px}
+  .brand{font-size:11px;color:#888;letter-spacing:1px;text-transform:uppercase}
+  .vessel-name{font-size:34px;font-weight:900;color:#0f172a;letter-spacing:-1px;margin-bottom:4px}
+  .route-badge{display:inline-block;background:#0284c7;color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;letter-spacing:.5px;margin-bottom:20px}
+  .voyage-hero{display:flex;align-items:center;gap:0;margin-bottom:28px;background:#f8fafc;border-radius:12px;padding:20px 24px}
+  .port-block{flex:1}
+  .port-tag{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
+  .port-tag.start{color:#16a34a}.port-tag.dest{color:#dc2626;text-align:right}
+  .port-name{font-size:22px;font-weight:800;color:#0f172a}
+  .port-name.right{text-align:right}
+  .port-date{font-size:11px;color:#64748b;margin-top:3px}
+  .port-date.right{text-align:right}
+  .ship-icon{flex:0 0 120px;text-align:center;font-size:48px;position:relative}
+  .ship-line{position:absolute;top:50%;left:0;right:0;height:2px;background:repeating-linear-gradient(to right,#cbd5e1 0,#cbd5e1 8px,transparent 8px,transparent 14px);z-index:0}
+  .ship-emoji{position:relative;z-index:1}
+  .info-table{width:100%;border-collapse:collapse;margin-bottom:24px}
+  .info-table tr{border-bottom:1px solid #e2e8f0}
+  .info-table td{padding:8px 4px;font-size:12px}
+  .info-table td:first-child{color:#64748b;width:52%}
+  .info-table td:last-child{font-weight:600;text-align:right}
+  .stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:24px}
+  .stat-box{background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:14px 10px;text-align:center}
+  .stat-box.warn{background:#fff7ed;border-color:#fed7aa}
+  .stat-box.danger{background:#fef2f2;border-color:#fecaca}
+  .stat-box.success{background:#f0fdf4;border-color:#bbf7d0}
+  .stat-v{font-size:20px;font-weight:800;color:#0f172a;line-height:1.1}
+  .stat-k{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+  .route-map{width:100%;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:8px}
+  .map-caption{font-size:10px;color:#94a3b8;margin-bottom:16px;text-align:center}
+  /* PAGE 2+ */
+  .content{padding:36px 40px}
+  .page-break{page-break-before:always;padding-top:36px}
+  .section-head{font-size:15px;font-weight:800;color:#0f172a;border-left:4px solid #0284c7;padding-left:10px;margin:20px 0 10px}
+  .sub{font-size:11px;color:#94a3b8;margin-bottom:10px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0 20px}
+  th{background:#0f172a;color:#fff;padding:8px;text-align:left;font-size:10px;letter-spacing:.5px;text-transform:uppercase}
+  td{padding:6px 8px;border-bottom:1px solid #e2e8f0}
+  tr:nth-child(even) td{background:#f8fafc}
+  tr.eca-entry td{background:#fefce8}
+  tr.eca-exit  td{background:#eff6ff}
+  .badge{font-size:8px;font-weight:700;padding:1px 6px;border-radius:8px;margin-left:4px;vertical-align:middle}
+  .badge-entry{background:#fef08a;color:#854d0e}
+  .badge-exit{background:#bfdbfe;color:#1e3a8a}
+  /* Snapshots */
+  .snap-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
+  .snap-card{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden}
+  .snap-label{background:#0f172a;color:#fff;font-size:10px;font-weight:700;padding:5px 10px;letter-spacing:.3px}
+  .snap-img{width:100%;display:block}
+  .snap-placeholder{height:130px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:11px;color:#94a3b8}
+  /* max loc */
+  .max-loc{font-size:10px;color:#64748b;margin-top:3px}
+  .footer{margin-top:30px;font-size:9px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:10px;text-align:center}
+  @media print{
+    .cover{min-height:auto;padding:24px 28px}
+    .page-break{page-break-before:always}
+    body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style></head><body>
+
+<!-- ═══ PAGE 1: COVER ═══ -->
+<div class="cover">
+  <div class="cover-header">
+    <div>
+      <div class="brand">⚓ RoutePlannerPro — Voyage Report</div>
+    </div>
+    <div style="text-align:right;font-size:10px;color:#94a3b8">
+      Generated: ${fmtDate(new Date())}<br>
+      Prepared by: ${prep}
+    </div>
   </div>
 
-  <h2>Waypoints</h2>
-  <table><thead><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Dist to next (nm)</th><th>ECA Zone</th></tr></thead>
-  <tbody>${wpRows}</tbody></table>
+  <div class="vessel-name">${vessel}</div>
+  <div class="route-badge">🗺 Weather Routing &nbsp;·&nbsp; Voyage #${voyage}</div>
+
+  <!-- Route hero -->
+  <div class="voyage-hero">
+    <div class="port-block">
+      <div class="port-tag start">▶ Departure</div>
+      <div class="port-name">${originName}</div>
+      <div class="port-date">${fmtDate(dep)}</div>
+    </div>
+    <div class="ship-icon">
+      <div class="ship-line"></div>
+      <div class="ship-emoji">🚢</div>
+    </div>
+    <div class="port-block">
+      <div class="port-tag dest">Arrival ▶</div>
+      <div class="port-name right">${destName}</div>
+      <div class="port-date right">${fmtDate(eta)}</div>
+    </div>
+  </div>
+
+  <!-- Summary table -->
+  <table class="info-table">
+    <tr><td>Total Distance</td><td>${Math.round(dist).toLocaleString()} nm</td></tr>
+    <tr><td>Ordered Speed</td><td>${speed} kt (constant, no weather correction)</td></tr>
+    <tr><td>Transit Time</td><td>${(transitH/24).toFixed(1)} days (${Math.floor(transitH)}h ${Math.round((transitH%1)*60)}min)</td></tr>
+    <tr><td>ECA Miles</td><td>${Math.round(ecaMiles).toLocaleString()} nm (${ecaPct}% of voyage)</td></tr>
+    <tr><td>Total Waypoints</td><td>${wpCoords.length}</td></tr>
+    <tr><td>Route Type</td><td>Great Circle (sea routing via MARNET)</td></tr>
+  </table>
+
+  <!-- Stat cards -->
+  <div class="stat-row">
+    <div class="stat-box ${maxWind >= 35 ? 'danger' : maxWind >= 20 ? 'warn' : 'success'}">
+      <div class="stat-v" style="color:${windColor(maxWind)}">${maxWind > 0 ? maxWind.toFixed(1) + ' kt' : '—'}</div>
+      <div class="stat-k">Max Wind on Route</div>
+      ${maxWindLeg ? `<div class="max-loc">${maxWindLeg.r.midLat.toFixed(1)}°N · ${fmtDate(maxWindLeg.r.tArr).slice(0,11)}</div>` : ''}
+    </div>
+    <div class="stat-box ${maxWave >= 5 ? 'danger' : maxWave >= 3 ? 'warn' : 'success'}">
+      <div class="stat-v" style="color:${waveColor(maxWave)}">${maxWave > 0 ? maxWave.toFixed(2) + ' m' : '—'}</div>
+      <div class="stat-k">Max Wave on Route</div>
+      ${maxWaveLeg ? `<div class="max-loc">${maxWaveLeg.r.midLat.toFixed(1)}°N · ${fmtDate(maxWaveLeg.r.tArr).slice(0,11)}</div>` : ''}
+    </div>
+    <div class="stat-box">
+      <div class="stat-v">${(transitH/24).toFixed(1)}d</div>
+      <div class="stat-k">Transit Time</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-v">${Math.round(ecaMiles).toLocaleString()}</div>
+      <div class="stat-k">ECA Miles (${ecaPct}%)</div>
+    </div>
+  </div>
+
+  ${routeMapDataUrl ? `
+  <img src="${routeMapDataUrl}" class="route-map" alt="Route Map"/>
+  <div class="map-caption">Route overview — RoutePlannerPro v2</div>` : ''}
+</div>
+
+<!-- ═══ PAGE 2: WAYPOINTS ═══ -->
+<div class="content page-break">
+  <div class="section-head">Waypoint Table</div>
+  <p class="sub">Major navigational waypoints. Near-duplicate points (&lt;0.5 nm apart) omitted. Gold rows = ECA entry, blue rows = ECA exit.</p>
+  <table>
+    <thead><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Dist to next (nm)</th><th>ECA Zone</th></tr></thead>
+    <tbody>${wpRows}</tbody>
+  </table>
 
   ${wxRows5d ? `
-  <h2>Forecast Weather Along Route (Next 5 Days)</h2>
-  <p style="font-size:11px;color:#666;margin-bottom:8px">Wind data from MapTiler GFS (same as map layer). Wave data from Open-Meteo Marine API.</p>
+  <div class="section-head" style="margin-top:24px">Forecast Weather Along Route — Next 5 Days</div>
+  <p class="sub">Wind: MapTiler GFS (same source as map wind layer) · Wave: Open-Meteo Marine API · Speed unit: kt</p>
   <table>
     <thead><tr><th>Leg</th><th>ETA (UTC)</th><th>Position</th><th>Wind Speed</th><th>Wave Height</th></tr></thead>
     <tbody>${wxRows5d}</tbody>
-  </table>` : '<p style="color:#888;font-size:12px">No weather forecast data available — enable Wind overlay before generating report.</p>'}
+  </table>` : `<p style="color:#94a3b8;font-size:12px;margin-top:12px">No weather data available — wind overlay was not active.</p>`}
+</div>
 
-  ${snapHtml}
+${snapHtml}
 
+<div class="content">
   <div class="footer">
-    Generated by RoutePlannerPro v2 (MapLibre / MapTiler) &bull;
-    Data: MARNET/searoute, Copernicus Marine, MapTiler Weather (GFS), Open-Meteo Marine &bull;
-    ${new Date().toUTCString()}
+    RoutePlannerPro v2 &bull; MapLibre GL JS / MapTiler &bull;
+    Routing: MARNET / searoute-py &bull;
+    Weather: MapTiler GFS, Copernicus Marine, Open-Meteo Marine &bull;
+    ${fmtDate(new Date())}
   </div>
-  </body></html>`;
+</div>
+</body></html>`;
 
   try {
     const blob = new Blob([html], {type:'text/html'});
     const url  = URL.createObjectURL(blob);
     const w    = window.open(url, '_blank');
-    if(w) setTimeout(()=>w.print(), 800);
+    if(w) setTimeout(()=>w.print(), 1000);
     notify('Voyage Report ready ✓', 'ok');
   } catch(e){
     notify('PDF generation failed: ' + e.message, 'err');
