@@ -257,6 +257,38 @@ body.adding-wp #map { cursor: cell; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
+/* ═══════════ PROGRESS OVERLAY ═══════════ */
+#progress-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(11,15,26,.82); backdrop-filter: blur(4px);
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center; gap: 18px;
+}
+#progress-overlay.visible { display: flex; }
+#progress-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 28px 36px; min-width: 320px; max-width: 440px; text-align: center;
+  box-shadow: 0 8px 40px rgba(0,0,0,.6);
+}
+#progress-icon { font-size: 32px; margin-bottom: 10px; }
+#progress-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+#progress-msg { font-size: 12px; color: var(--muted); margin-bottom: 18px; min-height: 18px; }
+#progress-bar-wrap {
+  background: var(--border); border-radius: 6px; height: 6px; overflow: hidden; margin-bottom: 14px;
+}
+#progress-bar-fill {
+  height: 100%; border-radius: 6px; background: var(--accent);
+  width: 0%; transition: width .4s ease;
+}
+#progress-steps { display: flex; flex-direction: column; gap: 6px; text-align: left; margin-top: 4px; }
+.progress-step {
+  display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted);
+  transition: color .2s;
+}
+.progress-step.done   { color: var(--success); }
+.progress-step.active { color: var(--accent2); font-weight: 600; }
+.progress-step-icon { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; }
+
 /* ═══════════ MAPLIBRE MARKER OVERRIDES ═══════════ */
 .maplibregl-marker { cursor: grab; }
 .maplibregl-marker:active { cursor: grabbing; }
@@ -565,8 +597,77 @@ body.adding-wp #map { cursor: cell; }
   </div>
 </div>
 
+<!-- ═══ PROGRESS OVERLAY ═══ -->
+<div id="progress-overlay">
+  <div id="progress-card">
+    <div id="progress-icon">⚙️</div>
+    <div id="progress-title">Processing…</div>
+    <div id="progress-msg">Please wait</div>
+    <div id="progress-bar-wrap"><div id="progress-bar-fill"></div></div>
+    <div id="progress-steps"></div>
+  </div>
+</div>
+
 <script>
 'use strict';
+
+/* ═══════════════════════════════════════════════════════════════
+   PROGRESS OVERLAY CONTROLLER
+   showProgress(config) — show overlay with steps + bar
+   setProgressStep(idx) — advance to step idx
+   hideProgress()       — dismiss overlay
+   ═══════════════════════════════════════════════════════════════ */
+const _progress = {
+  steps: [],
+  currentStep: -1,
+  timer: null
+};
+
+function showProgress({ icon = '⚙️', title, steps = [] }){
+  _progress.steps   = steps;
+  _progress.current = -1;
+  document.getElementById('progress-icon').textContent  = icon;
+  document.getElementById('progress-title').textContent = title;
+  document.getElementById('progress-msg').textContent   = '';
+  document.getElementById('progress-bar-fill').style.width = '0%';
+  // Render step list
+  const stepsEl = document.getElementById('progress-steps');
+  stepsEl.innerHTML = steps.map((s,i) =>
+    `<div class="progress-step" id="pstep-${i}">
+       <span class="progress-step-icon">○</span>
+       <span>${s}</span>
+     </div>`
+  ).join('');
+  document.getElementById('progress-overlay').classList.add('visible');
+}
+
+function setProgressStep(idx, msg){
+  // Only update if the overlay is currently visible
+  if(!document.getElementById('progress-overlay').classList.contains('visible')) return;
+  const steps = _progress.steps;
+  _progress.current = idx;
+  // Update all step icons
+  steps.forEach((_,i) => {
+    const el = document.getElementById(`pstep-${i}`);
+    if(!el) return;
+    const icon = el.querySelector('.progress-step-icon');
+    el.className = 'progress-step' + (i < idx ? ' done' : i === idx ? ' active' : '');
+    icon.textContent = i < idx ? '✓' : i === idx ? '▶' : '○';
+  });
+  if(msg) document.getElementById('progress-msg').textContent = msg;
+  // Advance progress bar proportionally
+  const pct = steps.length > 1 ? Math.round((idx / (steps.length - 1)) * 100) : 50;
+  document.getElementById('progress-bar-fill').style.width = pct + '%';
+}
+
+function hideProgress(){
+  // Complete the bar to 100% before hiding
+  document.getElementById('progress-bar-fill').style.width = '100%';
+  setTimeout(() => {
+    document.getElementById('progress-overlay').classList.remove('visible');
+    document.getElementById('progress-bar-fill').style.width = '0%';
+  }, 400);
+}
 
 /* ═══════════════════════════════════════════════════════════════
    CONSTANTS & CONFIG
@@ -1624,7 +1725,14 @@ async function calculateRoute(){
   const o=getOriginCoords();
   const d=getDestCoords();
   if(!o||!d){ notify('Please set origin and destination','err'); return; }
-  notify('Calculating route…');
+
+  showProgress({
+    icon: '🧮',
+    title: 'Calculating Route',
+    steps: ['Computing sea route', 'Drawing route on map', 'Fetching weather data']
+  });
+  setProgressStep(0, 'Finding optimal sea path via MARNET…');
+
   try {
     const avoid = getAvoidList().avoid.join(',');
     const url=`/api/route?olon=${o.lo}&olat=${o.la}&dlon=${d.lo}&dlat=${d.la}&avoid=${avoid}`;
@@ -1632,15 +1740,22 @@ async function calculateRoute(){
     if(!res.ok){ const t=await res.text(); throw new Error(t); }
     routeData=await res.json();
     wpCoords = routeData.coordinates.map(c=>[c[0],c[1]]);
+
+    setProgressStep(1, 'Rendering route — ' + Math.round(routeData.distance_nm) + ' nm');
     placeEndpointMarker('o',o.lo,o.la);
     placeEndpointMarker('d',d.lo,d.la);
     rebuildWaypointMarkers();
     redrawRouteGeoJSON();
     fitRouteBounds();
     showMetrics();
-    fetchOpenMeteoRouteWeather();
+
+    setProgressStep(2, 'Loading wind & weather data along route…');
+    await fetchOpenMeteoRouteWeather();
+
+    hideProgress();
     notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm','ok');
   } catch(e){
+    hideProgress();
     notify('Route error: '+e.message,'err');
     console.error(e);
   }
@@ -1809,6 +1924,7 @@ async function fetchOpenMeteoWindBatch(legs){
 
   // ── Wait for wind layer to emit 'tick' (means data is streaming) ──
   // 'tick' fires on each animation step — first tick means tiles loaded + data live
+  setProgressStep(0, 'Waiting for wind tiles to load across full route…');
   await new Promise(res => {
     let resolved = false;
     const onTick = () => {
@@ -1821,6 +1937,7 @@ async function fetchOpenMeteoWindBatch(legs){
 
   // Additional 500ms — tiles for far waypoints may still be streaming in
   await new Promise(r => setTimeout(r, 500));
+  setProgressStep(1, `Sampling wind at ${legs.length} waypoints (MapTiler GFS)…`);
 
   // ── Sequential sampling ───────────────────────────────────────────
   const startSec = windLayer.getAnimationStart?.() ?? null;
@@ -2052,10 +2169,13 @@ async function fetchRouteWeather(){
   }
 
   // Parallel fetch: wind + marine (wave+current+directions)
+  // Wind batch updates progress steps 0→1 internally
+  // Marine runs in parallel — we update step 2 after both complete
   const [windResults, marineResults] = await Promise.all([
     fetchOpenMeteoWindBatch(legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))),
     Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr)))
   ]);
+  setProgressStep(2, 'Wave & current data received — computing speed model…');
 
   // ── Build results WITH weather speed adjustment ───────────────
   // Re-propagate ETA leg-by-leg using effective speed so later legs
@@ -2249,6 +2369,7 @@ async function generateVoyageReport(){
   const voyage   = document.getElementById('pdf-voyage').value || '—';
   const prep     = document.getElementById('pdf-prepby').value || '—';
   const speed    = parseFloat(document.getElementById('speed').value) || 14;
+  const orderedKn = speed; // alias for weather model calculations
   const depStr   = document.getElementById('dep-time').value;
   const dep      = depStr ? new Date(depStr) : new Date();
   const dist     = routeData.distance_nm;
@@ -2260,13 +2381,25 @@ async function generateVoyageReport(){
 
   closeModal('export-modal');
 
+  // Show progress overlay with detailed steps
+  showProgress({
+    icon: '📄',
+    title: 'Generating Voyage Report',
+    steps: [
+      'Loading wind layer & fitting route view',
+      'Sampling wind data along route (MapTiler GFS)',
+      'Fetching wave & current data (Copernicus)',
+      'Computing weather-adjusted ETA',
+      'Building PDF document'
+    ]
+  });
+  setProgressStep(0, 'Enabling wind layer and loading tiles for full route…');
+
   // ── Fetch weather data ──────────────────────────────────────────────────────
-  // Wind layer is loaded automatically inside fetchRouteWeather regardless of
-  // whether the user had the overlay active. The map is fitted to the full route
-  // extent to ensure tiles load across the whole route before sampling.
-  notify('Fetching weather data for all waypoints — please wait…');
+  // fetchRouteWeather internally handles wind layer loading, map fit, and tick wait
   await fetchRouteWeather();
   const wxResults = window._wxResults || [];
+  setProgressStep(3, 'Weather-adjusted ETA computed — building report…');
 
   // ── Build data ───────────────────────────────────────────────────────────────
 
@@ -2484,12 +2617,16 @@ async function generateVoyageReport(){
 </div>
 </body></html>`;
 
-  notify('Opening report…', 'ok');
+  setProgressStep(4, 'Opening report in new tab…');
   try {
     const blob = new Blob([html], {type:'text/html'});
     const w    = window.open(URL.createObjectURL(blob), '_blank');
     if(w) setTimeout(()=>w.print(), 1200);
-  } catch(e){ notify('PDF generation failed: '+e.message, 'err'); }
+    hideProgress();
+  } catch(e){
+    hideProgress();
+    notify('PDF generation failed: '+e.message, 'err');
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
