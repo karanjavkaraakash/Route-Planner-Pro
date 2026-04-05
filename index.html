@@ -248,9 +248,20 @@ body.adding-wp #map { cursor: cell; }
 .passage-grid { display: flex; flex-wrap: wrap; gap: 5px; }
 .pchip {
   padding: 3px 9px; border-radius: 12px; border: 1px solid var(--border);
-  background: var(--bg); font-size: 11px; cursor: pointer; transition: background .15s;
+  background: var(--bg); font-size: 11px; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+  user-select: none;
 }
-.pchip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* AVOID chips — turn red with ✕ when active */
+.pchip.avoid-chip.on {
+  background: rgba(239,68,68,.15); border-color: #ef4444; color: #ef4444; font-weight: 600;
+}
+.pchip.avoid-chip.on::before { content: '✕ '; font-size: 9px; }
+/* FORCE-VIA chips — turn blue/teal with ✓ when active */
+.pchip.via-chip.on {
+  background: rgba(14,165,233,.18); border-color: #0ea5e9; color: #0ea5e9; font-weight: 600;
+}
+.pchip.via-chip.on::before { content: '✓ '; font-size: 9px; }
 
 /* ═══════════ SCROLLBAR (WebKit) ═══════════ */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -476,18 +487,42 @@ body.adding-wp #map { cursor: cell; }
       <!-- ROUTING OPTIONS -->
       <div class="section">
         <div class="section-title">Routing Options</div>
-        <div class="form-row">
-          <label>Avoid / Force via</label>
+
+        <!-- AVOID section -->
+        <div class="form-row" style="margin-bottom:8px">
+          <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+            <span>🚫 Avoid Passage</span>
+            <span style="font-size:9px;color:var(--muted)">tap to exclude</span>
+          </label>
           <div class="passage-grid" id="passage-chips">
-            <div class="pchip" data-val="suez" onclick="togglePassage(this)">Suez</div>
-            <div class="pchip" data-val="panama" onclick="togglePassage(this)">Panama</div>
-            <div class="pchip" data-val="kiel" onclick="togglePassage(this)">Kiel</div>
-            <div class="pchip" data-val="magellan" onclick="togglePassage(this)">Magellan</div>
-            <div class="pchip" data-val="dover" onclick="togglePassage(this)">Dover</div>
-            <div class="pchip" data-val="bosphorus" onclick="togglePassage(this)">Bosphorus</div>
+            <div class="pchip avoid-chip" data-val="suez"      onclick="togglePassage(this,'avoid')">Suez</div>
+            <div class="pchip avoid-chip" data-val="panama"    onclick="togglePassage(this,'avoid')">Panama</div>
+            <div class="pchip avoid-chip" data-val="kiel"      onclick="togglePassage(this,'avoid')">Kiel</div>
+            <div class="pchip avoid-chip" data-val="magellan"  onclick="togglePassage(this,'avoid')">Magellan</div>
+            <div class="pchip avoid-chip" data-val="dover"     onclick="togglePassage(this,'avoid')">Dover</div>
+            <div class="pchip avoid-chip" data-val="bosphorus" onclick="togglePassage(this,'avoid')">Bosphorus</div>
           </div>
         </div>
-        <div class="toggle-row">
+
+        <!-- FORCE VIA section -->
+        <div class="form-row">
+          <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+            <span>📍 Force Route Via</span>
+            <span style="font-size:9px;color:var(--muted)">tap to force</span>
+          </label>
+          <div class="passage-grid" id="via-chips">
+            <div class="pchip via-chip" data-via="goodhope"    onclick="toggleVia(this)">C. Good Hope</div>
+            <div class="pchip via-chip" data-via="capehorn"    onclick="toggleVia(this)">Cape Horn</div>
+            <div class="pchip via-chip" data-via="malacca"     onclick="toggleVia(this)">Malacca</div>
+            <div class="pchip via-chip" data-via="babalmandab" onclick="toggleVia(this)">Bab-el-Mandeb</div>
+            <div class="pchip via-chip" data-via="hormuz"      onclick="toggleVia(this)">Hormuz</div>
+            <div class="pchip via-chip" data-via="sunda"       onclick="toggleVia(this)">Sunda</div>
+            <div class="pchip via-chip" data-via="lombok"      onclick="toggleVia(this)">Lombok</div>
+            <div class="pchip via-chip" data-via="bering"      onclick="toggleVia(this)">Bering</div>
+          </div>
+        </div>
+
+        <div class="toggle-row" style="margin-top:8px">
           <span class="toggle-label">🚫 Add Waypoint Mode</span>
           <label class="toggle"><input type="checkbox" id="add-wp-chk" onchange="setAddWpMode(this.checked)"/><span class="toggle-slider"></span></label>
         </div>
@@ -572,11 +607,19 @@ body.adding-wp #map { cursor: cell; }
       <!-- IMPORT / EXPORT -->
       <div class="section">
         <div class="section-title">Import / Export</div>
-        <div class="ie-row">
-          <button class="btn btn-outline" onclick="exportRTZ()">📤 RTZ</button>
-          <button class="btn btn-outline" onclick="exportCSV()">📊 CSV</button>
-          <button class="btn btn-outline" onclick="document.getElementById('rtz-file').click()">📥 RTZ</button>
-          <button class="btn btn-outline" onclick="document.getElementById('csv-file').click()">📥 CSV</button>
+        <div style="margin-bottom:8px">
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px">📤 Export Route</div>
+          <div class="ie-row">
+            <button class="btn btn-outline" onclick="exportRTZ()" title="Export as RTZ file (Vessel route exchange format)">RTZ</button>
+            <button class="btn btn-outline" onclick="exportCSV()" title="Export as CSV spreadsheet">CSV</button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px">📥 Import Route</div>
+          <div class="ie-row">
+            <button class="btn btn-outline" onclick="document.getElementById('rtz-file').click()" title="Import RTZ route file">RTZ</button>
+            <button class="btn btn-outline" onclick="document.getElementById('csv-file').click()" title="Import CSV waypoints">CSV</button>
+          </div>
         </div>
         <input type="file" id="rtz-file" accept=".rtz,.xml" style="display:none" onchange="importRTZ(this)"/>
         <input type="file" id="csv-file" accept=".csv" style="display:none" onchange="importCSV(this)"/>
@@ -762,6 +805,21 @@ function hideProgress(){
    CONSTANTS & CONFIG
    ═══════════════════════════════════════════════════════════════ */
 const MAPTILER_KEY = 'XaQgaXRnIoyC1qZKH1xl';
+
+// ── FORCE-VIA WAYPOINTS ───────────────────────────────────────────────────────
+// Force-via works by splitting the route into legs: Origin → WP → Destination.
+// The engine routes each leg independently — guaranteed to pass through the WP.
+const FORCE_VIA_WAYPOINTS = {
+  goodhope:    { la: -35.0, lo:  17.5, name: 'Cape of Good Hope' },
+  capehorn:    { la: -57.0, lo: -68.0, name: 'Cape Horn' },
+  malacca:     { la:   1.5, lo: 103.5, name: 'Malacca Strait' },
+  sunda:       { la:  -6.0, lo: 106.0, name: 'Sunda Strait' },
+  lombok:      { la:  -8.5, lo: 115.7, name: 'Lombok Strait' },
+  hormuz:      { la:  26.5, lo:  56.5, name: 'Strait of Hormuz' },
+  babalmandab: { la:  12.5, lo:  43.5, name: 'Bab-el-Mandeb' },
+  bering:      { la:  65.5, lo:-168.0, name: 'Bering Strait' },
+};
+let activeVia = new Set(); // passages selected for force-via
 
 // Copernicus WMTS metadata (same as v1)
 const CMEMS_META = {
@@ -1750,15 +1808,20 @@ document.addEventListener('click',e=>{
 /* ═══════════════════════════════════════════════════════════════
    PASSAGE CHIPS
    ═══════════════════════════════════════════════════════════════ */
-function togglePassage(el){
+function togglePassage(el, mode){
   el.classList.toggle('on');
 }
+function toggleVia(el){
+  const key = el.dataset.via;
+  el.classList.toggle('on');
+  if(el.classList.contains('on')) activeVia.add(key);
+  else activeVia.delete(key);
+}
 function getAvoidList(){
-  const avoid=[], force=[];
-  // Chips that are ON = force via (simplified: pass as avoid=none for now)
-  // v1 logic: chips toggle between avoid and force; keep simple here
-  document.querySelectorAll('#passage-chips .pchip.on').forEach(c=>force.push(c.dataset.val));
-  return { avoid:[], force };
+  // Chips in #passage-chips that are ON = passages to AVOID
+  const avoid = [];
+  document.querySelectorAll('#passage-chips .pchip.on').forEach(c => avoid.push(c.dataset.val));
+  return { avoid, force: [] };
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1815,18 +1878,66 @@ async function calculateRoute(){
   const d=getDestCoords();
   if(!o||!d){ notify('Please set origin and destination','err'); return; }
 
+  const avoid   = getAvoidList().avoid;
+  const viaKeys = [...activeVia];
+  const hasVia  = viaKeys.length > 0;
+
+  // Build ordered list of waypoints: Origin [→ force-via WPs] → Destination
+  // Force-via WPs are inserted in the logical geographic order (sort by proximity to origin)
+  const legPoints = [{ la: o.la, lo: o.lo, name: o.name }];
+  if(hasVia){
+    // Sort via waypoints by distance from origin for sensible leg ordering
+    const viaWps = viaKeys
+      .filter(k => FORCE_VIA_WAYPOINTS[k])
+      .map(k => FORCE_VIA_WAYPOINTS[k]);
+    // Simple sort: by great-circle distance from origin
+    viaWps.sort((a, b) => {
+      const dA = Math.hypot(a.la - o.la, a.lo - o.lo);
+      const dB = Math.hypot(b.la - o.la, b.lo - o.lo);
+      return dA - dB;
+    });
+    viaWps.forEach(wp => legPoints.push(wp));
+  }
+  legPoints.push({ la: d.la, lo: d.lo, name: d.name });
+
+  const stepLabel = hasVia
+    ? `Computing ${legPoints.length - 1}-leg route via ${viaKeys.map(k => FORCE_VIA_WAYPOINTS[k]?.name || k).join(' + ')}…`
+    : 'Finding optimal sea path via MARNET…';
+
   showProgress({ icon:'🧮', title:'Calculating Route',
     steps:['Computing sea route','Drawing route on map'] });
-  setProgressStep(0, 'Finding optimal sea path via MARNET…');
+  setProgressStep(0, stepLabel);
 
   try {
-    const avoid = getAvoidList().avoid.join(',');
-    const res=await fetch(`/api/route?olon=${o.lo}&olat=${o.la}&dlon=${d.lo}&dlat=${d.la}&avoid=${avoid}`);
-    if(!res.ok){ const t=await res.text(); throw new Error(t); }
-    routeData=await res.json();
-    wpCoords = routeData.coordinates.map(c=>[c[0],c[1]]);
+    const avoidStr = avoid.join(',');
 
-    setProgressStep(1, 'Rendering route — ' + Math.round(routeData.distance_nm) + ' nm');
+    // Fetch each leg sequentially, then splice coordinates together
+    const legs = [];
+    for(let i = 0; i < legPoints.length - 1; i++){
+      const A = legPoints[i], B = legPoints[i+1];
+      const res = await fetch(`/api/route?olon=${A.lo}&olat=${A.la}&dlon=${B.lo}&dlat=${B.la}&avoid=${avoidStr}`);
+      if(!res.ok){ const t=await res.text(); throw new Error(t); }
+      const data = await res.json();
+      if(data.error) throw new Error(data.error);
+      legs.push(data);
+    }
+
+    // Merge legs: first leg in full, subsequent legs drop first coordinate (duplicate junction)
+    let coords = legs[0].coordinates.slice();
+    for(let i = 1; i < legs.length; i++)
+      coords = coords.concat(legs[i].coordinates.slice(1));
+
+    const totalKm = legs.reduce((s, l) => s + (l.distance_km || 0), 0);
+    routeData = {
+      ...legs[0],
+      coordinates:  coords,
+      distance_km:  totalKm,
+      distance_nm:  Math.round(totalKm / 1.852 * 10) / 10,
+    };
+    wpCoords = coords.map(c => [c[0], c[1]]);
+
+    setProgressStep(1, 'Rendering route — ' + Math.round(routeData.distance_nm) + ' nm'
+      + (hasVia ? ` via ${viaKeys.map(k=>FORCE_VIA_WAYPOINTS[k]?.name||k).join(' + ')}` : ''));
     placeEndpointMarker('o',o.lo,o.la);
     placeEndpointMarker('d',d.lo,d.la);
     rebuildWaypointMarkers();
@@ -1834,7 +1945,7 @@ async function calculateRoute(){
     fitRouteBounds();
     showMetrics();
 
-    // Reset weather state — new route, old data invalid
+    // Reset weather state
     window._wxResults = null;
     window._wxDelayH  = null;
     const exportBtn = document.getElementById('export-btn');
@@ -1842,13 +1953,13 @@ async function calculateRoute(){
     document.getElementById('max-stat-section').style.display = 'none';
     document.getElementById('wx-delay-section').style.display = 'none';
 
-    // Update Load Weather button state
     const wxBtn = document.getElementById('load-wx-btn');
     if(wxBtn){ wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false; }
     document.getElementById('wx-status-hint').textContent = 'Fetches wind, wave & current data along the full route';
 
     hideProgress();
-    notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm — click Load Weather to analyse','ok');
+    const viaNote = hasVia ? ` · via ${viaKeys.map(k=>FORCE_VIA_WAYPOINTS[k]?.name||k).join(', ')}` : '';
+    notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm'+viaNote+' — click Load Weather to analyse','ok');
   } catch(e){
     hideProgress();
     notify('Route error: '+e.message,'err');
@@ -2688,6 +2799,9 @@ function clearAll(){
     wxBtn.style.background = '';
   }
   document.getElementById('wx-status-hint').textContent = 'Fetches wind, wave & current data along the full route';
+  // Reset all passage chips (avoid + force-via)
+  activeVia.clear();
+  document.querySelectorAll('#passage-chips .pchip, #via-chips .pchip').forEach(c => c.classList.remove('on'));
   document.getElementById('wx-route-section').style.display='none';
   document.getElementById('o-port-input').value='';
   document.getElementById('d-port-input').value='';
