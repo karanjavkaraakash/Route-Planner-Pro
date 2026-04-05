@@ -2085,18 +2085,23 @@ function showWxAnalysisOverlay(){
 }
 
 function setWxaStep(idx){
+  // Only update when the weather analysis overlay is visible
+  if(!document.getElementById('wx-analysis-overlay')?.classList.contains('visible')) return;
   WXA_STEPS.forEach((_,i) => {
     const el = document.getElementById(`wxstep-${i}`);
     if(!el) return;
     const icon  = el.querySelector('.wxa-step-icon');
     const label = el.querySelector('.wxa-step-label');
+    if(!icon || !label) return;
     el.style.opacity = i > idx ? '0.4' : '1';
     icon.textContent  = i < idx ? '✓' : i === idx ? '▶' : '○';
     label.className   = 'wxa-step-label' + (i < idx ? ' done' : i === idx ? ' active' : '');
   });
   const pct = Math.round((idx / (WXA_STEPS.length - 1)) * 100);
-  document.getElementById('wxa-bar').style.width = pct + '%';
-  document.getElementById('wxa-pct').textContent = pct + '%';
+  const barEl = document.getElementById('wxa-bar');
+  const pctEl = document.getElementById('wxa-pct');
+  if(barEl) barEl.style.width = pct + '%';
+  if(pctEl) pctEl.textContent = pct + '%';
 }
 
 function hideWxAnalysisOverlay(){
@@ -2313,6 +2318,8 @@ async function fetchWindSpeedFromLayer(legs){
   });
   await new Promise(r => setTimeout(r, 600)); // extra grace for full-route tiles
   setWxaStep(2);
+
+  const startSec = windLayer.getAnimationStart?.() ?? null;
   const endSec   = windLayer.getAnimationEnd?.()   ?? null;
   if(!startSec || !endSec){
     if(!wasActive) removeWindLayer();
@@ -2322,7 +2329,6 @@ async function fetchWindSpeedFromLayer(legs){
   const origSec = windLayer.getAnimationTime?.() ?? startSec;
   windLayer.animateByFactor(0);
 
-  setWxaStep(2);
   for(let idx = 0; idx < legs.length; idx++){
     const { lat, lon, date } = legs[idx];
     const nlon = normLon(lon);
