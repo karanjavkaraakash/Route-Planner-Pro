@@ -552,9 +552,10 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
           <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:2px">
             <span>50 nm</span><span>gentle ← → strong</span><span>800 nm</span>
           </div>
-          <div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.5">
-            Click &amp; drag on map to push waypoints outward.<br>
-            <span id="push-undo-hint" style="display:none;color:var(--accent2)">↩ Ctrl+Z to undo last push</span>
+          <div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.6">
+            <span id="push-state-idle"  >🟠 Move circle over waypoints, then <strong>click to activate</strong>.</span>
+            <span id="push-state-active" style="display:none;color:var(--accent2)">🟢 Broom active — move to push. <strong>Click to save.</strong></span><br>
+            <span id="push-undo-hint" style="display:none;color:var(--muted)">↩ ESC or Ctrl+Z to undo</span>
           </div>
         </div>
       </div>
@@ -702,7 +703,18 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
       </div>
     </div>
 
-    <!-- PUSH TOOL CIRCLE OVERLAY -->
+    <!-- PUSH TOOL CURSOR TOOLTIP -->
+  <div id="push-cursor-tooltip" style="
+    display:none; position:absolute; pointer-events:none; z-index:600;
+    background:rgba(15,23,42,.92); color:#f1f5f9; font-size:11px;
+    font-family:'Segoe UI',sans-serif; font-weight:600;
+    padding:5px 10px; border-radius:6px; white-space:nowrap;
+    border:1px solid rgba(249,115,22,.5);
+    box-shadow:0 2px 8px rgba(0,0,0,.4);
+    transform:translate(14px,-50%);
+  "></div>
+
+  <!-- PUSH TOOL CIRCLE OVERLAY -->
   <svg id="push-circle-svg" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:500">
     <circle id="push-circle" cx="0" cy="0" r="100"
       fill="rgba(249,115,22,.08)" stroke="#f97316" stroke-width="2"
@@ -1993,22 +2005,37 @@ function setAddWpMode(val){
    Strength scales with drag distance from centre.
    ═══════════════════════════════════════════════════════════════ */
 let pushWpMode      = false;
-let _pushActive     = false;   // true while mouse is held down
-let _pushOriginGeo  = null;    // {lng,lat} — geographic push centre
-let _pushOriginPx   = null;    // {x,y} — pixel push centre (for SVG)
-let _pushUndoStack  = [];      // single-level undo: snapshot of wpCoords
+let _pushActive     = false;   // true = broom is sweeping (between click1 and click2)
+let _pushUndoStack  = [];      // snapshot before first activation
 
-// Degrees-latitude per nautical mile (constant) and
-// degrees-longitude per nm (varies with latitude)
+// Degrees-latitude per nautical mile (constant)
 function _nmToDeglat(nm){ return nm / 60; }
+// Degrees-longitude per nm (varies with latitude)
 function _nmToDeglon(nm, lat){ return nm / (60 * Math.cos(lat * Math.PI / 180)); }
 
-// Great-circle distance in nm between two lon/lat points (flat approximation for small distances)
+// Great-circle distance in nm between two lon/lat points
 function _distNm(lon1,lat1,lon2,lat2){
   const dlat = (lat2-lat1)*Math.PI/180;
   const dlon = (lon2-lon1)*Math.PI/180;
   const mlat = (lat1+lat2)/2 * Math.PI/180;
   return Math.sqrt(dlat*dlat + (dlon*Math.cos(mlat))*(dlon*Math.cos(mlat))) * (180/Math.PI) * 60;
+}
+
+// ── Tooltip helper ────────────────────────────────────────────────────────────
+function _setPushTooltip(text, x, y){
+  const el = document.getElementById('push-cursor-tooltip');
+  if(!text){ el.style.display = 'none'; return; }
+  el.textContent = text;
+  el.style.display = 'block';
+  el.style.left = x + 'px';
+  el.style.top  = y + 'px';
+}
+
+// ── Sidebar state labels ──────────────────────────────────────────────────────
+function _setPushStateLabel(state){
+  // state: 'idle' | 'active'
+  document.getElementById('push-state-idle').style.display   = state === 'idle'   ? 'inline' : 'none';
+  document.getElementById('push-state-active').style.display = state === 'active' ? 'inline' : 'none';
 }
 
 function setPushWpMode(val){
@@ -2017,16 +2044,19 @@ function setPushWpMode(val){
   document.getElementById('push-wp-chk').checked = val;
   document.getElementById('push-radius-row').style.display = val ? 'block' : 'none';
 
-  if(!val){
-    _pushActive = false;
-    document.getElementById('push-circle-svg').style.display = 'none';
-    // Remove glow from all markers
-    document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
-  }
-  // Deactivate add-wp mode if push mode is turned on
   if(val){
+    // Tool just turned on — idle state, waiting for first click
+    _pushActive = false;
+    _setPushStateLabel('idle');
     setAddWpMode(false);
     document.getElementById('add-wp-chk').checked = false;
+  } else {
+    // Tool turned off — clean up everything
+    _pushActive = false;
+    _setPushStateLabel('idle');
+    _setPushTooltip(null);
+    document.getElementById('push-circle-svg').style.display = 'none';
+    document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
   }
 }
 
@@ -2041,6 +2071,11 @@ function _savePushUndo(){
 
 function undoPush(){
   if(!_pushUndoStack.length){ notify('Nothing to undo','err'); return; }
+  // If broom is active, deactivate it first
+  if(_pushActive){
+    _pushActive = false;
+    _setPushStateLabel('idle');
+  }
   wpCoords.length = 0;
   _pushUndoStack[0].forEach(c => wpCoords.push(c));
   _pushUndoStack = [];
@@ -2051,135 +2086,150 @@ function undoPush(){
   notify('Push undone','ok');
 }
 
-// ── Map event handlers for push tool ─────────────────────────────────────────
+// ── Core broom algorithm: rigid contact constraint ────────────────────────────
+// Any waypoint inside the circle is instantly projected to the circle edge.
+// This makes waypoints physically ride the edge — they can never be inside.
+function _applyBroomRepulsion(circleLng, circleLat, radiusNm){
+  let anyMoved = false;
+  for(let i = 1; i < wpCoords.length - 1; i++){   // skip endpoints
+    const [wlon, wlat] = wpCoords[i];
+    const d = _distNm(circleLng, circleLat, wlon, wlat);
+    if(d >= radiusNm) continue;   // outside circle — no effect
 
-function _onPushMouseDown(e){
+    // Direction from circle centre → waypoint
+    let dlat = wlat - circleLat;
+    let dlon = wlon - circleLng;
+    const mag = Math.sqrt(dlat*dlat + dlon*dlon);
+
+    if(mag < 1e-9){
+      // Waypoint exactly at centre — push north by default
+      dlat = 1; dlon = 0;
+    } else {
+      dlat /= mag; dlon /= mag;
+    }
+
+    // Project to exact edge of circle
+    const newLat = circleLat + dlat * _nmToDeglat(radiusNm);
+    const newLon = circleLng + dlon * _nmToDeglon(radiusNm, circleLat);
+    wpCoords[i] = [newLon, newLat];
+    anyMoved = true;
+  }
+  return anyMoved;
+}
+
+// ── Map event handlers ────────────────────────────────────────────────────────
+
+function _onPushClick(e){
   if(!pushWpMode || wpCoords.length < 2) return;
-  e.preventDefault();
+  // Prevent map click from registering (e.g. adding waypoints)
+  e.stopPropagation();
 
-  _savePushUndo();
-  const rect   = document.getElementById('map').getBoundingClientRect();
-  const px     = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  const geo    = map.unproject([px.x, px.y]);
-
-  _pushActive    = true;
-  _pushOriginGeo = { lng: geo.lng, lat: geo.lat };
-  _pushOriginPx  = { x: px.x, y: px.y };
-
-  // Show circle
-  _updatePushCircleSvg(px.x, px.y, _getPushRadiusNm(), px.x, px.y);
+  if(!_pushActive){
+    // ── First click: activate broom ───────────────────────────────────────
+    _savePushUndo();
+    _pushActive = true;
+    _setPushStateLabel('active');
+    // tooltip will update on next mousemove
+  } else {
+    // ── Second click: save and deactivate ────────────────────────────────
+    _pushActive = false;
+    _setPushStateLabel('idle');
+    _setPushTooltip(null);
+    document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
+    recalcMetrics();
+    notify('Waypoints saved — push tool still active','ok');
+  }
 }
 
 function _onPushMouseMove(e){
+  if(!pushWpMode) return;
+
   const rect = document.getElementById('map').getBoundingClientRect();
   const px   = { x: e.clientX - rect.left, y: e.clientY - rect.top };
   const geo  = map.unproject([px.x, px.y]);
-
-  // Always show the circle at current cursor position (radius = configured nm)
   const radiusNm = _getPushRadiusNm();
+
+  // Always show circle following cursor
   const svg = document.getElementById('push-circle-svg');
-  if(pushWpMode){
-    svg.style.display = 'block';
-    _updatePushCircleSvg(
-      _pushActive ? _pushOriginPx.x : px.x,
-      _pushActive ? _pushOriginPx.y : px.y,
-      radiusNm,
-      px.x, px.y
-    );
-  }
+  svg.style.display = 'block';
+  _updatePushCircleSvg(px.x, px.y, radiusNm);
+
+  // Update cursor tooltip
+  const tooltipText = _pushActive
+    ? '🟢 Move to push  ·  Click to save'
+    : '🟠 Click to activate pusher';
+  _setPushTooltip(tooltipText, px.x, px.y);
 
   if(!_pushActive) return;
 
-  // ── Core repulsion algorithm ─────────────────────────────────────────────
-  // Push strength = drag distance from origin (nm), capped at 2× radius for stability
-  const dragNm   = Math.min(_distNm(_pushOriginGeo.lng, _pushOriginGeo.lat, geo.lng, geo.lat), radiusNm * 2);
-  const strength = dragNm / radiusNm; // 0..2, normalised
-
-  let anyMoved = false;
-  for(let i = 0; i < wpCoords.length; i++){
-    const [wlon, wlat] = wpCoords[i];
-    const d = _distNm(_pushOriginGeo.lng, _pushOriginGeo.lat, wlon, wlat);
-    if(d >= radiusNm || d < 0.1) continue; // outside radius or coincident
-
-    // Direction vector from push centre → waypoint (in geographic degrees)
-    const dlat = wlat - _pushOriginGeo.lat;
-    const dlon = wlon - _pushOriginGeo.lng;
-    const mag  = Math.sqrt(dlat*dlat + dlon*dlon) || 1e-9;
-    const dirLat = dlat / mag;
-    const dirLon = dlon / mag;
-
-    // Repulsion magnitude: strongest at centre, zero at radius edge
-    const repulsion = ((radiusNm - d) / radiusNm) * strength;
-    const dispLat   = dirLat * _nmToDeglat(repulsion * radiusNm * 0.4);
-    const dispLon   = dirLon * _nmToDeglon(repulsion * radiusNm * 0.4, wlat);
-
-    // Keep endpoints fixed (i=0 and last) unless they are intermediate WPs
-    if(i === 0 || i === wpCoords.length - 1) continue;
-
-    wpCoords[i] = [wlon + dispLon, wlat + dispLat];
-    anyMoved = true;
-  }
+  // Apply rigid broom repulsion
+  const anyMoved = _applyBroomRepulsion(geo.lng, geo.lat, radiusNm);
 
   if(anyMoved){
-    // Highlight affected markers
+    // Highlight waypoints sitting on the edge of the circle
     document.querySelectorAll('.wp-marker').forEach((el, j) => {
       const idx = wpMarkers[j]?.idx;
       if(idx == null) return;
       const [wlon, wlat] = wpCoords[idx];
-      const d = _distNm(_pushOriginGeo.lng, _pushOriginGeo.lat, wlon, wlat);
-      el.classList.toggle('wp-marker-pushed', d < radiusNm);
+      const d = _distNm(geo.lng, geo.lat, wlon, wlat);
+      // "on the edge" = within 10% of radius (just been pushed there)
+      el.classList.toggle('wp-marker-pushed', Math.abs(d - radiusNm) < radiusNm * 0.12);
     });
     rebuildWaypointMarkers();
     redrawRouteGeoJSON();
   }
 }
 
-function _onPushMouseUp(){
-  if(!_pushActive) return;
-  _pushActive    = false;
-  _pushOriginGeo = null;
-  _pushOriginPx  = null;
-  // Remove glow
-  document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
-  recalcMetrics();
+function _onPushMouseLeave(){
+  if(!pushWpMode) return;
+  _setPushTooltip(null);
+  document.getElementById('push-circle-svg').style.display = 'none';
+}
+
+function _onPushMouseEnter(){
+  if(!pushWpMode) return;
+  document.getElementById('push-circle-svg').style.display = 'block';
 }
 
 // ── SVG push circle renderer ──────────────────────────────────────────────────
-function _updatePushCircleSvg(cx, cy, radiusNm, cursorX, cursorY){
-  // Convert radiusNm to pixels using current map zoom
-  // Use map.project to find pixel radius: project centre point and a point radiusNm due east
+function _updatePushCircleSvg(cx, cy, radiusNm){
+  // Convert radiusNm → pixels at current zoom/position
   const centreLl = map.unproject([cx, cy]);
   const eastLon  = centreLl.lng + _nmToDeglon(radiusNm, centreLl.lat);
   const eastPx   = map.project([eastLon, centreLl.lat]);
-  const radiusPx = Math.abs(eastPx.x - cx);
+  const radiusPx = Math.max(10, Math.abs(eastPx.x - cx));
 
-  const circle  = document.getElementById('push-circle');
-  const dot     = document.getElementById('push-circle-center');
-  circle.setAttribute('cx', cx);  circle.setAttribute('cy', cy);
-  circle.setAttribute('r',  Math.max(10, radiusPx));
-  dot.setAttribute('cx', cx);     dot.setAttribute('cy', cy);
+  const circle = document.getElementById('push-circle');
+  const dot    = document.getElementById('push-circle-center');
 
-  // Draw outward arrows at 8 cardinal points if actively pushing
+  // Circle style changes when active
+  circle.setAttribute('cx', cx); circle.setAttribute('cy', cy);
+  circle.setAttribute('r', radiusPx);
+  circle.setAttribute('fill', _pushActive ? 'rgba(249,115,22,.12)' : 'rgba(14,165,233,.07)');
+  circle.setAttribute('stroke', _pushActive ? '#f97316' : '#0ea5e9');
+  circle.setAttribute('stroke-dasharray', _pushActive ? '8 4' : '5 5');
+  dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
+  dot.setAttribute('fill', _pushActive ? '#f97316' : '#0ea5e9');
+
+  // Outward arrows when broom is active
   const arrowsG = document.getElementById('push-arrows');
   if(_pushActive){
-    const r = Math.max(10, radiusPx);
-    const arrowLen = Math.min(18, r * 0.2);
-    const pts = [0,45,90,135,180,225,270,315];
-    arrowsG.innerHTML = pts.map(deg => {
+    const arrowLen = Math.min(20, radiusPx * 0.18);
+    arrowsG.innerHTML = [0,45,90,135,180,225,270,315].map(deg => {
       const rad = deg * Math.PI / 180;
-      const x1 = cx + Math.cos(rad) * r * 0.55;
-      const y1 = cy + Math.sin(rad) * r * 0.55;
-      const x2 = cx + Math.cos(rad) * (r * 0.55 + arrowLen);
-      const y2 = cy + Math.sin(rad) * (r * 0.55 + arrowLen);
+      const x1 = cx + Math.cos(rad) * radiusPx * 0.6;
+      const y1 = cy + Math.sin(rad) * radiusPx * 0.6;
+      const x2 = cx + Math.cos(rad) * (radiusPx * 0.6 + arrowLen);
+      const y2 = cy + Math.sin(rad) * (radiusPx * 0.6 + arrowLen);
       return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}"
                     x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
-                    stroke="#f97316" stroke-width="1.5" marker-end="url(#push-arrow-head)"/>`;
+                    stroke="#f97316" stroke-width="1.5"
+                    marker-end="url(#push-arrow-head)"/>`;
     }).join('');
-    // Ensure arrowhead marker is defined
-    let defs = document.getElementById('push-svg-defs');
-    if(!defs){
+    // Ensure arrowhead defs exist
+    if(!document.getElementById('push-svg-defs')){
       const svg = document.getElementById('push-circle-svg');
-      defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+      const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
       defs.id = 'push-svg-defs';
       defs.innerHTML = `<marker id="push-arrow-head" markerWidth="6" markerHeight="6"
         refX="3" refY="3" orient="auto">
@@ -2192,23 +2242,30 @@ function _updatePushCircleSvg(cx, cy, radiusNm, cursorX, cursorY){
   }
 }
 
-// ── Attach push tool event listeners after map loads ─────────────────────────
+// ── Init: attach all event listeners after map loads ─────────────────────────
 function _initPushTool(){
   const mapEl = document.getElementById('map');
 
-  mapEl.addEventListener('mousedown', e => { if(pushWpMode) _onPushMouseDown(e); });
+  // Click: toggle broom active/save
+  mapEl.addEventListener('click', e => { if(pushWpMode) _onPushClick(e); });
+  // Move: follow cursor, apply broom if active
   mapEl.addEventListener('mousemove', e => { if(pushWpMode) _onPushMouseMove(e); });
-  mapEl.addEventListener('mouseup',   e => { if(pushWpMode) _onPushMouseUp(e); });
-  mapEl.addEventListener('mouseleave',e => {
-    if(pushWpMode){
-      _onPushMouseUp(e);
-      document.getElementById('push-circle-svg').style.display = 'none';
-    }
-  });
+  // Leave/enter: hide/show circle
+  mapEl.addEventListener('mouseleave', () => _onPushMouseLeave());
+  mapEl.addEventListener('mouseenter', () => _onPushMouseEnter());
 
-  // Ctrl+Z undo
+  // ESC: cancel push and undo
   document.addEventListener('keydown', e => {
-    if((e.ctrlKey || e.metaKey) && e.key === 'z' && pushWpMode && _pushUndoStack.length){
+    if(!pushWpMode) return;
+    if(e.key === 'Escape'){
+      if(_pushActive || _pushUndoStack.length){
+        undoPush();
+        notify('Push cancelled','ok');
+      }
+      setPushWpMode(false);
+      document.getElementById('push-wp-chk').checked = false;
+    }
+    if((e.ctrlKey || e.metaKey) && e.key === 'z' && _pushUndoStack.length){
       e.preventDefault();
       undoPush();
     }
