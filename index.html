@@ -355,7 +355,7 @@ body.adding-wp #map { cursor: cell; }
   <div id="sidebar">
     <div id="sidebar-header">
       <h1>⚓ RoutePlannerPro</h1>
-      <p>Professional Sea Route Planner</p>
+      <p>Professional Sea Route Planner <span style="opacity:.5;font-size:10px">v2.4.0</span></p>
     </div>
     <div id="sidebar-body">
 
@@ -501,7 +501,8 @@ body.adding-wp #map { cursor: cell; }
         <!-- ACTION BUTTONS -->
         <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px">
           <button class="btn btn-success btn-full" onclick="startSimulation()">🚢 Simulate Voyage</button>
-          <button class="btn btn-outline btn-full" onclick="openExportModal()">📄 Export Voyage Report</button>
+          <button class="btn btn-outline btn-full" id="export-btn" onclick="openExportModal()" disabled title="Weather data loading…">📄 Export Voyage Report</button>
+          <div id="wx-loading-hint" style="display:none;font-size:10px;color:var(--muted);text-align:center">⏳ Loading weather data… report available when complete</div>
         </div>
       </div>
 
@@ -1729,7 +1730,12 @@ async function calculateRoute(){
   showProgress({
     icon: '🧮',
     title: 'Calculating Route',
-    steps: ['Computing sea route', 'Drawing route on map', 'Fetching weather data']
+    steps: [
+      'Computing sea route',
+      'Drawing route on map',
+      'Loading wind data (MapTiler GFS)',
+      'Fetching wave & current data'
+    ]
   });
   setProgressStep(0, 'Finding optimal sea path via MARNET…');
 
@@ -1749,7 +1755,7 @@ async function calculateRoute(){
     fitRouteBounds();
     showMetrics();
 
-    setProgressStep(2, 'Loading wind & weather data along route…');
+    setProgressStep(2, 'Loading wind & wave data across full route…');
     await fetchOpenMeteoRouteWeather();
 
     hideProgress();
@@ -1888,140 +1894,118 @@ function fmtCoord(lat, lon){
 function fmtLat(lat){ return `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}`; }
 function fmtLon(lon){ lon = normLon(lon); return `${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`; }
 
-// ── MapTiler WindLayer wind fetch ─────────────────────────────────────────────
-// Strategy:
-//   1. Always add wind layer (if not already active) — user need not toggle it
-//   2. Fit map to the full route extent so MapTiler loads tiles across the whole route
-//   3. Wait for windLayer 'tick' event which confirms live data is streaming
-//   4. Sample each leg sequentially with a 60ms settle time after each seek
-//   5. Restore map view and animation state
-//   6. If wind layer unavailable, fall back to Open-Meteo
-async function fetchOpenMeteoWindBatch(legs){
+// ── MapTiler WindLayer — speed ONLY via pickAt ────────────────────────────────
+// Only samples speedMetersPerSecond. Direction comes separately from Open-Meteo.
+// This avoids the vector-field timing issue that caused directionDegrees = null.
+async function fetchWindSpeedFromLayer(legs){
   if(!legs.length) return legs.map(() => null);
   const results = new Array(legs.length).fill(null);
 
-  // ── Ensure wind layer is loaded ──────────────────────────────────
   const wasActive = !!windLayer;
   if(!windLayer){ addWindLayer(); }
+  if(!windLayer) return results; // layer failed to create
 
-  if(!windLayer){
-    console.warn('WindLayer could not be created — falling back to Open-Meteo');
-    return fetchOpenMeteoWindFallback(legs);
-  }
-
-  // ── Fit map to full route extent so tiles load across whole route ──
-  // MapTiler only loads tiles for the current viewport — we need the whole route
+  // Fit map to full route extent so tiles load everywhere
   const lons = wpCoords.map(([lo]) => normLon(lo));
   const lats = wpCoords.map(([,la]) => la);
-  const bbox = [
-    Math.min(...lons) - 5, Math.min(...lats) - 3,
-    Math.max(...lons) + 5, Math.max(...lats) + 3
-  ];
-  // Fit bounds to load tiles across the full route
   try {
-    map.fitBounds([[bbox[0],bbox[1]],[bbox[2],bbox[3]]], { duration: 0, padding: 20 });
+    map.fitBounds([
+      [Math.min(...lons)-5, Math.min(...lats)-3],
+      [Math.max(...lons)+5, Math.max(...lats)+3]
+    ], { duration: 0, padding: 20 });
   } catch(_){}
 
-  // ── Wait for wind layer to emit 'tick' (means data is streaming) ──
-  // 'tick' fires on each animation step — first tick means tiles loaded + data live
+  // Wait for first tick = tiles loaded and data streaming
   setProgressStep(0, 'Waiting for wind tiles to load across full route…');
   await new Promise(res => {
-    let resolved = false;
-    const onTick = () => {
-      if(!resolved){ resolved = true; windLayer?.off('tick', onTick); res(); }
-    };
+    let done = false;
+    const onTick = () => { if(!done){ done=true; windLayer?.off('tick',onTick); res(); } };
     windLayer.on('tick', onTick);
-    // Hard timeout: 15 seconds max
-    setTimeout(() => { if(!resolved){ resolved = true; windLayer?.off('tick', onTick); res(); } }, 15000);
+    setTimeout(() => { if(!done){ done=true; windLayer?.off('tick',onTick); res(); } }, 15000);
   });
+  await new Promise(r => setTimeout(r, 600)); // extra grace for full-route tiles
 
-  // Additional 500ms — tiles for far waypoints may still be streaming in
-  await new Promise(r => setTimeout(r, 500));
-  setProgressStep(1, `Sampling wind at ${legs.length} waypoints (MapTiler GFS)…`);
-
-  // ── Sequential sampling ───────────────────────────────────────────
   const startSec = windLayer.getAnimationStart?.() ?? null;
   const endSec   = windLayer.getAnimationEnd?.()   ?? null;
-
   if(!startSec || !endSec){
     if(!wasActive) removeWindLayer();
-    return fetchOpenMeteoWindFallback(legs);
+    return results;
   }
 
   const origSec = windLayer.getAnimationTime?.() ?? startSec;
-  windLayer.animateByFactor(0); // pause — prevents seek conflicts during sampling
+  windLayer.animateByFactor(0);
 
+  setProgressStep(0, `Sampling wind speed at ${legs.length} waypoints…`);
   for(let idx = 0; idx < legs.length; idx++){
     const { lat, lon, date } = legs[idx];
     const nlon = normLon(lon);
     const targetSec = date.getTime() / 1000;
-
-    // Only sample within MapTiler's 5-day forecast window
     if(targetSec < startSec - 3600 || targetSec > endSec + 3600) continue;
 
     windLayer.setAnimationTime(targetSec);
-    // 150ms grace — WindLayer needs more time to update the full vector field
-    // (speed scalar updates faster than direction vector after a seek)
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 80)); // speed field updates quickly
 
     try {
       const val = windLayer.pickAt(nlon, lat);
       if(val?.speedMetersPerSecond != null){
-        // directionDegrees = direction wind blows TOWARD (0°=N, 90°=E)
-        // Try both property names — SDK versions differ
-        const rawDir = val.directionDegrees ?? val.direction ?? null;
-        results[idx] = {
-          windKn:  (val.speedMetersPerSecond * 1.94384).toFixed(1),
-          windDir: rawDir != null ? Math.round(rawDir) : null
-        };
+        results[idx] = { windKn: (val.speedMetersPerSecond * 1.94384).toFixed(1) };
       }
     } catch(_){}
   }
 
-  // ── Restore state ─────────────────────────────────────────────────
   windLayer.setAnimationTime(origSec);
   windLayer.animateByFactor(3600);
-
-  // If wind wasn't active before, remove the layer (keep map clean)
   if(!wasActive) removeWindLayer();
-
   return results;
 }
 
-// Open-Meteo fallback wind fetch when WindLayer is unavailable
-// Uses date-grouped batches to avoid rate limiting
-async function fetchOpenMeteoWindFallback(legs){
+// ── Open-Meteo — wind DIRECTION (+ fallback speed) ────────────────────────────
+// Uses ECMWF IFS 9km. Batched by 2° grid cell + date to minimise API calls.
+// This is the definitive direction source — not dependent on GPU tile state.
+async function fetchOpenMeteoWindDirBatch(legs){
+  if(!legs.length) return legs.map(() => null);
   const results = new Array(legs.length).fill(null);
+
   const groups = new Map();
   legs.forEach(({ lat, lon, date }, idx) => {
     const nlon = normLon(lon);
     const diffDays = (date - new Date()) / 86400000;
     if(diffDays < -1 || diffDays > 15.5) return;
-    const gLat = (Math.round(lat * 0.5) / 0.5).toFixed(1);
-    const gLon = (Math.round(nlon * 0.5) / 0.5).toFixed(1);
-    const dateStr = date.toISOString().slice(0,10);
-    const key = `${gLat}|${gLon}|${dateStr}`;
-    if(!groups.has(key)) groups.set(key, { lat: parseFloat(gLat), lon: parseFloat(gLon), dateStr, indices: [] });
+    const gLat = (Math.round(lat  / 2) * 2).toFixed(0);
+    const gLon = (Math.round(nlon / 2) * 2).toFixed(0);
+    const key  = `${gLat}|${gLon}|${date.toISOString().slice(0,10)}`;
+    if(!groups.has(key)) groups.set(key, {
+      lat: parseFloat(gLat), lon: parseFloat(gLon),
+      dateStr: date.toISOString().slice(0,10), indices: []
+    });
     groups.get(key).indices.push(idx);
   });
+
   const groupList = [...groups.values()];
-  for(let i = 0; i < groupList.length; i += 4){
-    await Promise.all(groupList.slice(i, i+4).map(async g => {
+  for(let i = 0; i < groupList.length; i += 6){
+    await Promise.all(groupList.slice(i, i+6).map(async g => {
       try {
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${g.lat.toFixed(2)}&longitude=${g.lon.toFixed(2)}&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn&timezone=UTC&start_date=${g.dateStr}&end_date=${g.dateStr}&forecast_days=1`;
+        const url = `https://api.open-meteo.com/v1/forecast`
+          + `?latitude=${g.lat}&longitude=${g.lon}`
+          + `&hourly=wind_speed_10m,wind_direction_10m`
+          + `&wind_speed_unit=kn&timezone=UTC`
+          + `&start_date=${g.dateStr}&end_date=${g.dateStr}&forecast_days=1`;
         const r = await fetch(url);
         if(!r.ok) return;
         const d = await r.json();
-        if(!d.hourly?.wind_speed_10m) return;
+        if(!d.hourly?.wind_direction_10m) return;
         g.indices.forEach(idx => {
           const hr = legs[idx].date.getUTCHours();
-          const ws = d.hourly.wind_speed_10m[hr];
-          const wd = d.hourly.wind_direction_10m?.[hr];
-          if(ws != null) results[idx] = { windKn: parseFloat(ws).toFixed(1), windDir: wd != null ? Math.round(wd) : null };
+          const ws  = d.hourly.wind_speed_10m?.[hr];
+          const wd  = d.hourly.wind_direction_10m?.[hr];
+          if(wd != null) results[idx] = {
+            windKn:  ws != null ? parseFloat(ws).toFixed(1) : null,
+            windDir: Math.round(wd)
+          };
         });
       } catch(_){}
     }));
-    if(i + 4 < groupList.length) await new Promise(r => setTimeout(r, 150));
+    if(i + 6 < groupList.length) await new Promise(r => setTimeout(r, 100));
   }
   return results;
 }
@@ -2153,11 +2137,17 @@ async function fetchRouteWeather(){
   if(wpCoords.length < 2) return;
   document.getElementById('wx-route-rows').innerHTML = '';
 
+  // Disable export button — will re-enable when data is fully loaded
+  const exportBtn = document.getElementById('export-btn');
+  const wxHint    = document.getElementById('wx-loading-hint');
+  if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Weather data loading…'; }
+  if(wxHint){ wxHint.style.display = 'block'; }
+
   const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
   const depStr = document.getElementById('dep-time').value;
   const dep    = depStr ? new Date(depStr) : new Date();
 
-  // Build leg list using ORDERED speed initially (ETA will be corrected below)
+  // Build leg list
   let timeAccH = 0;
   const legs = [];
   for(let i = 0; i < wpCoords.length - 1; i++){
@@ -2172,56 +2162,60 @@ async function fetchRouteWeather(){
     legs.push({ i, midLon, midLat, tArr, distNm, bearing });
   }
 
-  // ── Sequential: wind first (requires WindLayer seeking), then marine in parallel ──
-  // Running wind and marine in parallel caused a race where marine resolved first
-  // and the PDF builder used stale _wxResults. Wind must complete fully before marine.
-  const windResults = await fetchOpenMeteoWindBatch(
+  // ── Step A: Wind SPEED from MapTiler WindLayer (pickAt) ──────────────────────
+  // MapTiler GFS is the most accurate wind speed source — same data as the map layer.
+  // We only use pickAt for speed; direction comes from Open-Meteo (more reliable).
+  setProgressStep(0, 'Loading MapTiler wind layer across full route…');
+  const windSpeedResults = await fetchWindSpeedFromLayer(
     legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))
   );
 
-  // Marine fetch can now run — pure HTTP, no map interaction
-  setProgressStep(2, 'Fetching wave & current data (Open-Meteo Marine)…');
-  const marineResults = await Promise.all(
-    legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr))
-  );
-  setProgressStep(2, 'Wave & current data received — computing speed model…');
+  // ── Step B: Wind DIRECTION + fallback speed from Open-Meteo ──────────────────
+  // Open-Meteo ECMWF IFS gives reliable wind direction for all points.
+  // If MapTiler speed failed for a leg, Open-Meteo speed is used as fallback.
+  setProgressStep(1, 'Fetching wind direction & marine data…');
+  const [windDirResults, marineResults] = await Promise.all([
+    fetchOpenMeteoWindDirBatch(legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))),
+    Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr)))
+  ]);
+  setProgressStep(2, 'Computing weather-adjusted ETA…');
 
-  // ── Build results WITH weather speed adjustment ───────────────
-  // Re-propagate ETA leg-by-leg using effective speed so later legs
-  // get the correct arrival time accounting for earlier delays
+  // ── Merge: prefer MapTiler speed, Open-Meteo direction ───────────────────────
   let adjustedTimeAccH = 0;
   const results = legs.map((leg, idx) => {
-    const w = windResults[idx];
-    const m = marineResults[idx];
-    const windKn    = w?.windKn    != null ? parseFloat(w.windKn)    : null;
-    const windDir   = w?.windDir   != null ? w.windDir               : null;
-    const waveM     = m?.waveM     != null ? m.waveM                 : null;
-    const waveDir   = m?.waveDir   != null ? m.waveDir               : null;
-    const currentKn = m?.currentKn != null ? m.currentKn             : null;
-    const currentDir= m?.currentDir!= null ? m.currentDir            : null;
+    const layerSpd = windSpeedResults[idx];  // from MapTiler pickAt (speed only)
+    const omWind   = windDirResults[idx];     // from Open-Meteo (speed + direction)
+    const m        = marineResults[idx];
 
-    // Compute weather-adjusted speed
+    // Prefer MapTiler speed; fall back to Open-Meteo speed
+    const windKn  = layerSpd?.windKn != null ? layerSpd.windKn
+                  : omWind?.windKn   != null ? omWind.windKn
+                  : null;
+    // Direction always from Open-Meteo (reliable, not viewport-dependent)
+    const windDir   = omWind?.windDir   ?? null;
+    const waveM     = m?.waveM          ?? null;
+    const waveDir   = m?.waveDir        ?? null;
+    const currentKn = m?.currentKn      ?? null;
+    const currentDir= m?.currentDir     ?? null;
+
     const adj = computeWeatherAdjustedSpeed(
       orderedKn, leg.bearing,
-      windKn, windDir,
-      waveM, waveDir,
+      windKn != null ? parseFloat(windKn) : null, windDir,
+      waveM,  waveDir,
       currentKn, currentDir
     );
 
-    // Adjusted ETA: arrival time using effective speed
     const adjustedTArr = new Date(dep.getTime() + adjustedTimeAccH * 3600 * 1000);
     adjustedTimeAccH  += leg.distNm / adj.effectiveKn;
 
-    // Colour by effective speed relative to ordered speed (green = on time, red = delayed)
     const speedRatio = adj.effectiveKn / orderedKn;
     const color = speedRatio > 0.95 ? '#22c55e'
                 : speedRatio > 0.85 ? '#f59e0b'
-                : speedRatio > 0.70 ? '#f97316'
-                : '#ef4444';
+                : speedRatio > 0.70 ? '#f97316' : '#ef4444';
 
     return {
       ...leg,
-      windKn:      windKn  != null ? windKn.toFixed(1)  : null,
+      windKn:      windKn,
       windDir,
       waveM,
       waveDir,
@@ -2236,16 +2230,16 @@ async function fetchRouteWeather(){
     };
   });
 
-  // ── Compute total weather delay ───────────────────────────────
-  const orderedTotalH  = legs.reduce((s, l) => s + l.distNm / orderedKn, 0);
-  const adjustedTotalH = results.reduce((s, r) => s + r.distNm / r.effectiveKn, 0);
+  window._wxResults   = results;
+
+  // Compute delay
+  const orderedTotalH  = legs.reduce((s,l) => s + l.distNm / orderedKn, 0);
+  const adjustedTotalH = results.reduce((s,r) => s + r.distNm / r.effectiveKn, 0);
   const totalDelayH    = Math.max(0, adjustedTotalH - orderedTotalH);
+  window._wxDelayH     = totalDelayH;
+  window._wxAdjTotalH  = adjustedTotalH;
 
-  window._wxResults     = results;
-  window._wxDelayH      = totalDelayH;
-  window._wxAdjTotalH   = adjustedTotalH;
-
-  // Update max stat cards + weather delay card
+  // Update sidebar max cards
   const maxWind = results.reduce((m,r) => r.windKn!=null ? Math.max(m, parseFloat(r.windKn)) : m, 0);
   const maxWave = results.reduce((m,r) => r.waveM !=null ? Math.max(m, parseFloat(r.waveM))  : m, 0);
   if(maxWind > 0 || maxWave > 0){
@@ -2254,24 +2248,18 @@ async function fetchRouteWeather(){
     document.getElementById('max-stat-section').style.display = 'grid';
   }
 
-  // Show weather delay in sidebar if significant
+  // Update weather delay sidebar card
   const delayEl = document.getElementById('m-wxdelay');
-  if(delayEl){
-    if(totalDelayH >= 0.5){
-      const depStr2 = document.getElementById('dep-time').value;
-      const dep2    = depStr2 ? new Date(depStr2) : new Date();
-      const adjEta  = new Date(dep2.getTime() + adjustedTotalH * 3600 * 1000);
-      const adjEtaStr = adjEta.toISOString().slice(0,16).replace('T',' ') + 'Z';
-      document.getElementById('m-adj-eta').textContent = adjEtaStr;
-      delayEl.textContent = '+' + totalDelayH.toFixed(1) + 'h delay';
-      delayEl.style.color = totalDelayH > 12 ? 'var(--danger)' : 'var(--warn)';
-      document.getElementById('wx-delay-section').style.display = 'block';
-    } else {
-      document.getElementById('wx-delay-section').style.display = 'none';
-    }
+  if(delayEl && totalDelayH >= 0.5){
+    const dep2    = depStr ? new Date(depStr) : new Date();
+    const adjEta  = new Date(dep2.getTime() + adjustedTotalH * 3600 * 1000);
+    document.getElementById('m-adj-eta').textContent = adjEta.toISOString().slice(0,16).replace('T',' ') + 'Z';
+    delayEl.textContent = '+' + totalDelayH.toFixed(1) + 'h delay';
+    delayEl.style.color = totalDelayH > 12 ? 'var(--danger)' : 'var(--warn)';
+    document.getElementById('wx-delay-section').style.display = 'block';
   }
 
-  // Update route line colouring by effective speed ratio
+  // Update route colour
   wxRouteCache = {
     segments: results.map((r, idx) => {
       const [lo1, la1] = wpCoords[idx];
@@ -2280,6 +2268,11 @@ async function fetchRouteWeather(){
     })
   };
   redrawRouteGeoJSON();
+
+  // ✅ Enable export button — data is ready
+  if(exportBtn){ exportBtn.disabled = false; exportBtn.title = ''; }
+  if(wxHint){ wxHint.style.display = 'none'; }
+  setProgressStep(3, 'Weather data ready — you can now export the report.');
 }
 
 // Keep backward-compat alias
@@ -2301,6 +2294,11 @@ function clearAll(){
   document.getElementById('wx-delay-section').style.display='none';
   window._wxResults = null;
   window._wxDelayH  = null;
+  // Reset export button — needs weather data before enabling
+  const exportBtn = document.getElementById('export-btn');
+  if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Calculate a route first'; }
+  const wxHint = document.getElementById('wx-loading-hint');
+  if(wxHint){ wxHint.style.display = 'none'; }
   document.getElementById('wx-route-section').style.display='none';
   document.getElementById('o-port-input').value='';
   document.getElementById('d-port-input').value='';
@@ -2390,25 +2388,17 @@ async function generateVoyageReport(){
 
   closeModal('export-modal');
 
-  // Show progress overlay with detailed steps
+  // ── Weather data is already fully loaded by fetchRouteWeather (called after route calc) ──
+  // The Export button is only enabled once fetchRouteWeather completes, so _wxResults
+  // is guaranteed to be populated with complete wind+wave+current data.
+  const wxResults = window._wxResults || [];
+
   showProgress({
     icon: '📄',
     title: 'Generating Voyage Report',
-    steps: [
-      'Loading wind layer & fitting route view',
-      'Sampling wind data along route (MapTiler GFS)',
-      'Fetching wave & current data (Copernicus)',
-      'Computing weather-adjusted ETA',
-      'Building PDF document'
-    ]
+    steps: ['Building waypoint table', 'Building weather table', 'Assembling PDF']
   });
-  setProgressStep(0, 'Enabling wind layer and loading tiles for full route…');
-
-  // ── Fetch weather data ──────────────────────────────────────────────────────
-  // fetchRouteWeather internally handles wind layer loading, map fit, and tick wait
-  await fetchRouteWeather();
-  const wxResults = window._wxResults || [];
-  setProgressStep(3, 'Weather-adjusted ETA computed — building report…');
+  setProgressStep(0, 'Building waypoint and weather tables…');
 
   // ── Build data ───────────────────────────────────────────────────────────────
 
@@ -2447,6 +2437,8 @@ async function generateVoyageReport(){
     </tr>`;
   }).join('');
 
+
+  setProgressStep(1, 'Building weather forecast table…');
 
   const wxFiltered = wxResults.slice(0,40).filter(r => r.windKn!=null || r.waveM!=null);
 
@@ -2626,7 +2618,7 @@ async function generateVoyageReport(){
 </div>
 </body></html>`;
 
-  setProgressStep(4, 'Opening report in new tab…');
+  setProgressStep(2, 'Opening report in new tab…');
   try {
     const blob = new Blob([html], {type:'text/html'});
     const w    = window.open(URL.createObjectURL(blob), '_blank');
