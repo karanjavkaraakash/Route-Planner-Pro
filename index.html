@@ -260,11 +260,13 @@ body.adding-wp #map { cursor: cell; }
 /* ═══════════ PROGRESS OVERLAY ═══════════ */
 #progress-overlay {
   position: fixed; inset: 0; z-index: 99999;
-  background: rgba(11,15,26,.82); backdrop-filter: blur(4px);
+  background: rgba(7,10,20,.92); backdrop-filter: blur(8px);
   display: none; flex-direction: column;
-  align-items: center; justify-content: center; gap: 18px;
+  align-items: center; justify-content: center; gap: 0;
 }
 #progress-overlay.visible { display: flex; }
+
+/* Simple card (for route calculation) */
 #progress-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
   padding: 28px 36px; min-width: 320px; max-width: 440px; text-align: center;
@@ -273,21 +275,74 @@ body.adding-wp #map { cursor: cell; }
 #progress-icon { font-size: 32px; margin-bottom: 10px; }
 #progress-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
 #progress-msg { font-size: 12px; color: var(--muted); margin-bottom: 18px; min-height: 18px; }
-#progress-bar-wrap {
-  background: var(--border); border-radius: 6px; height: 6px; overflow: hidden; margin-bottom: 14px;
-}
-#progress-bar-fill {
-  height: 100%; border-radius: 6px; background: var(--accent);
-  width: 0%; transition: width .4s ease;
-}
+#progress-bar-wrap { background: var(--border); border-radius: 6px; height: 6px; overflow: hidden; margin-bottom: 14px; }
+#progress-bar-fill { height: 100%; border-radius: 6px; background: var(--accent); width: 0%; transition: width .4s ease; }
 #progress-steps { display: flex; flex-direction: column; gap: 6px; text-align: left; margin-top: 4px; }
-.progress-step {
-  display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted);
-  transition: color .2s;
-}
+.progress-step { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); transition: color .2s; }
 .progress-step.done   { color: var(--success); }
 .progress-step.active { color: var(--accent2); font-weight: 600; }
 .progress-step-icon { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; }
+
+/* Weather analysis overlay — rich two-panel */
+#wx-analysis-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(7,10,20,.95); backdrop-filter: blur(10px);
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center; padding: 24px;
+}
+#wx-analysis-overlay.visible { display: flex; }
+.wxa-header {
+  width: 100%; max-width: 860px; margin-bottom: 16px; text-align: center;
+}
+.wxa-title { font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 4px; }
+.wxa-route { font-size: 12px; color: var(--muted); }
+.wxa-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  width: 100%; max-width: 860px;
+}
+.wxa-panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 20px; min-height: 280px;
+}
+.wxa-panel-title {
+  font-size: 9px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 14px; display: flex; align-items: center; gap: 6px;
+}
+.wxa-panel-title::before { content: ''; display: inline-block; width: 3px; height: 12px; border-radius: 2px; background: var(--accent); }
+/* Steps panel */
+.wxa-steps { display: flex; flex-direction: column; gap: 8px; }
+.wxa-step { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a2236; }
+.wxa-step:last-child { border-bottom: none; }
+.wxa-step-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; margin-top: 1px; }
+.wxa-step-text { flex: 1; }
+.wxa-step-label { font-size: 12px; color: var(--muted); transition: color .3s; }
+.wxa-step-label.done   { color: var(--success); }
+.wxa-step-label.active { color: var(--text); font-weight: 600; }
+.wxa-step-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
+/* Bar */
+.wxa-bar-wrap { background: var(--border); border-radius: 4px; height: 4px; margin: 14px 0 6px; }
+.wxa-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg,#0ea5e9,#22c55e); transition: width .5s ease; }
+.wxa-pct { font-size: 10px; color: var(--muted); text-align: right; }
+/* Intelligence panel */
+.wxa-intel { display: flex; flex-direction: column; gap: 8px; }
+.wxa-intel-card {
+  background: #0a0f1e; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
+  animation: fadeSlideIn .4s ease;
+  opacity: 0; animation-fill-mode: forwards;
+}
+@keyframes fadeSlideIn {
+  from { opacity:0; transform:translateX(10px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+.wxa-intel-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+.wxa-intel-body .wxa-intel-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.wxa-intel-body .wxa-intel-sub   { font-size: 10px; color: var(--muted); line-height: 1.4; }
+.wxa-intel-card.warn  { border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.05); }
+.wxa-intel-card.danger{ border-color: rgba(239,68,68,.4);  background: rgba(239,68,68,.05); }
+.wxa-intel-card.good  { border-color: rgba(34,197,94,.4);  background: rgba(34,197,94,.05); }
+.wxa-intel-card.info  { border-color: rgba(59,130,246,.4); background: rgba(59,130,246,.05); }
+.wxa-tip { font-size: 10px; color: var(--muted); text-align: center; margin-top: 10px; font-style: italic; }
 
 /* ═══════════ MAPLIBRE MARKER OVERRIDES ═══════════ */
 .maplibregl-marker { cursor: grab; }
@@ -466,12 +521,22 @@ body.adding-wp #map { cursor: cell; }
           <div class="metric-card"><div class="val" id="m-transit">—</div><div class="key">Transit (days)</div></div>
           <div class="metric-card"><div class="val" id="m-eca">—</div><div class="key">ECA Miles</div></div>
         </div>
-        <!-- Max wind / wave highlight cards -->
-        <div class="max-stat-grid" id="max-stat-section" style="display:none">
-          <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kt) on route</div></div>
-          <div class="max-stat-card"><div class="val" id="m-maxwave" style="color:var(--accent2)">—</div><div class="key">Max Wave (m) on route</div></div>
+
+        <!-- LOAD WEATHER BUTTON — appears after route calculated -->
+        <button class="btn btn-full" id="load-wx-btn" onclick="loadWeatherAndAnalyse()"
+          style="margin:10px 0 4px;background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;font-weight:700;font-size:12px;border:none;gap:6px">
+          🌊 Load Weather &amp; Analyse Route
+        </button>
+        <div id="wx-status-hint" style="font-size:10px;color:var(--muted);text-align:center;margin-bottom:6px">
+          Fetches wind, wave &amp; current data along the full route
         </div>
-        <!-- Weather delay section — shown after weather fetch -->
+
+        <!-- Max wind / wave highlight cards (shown after weather loads) -->
+        <div class="max-stat-grid" id="max-stat-section" style="display:none">
+          <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kt)</div></div>
+          <div class="max-stat-card"><div class="val" id="m-maxwave" style="color:var(--accent2)">—</div><div class="key">Max Wave (m)</div></div>
+        </div>
+        <!-- Weather delay section -->
         <div id="wx-delay-section" style="display:none;margin-bottom:8px">
           <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:8px 10px">
             <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">⚡ Weather Impact</div>
@@ -492,17 +557,15 @@ body.adding-wp #map { cursor: cell; }
             <tbody id="wp-tbody"></tbody>
           </table>
         </div>
-
-        <!-- WEATHER ALONG ROUTE — hidden from sidebar, used only for PDF export -->
+        <!-- WEATHER ALONG ROUTE — hidden, used for PDF export -->
         <div id="wx-route-section" style="display:none">
           <div id="wx-route-rows"></div>
         </div>
-
         <!-- ACTION BUTTONS -->
         <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px">
           <button class="btn btn-success btn-full" onclick="startSimulation()">🚢 Simulate Voyage</button>
-          <button class="btn btn-outline btn-full" id="export-btn" onclick="openExportModal()" disabled title="Weather data loading…">📄 Export Voyage Report</button>
-          <div id="wx-loading-hint" style="display:none;font-size:10px;color:var(--muted);text-align:center">⏳ Loading weather data… report available when complete</div>
+          <button class="btn btn-outline btn-full" id="export-btn" onclick="openExportModal()" disabled
+            title="Click 'Load Weather' first">📄 Export Voyage Report</button>
         </div>
       </div>
 
@@ -598,7 +661,7 @@ body.adding-wp #map { cursor: cell; }
   </div>
 </div>
 
-<!-- ═══ PROGRESS OVERLAY ═══ -->
+<!-- ═══ PROGRESS OVERLAY (route calculation) ═══ -->
 <div id="progress-overlay">
   <div id="progress-card">
     <div id="progress-icon">⚙️</div>
@@ -606,6 +669,31 @@ body.adding-wp #map { cursor: cell; }
     <div id="progress-msg">Please wait</div>
     <div id="progress-bar-wrap"><div id="progress-bar-fill"></div></div>
     <div id="progress-steps"></div>
+  </div>
+</div>
+
+<!-- ═══ WEATHER ANALYSIS OVERLAY (full-screen, two-panel) ═══ -->
+<div id="wx-analysis-overlay">
+  <div class="wxa-header">
+    <div class="wxa-title">🌊 Analysing Voyage Conditions</div>
+    <div class="wxa-route" id="wxa-route-label">Loading route…</div>
+  </div>
+  <div class="wxa-body">
+    <!-- LEFT: live processing steps -->
+    <div class="wxa-panel">
+      <div class="wxa-panel-title">Live Processing</div>
+      <div class="wxa-steps" id="wxa-steps"></div>
+      <div class="wxa-bar-wrap" style="margin-top:18px">
+        <div class="wxa-bar-fill" id="wxa-bar" style="width:0%"></div>
+      </div>
+      <div class="wxa-pct" id="wxa-pct">0%</div>
+      <div class="wxa-tip" id="wxa-tip"></div>
+    </div>
+    <!-- RIGHT: voyage intelligence -->
+    <div class="wxa-panel">
+      <div class="wxa-panel-title">Voyage Intelligence</div>
+      <div class="wxa-intel" id="wxa-intel"></div>
+    </div>
   </div>
 </div>
 
@@ -1727,22 +1815,13 @@ async function calculateRoute(){
   const d=getDestCoords();
   if(!o||!d){ notify('Please set origin and destination','err'); return; }
 
-  showProgress({
-    icon: '🧮',
-    title: 'Calculating Route',
-    steps: [
-      'Computing sea route',
-      'Drawing route on map',
-      'Loading wind data (MapTiler GFS)',
-      'Fetching wave & current data'
-    ]
-  });
+  showProgress({ icon:'🧮', title:'Calculating Route',
+    steps:['Computing sea route','Drawing route on map'] });
   setProgressStep(0, 'Finding optimal sea path via MARNET…');
 
   try {
     const avoid = getAvoidList().avoid.join(',');
-    const url=`/api/route?olon=${o.lo}&olat=${o.la}&dlon=${d.lo}&dlat=${d.la}&avoid=${avoid}`;
-    const res=await fetch(url);
+    const res=await fetch(`/api/route?olon=${o.lo}&olat=${o.la}&dlon=${d.lo}&dlat=${d.la}&avoid=${avoid}`);
     if(!res.ok){ const t=await res.text(); throw new Error(t); }
     routeData=await res.json();
     wpCoords = routeData.coordinates.map(c=>[c[0],c[1]]);
@@ -1755,15 +1834,324 @@ async function calculateRoute(){
     fitRouteBounds();
     showMetrics();
 
-    setProgressStep(2, 'Loading wind & wave data across full route…');
-    await fetchOpenMeteoRouteWeather();
+    // Reset weather state — new route, old data invalid
+    window._wxResults = null;
+    window._wxDelayH  = null;
+    const exportBtn = document.getElementById('export-btn');
+    if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Click "Load Weather" first'; }
+    document.getElementById('max-stat-section').style.display = 'none';
+    document.getElementById('wx-delay-section').style.display = 'none';
+
+    // Update Load Weather button state
+    const wxBtn = document.getElementById('load-wx-btn');
+    if(wxBtn){ wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false; }
+    document.getElementById('wx-status-hint').textContent = 'Fetches wind, wave & current data along the full route';
 
     hideProgress();
-    notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm','ok');
+    notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm — click Load Weather to analyse','ok');
   } catch(e){
     hideProgress();
     notify('Route error: '+e.message,'err');
     console.error(e);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   VOYAGE HEURISTICS ENGINE
+   Generates instant intelligence cards from route geometry + date
+   No API calls — pure computation from wpCoords + departure time
+   ═══════════════════════════════════════════════════════════════ */
+function computeVoyageHeuristics(){
+  if(!wpCoords || wpCoords.length < 2) return [];
+  const cards = [];
+  const dep = document.getElementById('dep-time').value
+    ? new Date(document.getElementById('dep-time').value) : new Date();
+  const month = dep.getUTCMonth() + 1; // 1-12
+  const speed = parseFloat(document.getElementById('speed').value) || 14;
+  const dist  = routeData?.distance_nm || 0;
+
+  const lons = wpCoords.map(([lo]) => normLon(lo));
+  const lats = wpCoords.map(([,la]) => la);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+
+  // Origin/destination names
+  const oName = oPort?.name || 'Origin';
+  const dName = dPort?.name || 'Destination';
+
+  // Helper: does route pass through a lat/lon bounding box?
+  const routePassesThrough = (latMin,latMax,lonMin,lonMax) =>
+    wpCoords.some(([lo,la]) => {
+      const nlo = normLon(lo);
+      return la>=latMin && la<=latMax && nlo>=lonMin && nlo<=lonMax;
+    });
+
+  // ── 1. ECA zones ─────────────────────────────────────────────
+  const ecaMiles = parseFloat(document.getElementById('m-eca')?.textContent) || 0;
+  if(ecaMiles > 100){
+    cards.push({ type:'info', icon:'⚓', delay:0,
+      title:`ECA Zone: ${Math.round(ecaMiles)} nm`,
+      sub:`${((ecaMiles/dist)*100).toFixed(0)}% of voyage in Emission Control Area — low-sulphur fuel required`
+    });
+  }
+
+  // ── 2. North Atlantic rough weather (Oct–Apr, north of 40°N) ─
+  if(maxLat > 40 && [10,11,12,1,2,3,4].includes(month) &&
+     routePassesThrough(40,65,-70,10)){
+    cards.push({ type:'danger', icon:'🌊', delay:400,
+      title:'North Atlantic Weather Risk',
+      sub:`Crossing >40°N in ${['Oct','Nov','Dec','Jan','Feb','Mar','Apr'][([10,11,12,1,2,3,4].indexOf(month))]}: expect moderate-to-heavy seas. Wave heights 3–6m possible.`
+    });
+  }
+
+  // ── 3. Gulf Stream benefit (eastbound Atlantic crossing) ──────
+  if(routePassesThrough(30,45,-75,-35) && minLon < -35 && maxLon > -60){
+    const dir = lons[0] < lons[lons.length-1] ? 'eastbound' : 'westbound';
+    cards.push({ type: dir==='eastbound'?'good':'warn', icon:'🌀', delay:600,
+      title:`Gulf Stream (${dir==='eastbound'?'Favourable':'Adverse'})`,
+      sub: dir==='eastbound'
+        ? 'Eastbound crossing benefits from Gulf Stream — expect +1 to +2 kt speed gain on Atlantic leg.'
+        : 'Westbound against Gulf Stream — plan for 0.5–1.5 kt speed loss on mid-Atlantic section.'
+    });
+  }
+
+  // ── 4. Bay of Biscay ─────────────────────────────────────────
+  if(routePassesThrough(43,48,-10,-2) && [10,11,12,1,2,3].includes(month)){
+    cards.push({ type:'warn', icon:'⚠️', delay:800,
+      title:'Bay of Biscay Caution',
+      sub:'Known for heavy swells Oct–Mar. Significant wave heights 4–8m possible. Consider timing passage carefully.'
+    });
+  }
+
+  // ── 5. Arabian Sea SW Monsoon ─────────────────────────────────
+  if(routePassesThrough(5,25,55,80) && [6,7,8,9].includes(month)){
+    cards.push({ type:'danger', icon:'🌪️', delay:800,
+      title:'SW Monsoon — Arabian Sea',
+      sub:'Jun–Sep: strong SW winds 25–40 kt, seas 4–6m. Speed loss expected. Consider routing further south.'
+    });
+  }
+
+  // ── 6. Arabian Sea NE Monsoon (milder) ───────────────────────
+  if(routePassesThrough(5,25,55,80) && [12,1,2].includes(month)){
+    cards.push({ type:'info', icon:'💨', delay:800,
+      title:'NE Monsoon — Arabian Sea',
+      sub:'Dec–Feb: NE winds 15–25 kt typical. Generally moderate conditions for Indian Ocean crossings.'
+    });
+  }
+
+  // ── 7. Red Sea heat / headwinds ──────────────────────────────
+  if(routePassesThrough(12,30,32,44)){
+    const isHot = [5,6,7,8,9].includes(month);
+    cards.push({ type: isHot?'warn':'info', icon:'🌡️', delay:1000,
+      title:`Red Sea — ${isHot?'Heat & Headwinds':'Seasonal Conditions'}`,
+      sub: isHot
+        ? 'May–Sep: extreme heat, NW headwinds up to 30 kt in northern Red Sea (Shamal). Reduced speed expected.'
+        : 'Prevailing NW winds in upper Red Sea typical year-round. Plan extra time northbound.'
+    });
+  }
+
+  // ── 8. Cape of Good Hope risk ─────────────────────────────────
+  if(routePassesThrough(-38,-32,15,25)){
+    cards.push({ type:'warn', icon:'🌊', delay:1000,
+      title:'Cape of Good Hope',
+      sub:'One of the world\'s roughest passages. Roaring Forties bring sustained swells 4–8m year-round. Timing critical.'
+    });
+  }
+
+  // ── 9. High latitude / ice risk ──────────────────────────────
+  if(maxLat > 60){
+    cards.push({ type:'warn', icon:'🧊', delay:1200,
+      title:`High Latitude Route (${maxLat.toFixed(0)}°N)`,
+      sub:'Route passes >60°N. Ice risk, reduced visibility, and severe weather possible. Check NOTAMs and ice charts.'
+    });
+  }
+
+  // ── 10. Trade wind belt (beneficial) ─────────────────────────
+  if(routePassesThrough(10,25,-60,-10) && [11,12,1,2,3,4].includes(month)){
+    cards.push({ type:'good', icon:'✅', delay:1200,
+      title:'Favourable Trade Winds',
+      sub:'Route crosses NE trade wind belt Nov–Apr. Expect consistent 15–20 kt following winds — beneficial for fuel and speed.'
+    });
+  }
+
+  // ── 11. Malacca Strait ───────────────────────────────────────
+  if(routePassesThrough(1,6,99,104)){
+    cards.push({ type:'info', icon:'🚢', delay:1400,
+      title:'Strait of Malacca',
+      sub:'High traffic, shallow draught restrictions, and mandatory reporting. TSS in effect. Plan extra bridge watch.'
+    });
+  }
+
+  // ── 12. Gulf of Mexico coastal exposure ──────────────────────
+  if(routePassesThrough(24,30,-97,-85)){
+    const isHurricane = [6,7,8,9,10].includes(month);
+    cards.push({ type: isHurricane?'danger':'info', icon: isHurricane?'🌀':'ℹ️', delay:200,
+      title: isHurricane ? 'Hurricane Season — Gulf of Mexico' : 'Gulf of Mexico Departure',
+      sub: isHurricane
+        ? 'Jun–Oct: active hurricane season. Monitor NOAA advisories. Route may require adjustment on short notice.'
+        : 'Coastal Gulf segment: expect short-period swell and shallow water effects on initial departure.'
+    });
+  }
+
+  // ── 13. Always: speed-loss model note ────────────────────────
+  cards.push({ type:'info', icon:'⚙️', delay:1600,
+    title:'Speed Loss Model Active',
+    sub:`Computing wave encounter angle, wind resistance, and current vector at each of ${wpCoords.length} waypoints. ETA will be adjusted.`
+  });
+
+  return cards.slice(0, 6); // max 6 cards to fit panel
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WEATHER ANALYSIS OVERLAY CONTROLLER
+   ═══════════════════════════════════════════════════════════════ */
+const WXA_STEPS = [
+  { label: 'Parsing route geometry',          sub: 'Extracting waypoints & headings' },
+  { label: 'Loading MapTiler wind tiles',     sub: 'Fitting viewport to full route extent' },
+  { label: 'Sampling wind speed at waypoints',sub: 'Sequential MapTiler GFS pickAt sampling' },
+  { label: 'Fetching wind direction',         sub: 'Open-Meteo ECMWF IFS 9km (16-day)' },
+  { label: 'Fetching wave height & direction',sub: 'Open-Meteo Marine / ECMWF WAM (7-day)' },
+  { label: 'Fetching ocean currents',         sub: 'Copernicus SMOC via Open-Meteo (7-day)' },
+  { label: 'Applying speed loss model',       sub: 'Wave × direction factor + wind + current vector' },
+  { label: 'Computing weather-adjusted ETA',  sub: 'Leg-by-leg propagation with delay accumulation' },
+  { label: 'Validating data completeness',    sub: 'Confirming wind coverage ≥50% of legs' },
+];
+
+const WXA_TIPS = [
+  '"Head seas reduce speed more than double the wave height alone — wave direction matters as much as wave height."',
+  '"The Gulf Stream can save 1-2 kt on North Atlantic crossings — or cost 1-2 kt if you cross it wrong."',
+  '"Beyond Beaufort 7 (28 kt winds), most vessels reduce speed voluntarily to protect cargo and crew."',
+  '"Ocean current data updates every 6 hours from Copernicus Marine Service — same source as navtex products."',
+  '"Weather-adjusted ETA compounds — a 30-minute delay per leg becomes 12+ hours over a 15-day voyage."',
+];
+
+function showWxAnalysisOverlay(){
+  const overlay = document.getElementById('wx-analysis-overlay');
+  overlay.classList.add('visible');
+
+  // Route label
+  const oName = oPort?.name || 'Origin';
+  const dName = dPort?.name || 'Destination';
+  const dist  = Math.round(routeData?.distance_nm || 0);
+  const speed = parseFloat(document.getElementById('speed').value) || 14;
+  const days  = (dist / speed / 24).toFixed(1);
+  document.getElementById('wxa-route-label').textContent =
+    `${oName} → ${dName}  ·  ${dist.toLocaleString()} nm  ·  ${days} days @ ${speed} kt`;
+
+  // Render step list
+  const stepsEl = document.getElementById('wxa-steps');
+  stepsEl.innerHTML = WXA_STEPS.map((s,i) => `
+    <div class="wxa-step" id="wxstep-${i}">
+      <div class="wxa-step-icon">○</div>
+      <div class="wxa-step-text">
+        <div class="wxa-step-label">${s.label}</div>
+        <div class="wxa-step-sub">${s.sub}</div>
+      </div>
+    </div>`).join('');
+
+  // Reset bar
+  document.getElementById('wxa-bar').style.width = '0%';
+  document.getElementById('wxa-pct').textContent = '0%';
+
+  // Tip rotation
+  const tipEl = document.getElementById('wxa-tip');
+  let tipIdx = 0;
+  tipEl.textContent = WXA_TIPS[0];
+  window._wxaTipTimer = setInterval(() => {
+    tipIdx = (tipIdx + 1) % WXA_TIPS.length;
+    tipEl.style.opacity = '0';
+    setTimeout(() => { tipEl.textContent = WXA_TIPS[tipIdx]; tipEl.style.opacity = '1'; }, 300);
+  }, 8000);
+  tipEl.style.transition = 'opacity .3s';
+
+  // Show heuristic intelligence cards with staggered delay
+  const intelEl = document.getElementById('wxa-intel');
+  intelEl.innerHTML = '';
+  const cards = computeVoyageHeuristics();
+  cards.forEach((card, i) => {
+    setTimeout(() => {
+      const el = document.createElement('div');
+      el.className = `wxa-intel-card ${card.type}`;
+      el.style.animationDelay = '0ms';
+      el.innerHTML = `
+        <div class="wxa-intel-icon">${card.icon}</div>
+        <div class="wxa-intel-body">
+          <div class="wxa-intel-title">${card.title}</div>
+          <div class="wxa-intel-sub">${card.sub}</div>
+        </div>`;
+      intelEl.appendChild(el);
+    }, card.delay);
+  });
+}
+
+function setWxaStep(idx){
+  WXA_STEPS.forEach((_,i) => {
+    const el = document.getElementById(`wxstep-${i}`);
+    if(!el) return;
+    const icon  = el.querySelector('.wxa-step-icon');
+    const label = el.querySelector('.wxa-step-label');
+    el.style.opacity = i > idx ? '0.4' : '1';
+    icon.textContent  = i < idx ? '✓' : i === idx ? '▶' : '○';
+    label.className   = 'wxa-step-label' + (i < idx ? ' done' : i === idx ? ' active' : '');
+  });
+  const pct = Math.round((idx / (WXA_STEPS.length - 1)) * 100);
+  document.getElementById('wxa-bar').style.width = pct + '%';
+  document.getElementById('wxa-pct').textContent = pct + '%';
+}
+
+function hideWxAnalysisOverlay(){
+  clearInterval(window._wxaTipTimer);
+  const overlay = document.getElementById('wx-analysis-overlay');
+  // Complete bar
+  document.getElementById('wxa-bar').style.width = '100%';
+  document.getElementById('wxa-pct').textContent = '100%';
+  setTimeout(() => overlay.classList.remove('visible'), 600);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOAD WEATHER & ANALYSE ROUTE
+   Main entry point for weather loading — user-triggered
+   ═══════════════════════════════════════════════════════════════ */
+async function loadWeatherAndAnalyse(){
+  if(!routeData){ notify('Calculate a route first','err'); return; }
+
+  // Update button state
+  const wxBtn = document.getElementById('load-wx-btn');
+  if(wxBtn){ wxBtn.disabled = true; wxBtn.textContent = '⏳ Analysing…'; }
+
+  showWxAnalysisOverlay();
+  setWxaStep(0);
+
+  try {
+    await fetchRouteWeather();
+    // Validate: at least 50% of first 40 legs should have wind data
+    const wxR = window._wxResults || [];
+    const covered = wxR.slice(0,40).filter(r => r.windKn != null).length;
+    const total   = Math.min(40, wxR.length);
+    const coverage = total > 0 ? covered/total : 0;
+
+    hideWxAnalysisOverlay();
+
+    if(coverage < 0.3){
+      notify('Wind data coverage low ('+Math.round(coverage*100)+'%). Try again or check connection.','err');
+      if(wxBtn){ wxBtn.disabled = false; wxBtn.textContent = '🌊 Retry Weather Analysis'; }
+    } else {
+      // Enable export
+      const exportBtn = document.getElementById('export-btn');
+      if(exportBtn){ exportBtn.disabled = false; exportBtn.title = ''; }
+      if(wxBtn){
+        wxBtn.textContent = '✅ Weather Loaded — Reload?';
+        wxBtn.disabled = false;
+        wxBtn.style.background = 'linear-gradient(135deg,#16a34a,#15803d)';
+      }
+      document.getElementById('wx-status-hint').textContent =
+        `Wind data: ${Math.round(coverage*100)}% coverage · Wave & current loaded`;
+      notify('Weather analysis complete — Export Voyage Report is now available ✓','ok');
+    }
+  } catch(e){
+    hideWxAnalysisOverlay();
+    notify('Weather analysis failed: '+e.message,'err');
+    if(wxBtn){ wxBtn.disabled = false; wxBtn.textContent = '🌊 Retry Weather Analysis'; }
   }
 }
 
@@ -1916,7 +2304,7 @@ async function fetchWindSpeedFromLayer(legs){
   } catch(_){}
 
   // Wait for first tick = tiles loaded and data streaming
-  setProgressStep(0, 'Waiting for wind tiles to load across full route…');
+  setWxaStep(1);
   await new Promise(res => {
     let done = false;
     const onTick = () => { if(!done){ done=true; windLayer?.off('tick',onTick); res(); } };
@@ -1924,8 +2312,7 @@ async function fetchWindSpeedFromLayer(legs){
     setTimeout(() => { if(!done){ done=true; windLayer?.off('tick',onTick); res(); } }, 15000);
   });
   await new Promise(r => setTimeout(r, 600)); // extra grace for full-route tiles
-
-  const startSec = windLayer.getAnimationStart?.() ?? null;
+  setWxaStep(2);
   const endSec   = windLayer.getAnimationEnd?.()   ?? null;
   if(!startSec || !endSec){
     if(!wasActive) removeWindLayer();
@@ -1935,7 +2322,7 @@ async function fetchWindSpeedFromLayer(legs){
   const origSec = windLayer.getAnimationTime?.() ?? startSec;
   windLayer.animateByFactor(0);
 
-  setProgressStep(0, `Sampling wind speed at ${legs.length} waypoints…`);
+  setWxaStep(2);
   for(let idx = 0; idx < legs.length; idx++){
     const { lat, lon, date } = legs[idx];
     const nlon = normLon(lon);
@@ -2137,12 +2524,6 @@ async function fetchRouteWeather(){
   if(wpCoords.length < 2) return;
   document.getElementById('wx-route-rows').innerHTML = '';
 
-  // Disable export button — will re-enable when data is fully loaded
-  const exportBtn = document.getElementById('export-btn');
-  const wxHint    = document.getElementById('wx-loading-hint');
-  if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Weather data loading…'; }
-  if(wxHint){ wxHint.style.display = 'block'; }
-
   const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
   const depStr = document.getElementById('dep-time').value;
   const dep    = depStr ? new Date(depStr) : new Date();
@@ -2163,22 +2544,18 @@ async function fetchRouteWeather(){
   }
 
   // ── Step A: Wind SPEED from MapTiler WindLayer (pickAt) ──────────────────────
-  // MapTiler GFS is the most accurate wind speed source — same data as the map layer.
-  // We only use pickAt for speed; direction comes from Open-Meteo (more reliable).
-  setProgressStep(0, 'Loading MapTiler wind layer across full route…');
+  setWxaStep(1);
   const windSpeedResults = await fetchWindSpeedFromLayer(
     legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))
   );
 
   // ── Step B: Wind DIRECTION + fallback speed from Open-Meteo ──────────────────
-  // Open-Meteo ECMWF IFS gives reliable wind direction for all points.
-  // If MapTiler speed failed for a leg, Open-Meteo speed is used as fallback.
-  setProgressStep(1, 'Fetching wind direction & marine data…');
+  setWxaStep(3);
   const [windDirResults, marineResults] = await Promise.all([
     fetchOpenMeteoWindDirBatch(legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))),
-    Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr)))
+    (setWxaStep(4), Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr))))
   ]);
-  setProgressStep(2, 'Computing weather-adjusted ETA…');
+  setWxaStep(6);
 
   // ── Merge: prefer MapTiler speed, Open-Meteo direction ───────────────────────
   let adjustedTimeAccH = 0;
@@ -2231,6 +2608,7 @@ async function fetchRouteWeather(){
   });
 
   window._wxResults   = results;
+  setWxaStep(7);
 
   // Compute delay
   const orderedTotalH  = legs.reduce((s,l) => s + l.distNm / orderedKn, 0);
@@ -2238,6 +2616,7 @@ async function fetchRouteWeather(){
   const totalDelayH    = Math.max(0, adjustedTotalH - orderedTotalH);
   window._wxDelayH     = totalDelayH;
   window._wxAdjTotalH  = adjustedTotalH;
+  setWxaStep(8);
 
   // Update sidebar max cards
   const maxWind = results.reduce((m,r) => r.windKn!=null ? Math.max(m, parseFloat(r.windKn)) : m, 0);
@@ -2268,11 +2647,6 @@ async function fetchRouteWeather(){
     })
   };
   redrawRouteGeoJSON();
-
-  // ✅ Enable export button — data is ready
-  if(exportBtn){ exportBtn.disabled = false; exportBtn.title = ''; }
-  if(wxHint){ wxHint.style.display = 'none'; }
-  setProgressStep(3, 'Weather data ready — you can now export the report.');
 }
 
 // Keep backward-compat alias
@@ -2292,13 +2666,18 @@ function clearAll(){
   document.getElementById('metrics-section').style.display='none';
   document.getElementById('max-stat-section').style.display='none';
   document.getElementById('wx-delay-section').style.display='none';
+  document.getElementById('wx-analysis-overlay').classList.remove('visible');
   window._wxResults = null;
   window._wxDelayH  = null;
-  // Reset export button — needs weather data before enabling
   const exportBtn = document.getElementById('export-btn');
   if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Calculate a route first'; }
-  const wxHint = document.getElementById('wx-loading-hint');
-  if(wxHint){ wxHint.style.display = 'none'; }
+  const wxBtn = document.getElementById('load-wx-btn');
+  if(wxBtn){
+    wxBtn.disabled = false;
+    wxBtn.textContent = '🌊 Load Weather & Analyse Route';
+    wxBtn.style.background = '';
+  }
+  document.getElementById('wx-status-hint').textContent = 'Fetches wind, wave & current data along the full route';
   document.getElementById('wx-route-section').style.display='none';
   document.getElementById('o-port-input').value='';
   document.getElementById('d-port-input').value='';
