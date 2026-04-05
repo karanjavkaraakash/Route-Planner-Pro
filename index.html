@@ -2857,6 +2857,11 @@ function buildHeavyWeatherRiskBlock(wxResults, orderedKn){
         <span class="risk-block-badge risk-badge-ok">NO SIGNIFICANT HAZARDS</span>
       </div>
       <div class="risk-ok-msg">✅ No moderate or heavy weather windows detected along this route within the forecast period.</div>
+      <div class="risk-legend">
+        <span class="rl-item"><span class="rl-dot" style="background:#ef4444"></span><strong>Heavy:</strong> wave ≥3m · wind ≥25kt · speed ≤70% ordered</span>
+        <span class="rl-item"><span class="rl-dot" style="background:#f59e0b"></span><strong>Moderate:</strong> wave ≥2m · wind ≥18kt · speed ≤85% ordered</span>
+        <span class="rl-item"><span class="rl-dot" style="background:#22c55e"></span><strong>Mild:</strong> wave ≥1.5m · wind ≥12kt · speed ≤95% ordered</span>
+      </div>
     </div>`;
   }
 
@@ -2894,6 +2899,11 @@ function buildHeavyWeatherRiskBlock(wxResults, orderedKn){
       <span style="margin-left:auto;font-size:10px;color:#64748b">${enriched.length} weather window${enriched.length>1?'s':''} detected · Total delay contribution: +${totalWxDelay.toFixed(1)}h</span>
     </div>
     <div class="risk-windows">${windowsHtml}</div>
+    <div class="risk-legend">
+      <span class="rl-item"><span class="rl-dot" style="background:#ef4444"></span><strong>Heavy:</strong> wave ≥3m · wind ≥25kt · speed ≤70% ordered</span>
+      <span class="rl-item"><span class="rl-dot" style="background:#f59e0b"></span><strong>Moderate:</strong> wave ≥2m · wind ≥18kt · speed ≤85% ordered</span>
+      <span class="rl-item"><span class="rl-dot" style="background:#22c55e"></span><strong>Mild:</strong> wave ≥1.5m · wind ≥12kt · speed ≤95% ordered</span>
+    </div>
   </div>`;
 }
 
@@ -2980,6 +2990,14 @@ async function generateVoyageReport(){
 
   const wxRows5d = wxFiltered.map(r => {
     const wc = r.windKn!=null ? windColor(parseFloat(r.windKn)) : '#888';
+    // Wave cell colour: ≥1.5m yellow, ≥2m orange, ≥3m red (matching risk block thresholds)
+    const waveVal = r.waveM != null ? parseFloat(r.waveM) : 0;
+    const wvc = waveVal <= 0 ? '#888'
+              : waveVal < 1.5 ? '#16a34a'   // green  — below mild threshold
+              : waveVal < 2.0 ? '#d97706'   // amber  — mild
+              : waveVal < 3.0 ? '#ea580c'   // orange — moderate
+              : '#dc2626';                   // red    — heavy
+    const wvBold = waveVal >= 1.5 ? 'font-weight:700' : '';
     // Speed ratio drives row background
     const speedRatio = r.effectiveKn / orderedKn;
     const rowBg = speedRatio > 0.95 ? '' : speedRatio > 0.85 ? 'background:#fffbeb' : speedRatio > 0.70 ? 'background:#fff7ed' : 'background:#fef2f2';
@@ -2990,7 +3008,7 @@ async function generateVoyageReport(){
       <td>${fmtCoord(r.midLat, r.midLon)}</td>
       <td style="color:${wc};font-weight:600">${r.windKn!=null ? r.windKn+' kt' : '—'}</td>
       <td>${r.windDir!=null ? degToCompass(r.windDir) : '—'}</td>
-      <td>${r.waveM!=null ? r.waveM+' m' : '—'}</td>
+      <td style="color:${wvc};${wvBold}">${r.waveM!=null ? r.waveM+' m' : '—'}</td>
       <td>${r.waveDir!=null ? degToCompass(r.waveDir) : '—'}</td>
       <td>${r.currentKn!=null ? r.currentKn+' kt' : '—'}</td>
       <td style="color:${effColor};font-weight:700">${r.effectiveKn!=null ? r.effectiveKn.toFixed(1)+' kt' : orderedKn+' kt'}</td>
@@ -3072,6 +3090,9 @@ async function generateVoyageReport(){
   .risk-stat-v{font-size:13px;font-weight:800;color:#0f172a}
   .risk-stat-k{font-size:8px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
   .risk-ok-msg{padding:12px 14px;font-size:11px;color:#15803d;font-weight:600;display:flex;align-items:center;gap:8px}
+  .risk-legend{display:flex;gap:18px;padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;flex-wrap:wrap}
+  .rl-item{font-size:9px;color:#475569;display:flex;align-items:center;gap:5px}
+  .rl-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .footer{margin-top:20px;font-size:9px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px;text-align:center}
   @page { size: A4 landscape; margin: 15mm 18mm; }
   @media print{
@@ -3150,8 +3171,10 @@ async function generateVoyageReport(){
   <div class="section-head">Forecast Weather Along Route</div>
   <p class="sub">
     Wind: MapTiler GFS (5-day) · Wave/Current: Open-Meteo Marine / Copernicus SMOC (7-day) ·
-    Eff. Speed = ordered speed adjusted for waves + wind + current (row colour: <span style="color:#16a34a">■</span>normal <span style="color:#d97706">■</span>mild loss <span style="color:#ea580c">■</span>moderate <span style="color:#dc2626">■</span>heavy) ·
-    Directions: compass from (wave/wind) or to (current) · "—" = beyond forecast range
+    Eff. Speed = ordered speed adjusted for waves + wind + current ·
+    Row colour: <span style="color:#16a34a">■</span>normal <span style="color:#d97706">■</span>mild loss <span style="color:#ea580c">■</span>moderate <span style="color:#dc2626">■</span>heavy ·
+    Wave Ht colour: <span style="color:#d97706">■</span>≥1.5m <span style="color:#ea580c">■</span>≥2m <span style="color:#dc2626">■</span>≥3m ·
+    Directions: from (wave/wind) · to (current) · "—" = beyond forecast range
   </p>
   <table>
     <thead>
