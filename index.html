@@ -240,6 +240,18 @@ body.adding-wp #map { cursor: cell; }
 .maplibregl-ctrl-compass,
 .maplibregl-ctrl-geolocate { display: none !important; }
 
+/* Push waypoint tool */
+body.push-wp-active #map { cursor: crosshair !important; }
+body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
+#push-circle-svg { transition: opacity .1s; }
+#push-circle { transition: r .15s ease; }
+.wp-marker-pushed {
+  background: #f97316 !important;
+  box-shadow: 0 0 8px 3px rgba(249,115,22,.7) !important;
+  transform: scale(1.4);
+  transition: transform .1s, box-shadow .1s;
+}
+
 /* ═══════════ IMPORT/EXPORT ROW ═══════════ */
 .ie-row { display: flex; flex-wrap: wrap; gap: 5px; }
 
@@ -525,6 +537,26 @@ body.adding-wp #map { cursor: cell; }
           <span class="toggle-label">🚫 Add Waypoint Mode</span>
           <label class="toggle"><input type="checkbox" id="add-wp-chk" onchange="setAddWpMode(this.checked)"/><span class="toggle-slider"></span></label>
         </div>
+        <div class="toggle-row" style="margin-top:6px">
+          <span class="toggle-label">↔ Push Waypoints</span>
+          <label class="toggle"><input type="checkbox" id="push-wp-chk" onchange="setPushWpMode(this.checked)"/><span class="toggle-slider"></span></label>
+        </div>
+        <!-- Push radius slider — shown only when push mode active -->
+        <div id="push-radius-row" style="display:none;margin-top:8px">
+          <label style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+            Push Radius: <span id="push-radius-label">200</span> nm
+          </label>
+          <input type="range" id="push-radius-slider" min="50" max="800" step="25" value="200"
+            oninput="document.getElementById('push-radius-label').textContent=this.value"
+            style="width:100%;margin-top:4px;accent-color:var(--accent2)"/>
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:2px">
+            <span>50 nm</span><span>gentle ← → strong</span><span>800 nm</span>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.5">
+            Click &amp; drag on map to push waypoints outward.<br>
+            <span id="push-undo-hint" style="display:none;color:var(--accent2)">↩ Ctrl+Z to undo last push</span>
+          </div>
+        </div>
       </div>
 
       <!-- MAP LAYERS -->
@@ -670,7 +702,18 @@ body.adding-wp #map { cursor: cell; }
       </div>
     </div>
 
-    <!-- NOTIFICATION AREA -->
+    <!-- PUSH TOOL CIRCLE OVERLAY -->
+  <svg id="push-circle-svg" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:500">
+    <circle id="push-circle" cx="0" cy="0" r="100"
+      fill="rgba(249,115,22,.08)" stroke="#f97316" stroke-width="2"
+      stroke-dasharray="6 4" opacity="0.9"/>
+    <circle id="push-circle-center" cx="0" cy="0" r="4"
+      fill="#f97316" opacity="0.9"/>
+    <!-- Arrows indicating push direction -->
+    <g id="push-arrows" opacity="0.7"></g>
+  </svg>
+
+  <!-- NOTIFICATION AREA -->
     <div id="notif-area"></div>
 
     <!-- SIM BAR -->
@@ -1132,6 +1175,7 @@ function initMap(){
     map.on('mouseleave', ()=>{ document.getElementById('wind-hover-tile').classList.remove('visible'); });
     checkCmemsStatus();
     setNowDeparture();
+    _initPushTool();
   });
 }
 
@@ -1939,6 +1983,236 @@ function getAvoidList(){
 function setAddWpMode(val){
   addWpMode=val;
   document.body.classList.toggle('adding-wp', val);
+  // Deactivate push mode if add mode is turned on
+  if(val) setPushWpMode(false);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PUSH WAYPOINTS TOOL
+   Click-and-drag repulsion: hold at push centre, drag outward.
+   Strength scales with drag distance from centre.
+   ═══════════════════════════════════════════════════════════════ */
+let pushWpMode      = false;
+let _pushActive     = false;   // true while mouse is held down
+let _pushOriginGeo  = null;    // {lng,lat} — geographic push centre
+let _pushOriginPx   = null;    // {x,y} — pixel push centre (for SVG)
+let _pushUndoStack  = [];      // single-level undo: snapshot of wpCoords
+
+// Degrees-latitude per nautical mile (constant) and
+// degrees-longitude per nm (varies with latitude)
+function _nmToDeglat(nm){ return nm / 60; }
+function _nmToDeglon(nm, lat){ return nm / (60 * Math.cos(lat * Math.PI / 180)); }
+
+// Great-circle distance in nm between two lon/lat points (flat approximation for small distances)
+function _distNm(lon1,lat1,lon2,lat2){
+  const dlat = (lat2-lat1)*Math.PI/180;
+  const dlon = (lon2-lon1)*Math.PI/180;
+  const mlat = (lat1+lat2)/2 * Math.PI/180;
+  return Math.sqrt(dlat*dlat + (dlon*Math.cos(mlat))*(dlon*Math.cos(mlat))) * (180/Math.PI) * 60;
+}
+
+function setPushWpMode(val){
+  pushWpMode = val;
+  document.body.classList.toggle('push-wp-active', val);
+  document.getElementById('push-wp-chk').checked = val;
+  document.getElementById('push-radius-row').style.display = val ? 'block' : 'none';
+
+  if(!val){
+    _pushActive = false;
+    document.getElementById('push-circle-svg').style.display = 'none';
+    // Remove glow from all markers
+    document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
+  }
+  // Deactivate add-wp mode if push mode is turned on
+  if(val){
+    setAddWpMode(false);
+    document.getElementById('add-wp-chk').checked = false;
+  }
+}
+
+function _getPushRadiusNm(){
+  return parseFloat(document.getElementById('push-radius-slider').value) || 200;
+}
+
+function _savePushUndo(){
+  _pushUndoStack = [wpCoords.map(c => [c[0], c[1]])];
+  document.getElementById('push-undo-hint').style.display = 'inline';
+}
+
+function undoPush(){
+  if(!_pushUndoStack.length){ notify('Nothing to undo','err'); return; }
+  wpCoords.length = 0;
+  _pushUndoStack[0].forEach(c => wpCoords.push(c));
+  _pushUndoStack = [];
+  document.getElementById('push-undo-hint').style.display = 'none';
+  rebuildWaypointMarkers();
+  redrawRouteGeoJSON();
+  recalcMetrics();
+  notify('Push undone','ok');
+}
+
+// ── Map event handlers for push tool ─────────────────────────────────────────
+
+function _onPushMouseDown(e){
+  if(!pushWpMode || wpCoords.length < 2) return;
+  e.preventDefault();
+
+  _savePushUndo();
+  const rect   = document.getElementById('map').getBoundingClientRect();
+  const px     = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const geo    = map.unproject([px.x, px.y]);
+
+  _pushActive    = true;
+  _pushOriginGeo = { lng: geo.lng, lat: geo.lat };
+  _pushOriginPx  = { x: px.x, y: px.y };
+
+  // Show circle
+  _updatePushCircleSvg(px.x, px.y, _getPushRadiusNm(), px.x, px.y);
+}
+
+function _onPushMouseMove(e){
+  const rect = document.getElementById('map').getBoundingClientRect();
+  const px   = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const geo  = map.unproject([px.x, px.y]);
+
+  // Always show the circle at current cursor position (radius = configured nm)
+  const radiusNm = _getPushRadiusNm();
+  const svg = document.getElementById('push-circle-svg');
+  if(pushWpMode){
+    svg.style.display = 'block';
+    _updatePushCircleSvg(
+      _pushActive ? _pushOriginPx.x : px.x,
+      _pushActive ? _pushOriginPx.y : px.y,
+      radiusNm,
+      px.x, px.y
+    );
+  }
+
+  if(!_pushActive) return;
+
+  // ── Core repulsion algorithm ─────────────────────────────────────────────
+  // Push strength = drag distance from origin (nm), capped at 2× radius for stability
+  const dragNm   = Math.min(_distNm(_pushOriginGeo.lng, _pushOriginGeo.lat, geo.lng, geo.lat), radiusNm * 2);
+  const strength = dragNm / radiusNm; // 0..2, normalised
+
+  let anyMoved = false;
+  for(let i = 0; i < wpCoords.length; i++){
+    const [wlon, wlat] = wpCoords[i];
+    const d = _distNm(_pushOriginGeo.lng, _pushOriginGeo.lat, wlon, wlat);
+    if(d >= radiusNm || d < 0.1) continue; // outside radius or coincident
+
+    // Direction vector from push centre → waypoint (in geographic degrees)
+    const dlat = wlat - _pushOriginGeo.lat;
+    const dlon = wlon - _pushOriginGeo.lng;
+    const mag  = Math.sqrt(dlat*dlat + dlon*dlon) || 1e-9;
+    const dirLat = dlat / mag;
+    const dirLon = dlon / mag;
+
+    // Repulsion magnitude: strongest at centre, zero at radius edge
+    const repulsion = ((radiusNm - d) / radiusNm) * strength;
+    const dispLat   = dirLat * _nmToDeglat(repulsion * radiusNm * 0.4);
+    const dispLon   = dirLon * _nmToDeglon(repulsion * radiusNm * 0.4, wlat);
+
+    // Keep endpoints fixed (i=0 and last) unless they are intermediate WPs
+    if(i === 0 || i === wpCoords.length - 1) continue;
+
+    wpCoords[i] = [wlon + dispLon, wlat + dispLat];
+    anyMoved = true;
+  }
+
+  if(anyMoved){
+    // Highlight affected markers
+    document.querySelectorAll('.wp-marker').forEach((el, j) => {
+      const idx = wpMarkers[j]?.idx;
+      if(idx == null) return;
+      const [wlon, wlat] = wpCoords[idx];
+      const d = _distNm(_pushOriginGeo.lng, _pushOriginGeo.lat, wlon, wlat);
+      el.classList.toggle('wp-marker-pushed', d < radiusNm);
+    });
+    rebuildWaypointMarkers();
+    redrawRouteGeoJSON();
+  }
+}
+
+function _onPushMouseUp(){
+  if(!_pushActive) return;
+  _pushActive    = false;
+  _pushOriginGeo = null;
+  _pushOriginPx  = null;
+  // Remove glow
+  document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
+  recalcMetrics();
+}
+
+// ── SVG push circle renderer ──────────────────────────────────────────────────
+function _updatePushCircleSvg(cx, cy, radiusNm, cursorX, cursorY){
+  // Convert radiusNm to pixels using current map zoom
+  // Use map.project to find pixel radius: project centre point and a point radiusNm due east
+  const centreLl = map.unproject([cx, cy]);
+  const eastLon  = centreLl.lng + _nmToDeglon(radiusNm, centreLl.lat);
+  const eastPx   = map.project([eastLon, centreLl.lat]);
+  const radiusPx = Math.abs(eastPx.x - cx);
+
+  const circle  = document.getElementById('push-circle');
+  const dot     = document.getElementById('push-circle-center');
+  circle.setAttribute('cx', cx);  circle.setAttribute('cy', cy);
+  circle.setAttribute('r',  Math.max(10, radiusPx));
+  dot.setAttribute('cx', cx);     dot.setAttribute('cy', cy);
+
+  // Draw outward arrows at 8 cardinal points if actively pushing
+  const arrowsG = document.getElementById('push-arrows');
+  if(_pushActive){
+    const r = Math.max(10, radiusPx);
+    const arrowLen = Math.min(18, r * 0.2);
+    const pts = [0,45,90,135,180,225,270,315];
+    arrowsG.innerHTML = pts.map(deg => {
+      const rad = deg * Math.PI / 180;
+      const x1 = cx + Math.cos(rad) * r * 0.55;
+      const y1 = cy + Math.sin(rad) * r * 0.55;
+      const x2 = cx + Math.cos(rad) * (r * 0.55 + arrowLen);
+      const y2 = cy + Math.sin(rad) * (r * 0.55 + arrowLen);
+      return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}"
+                    x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+                    stroke="#f97316" stroke-width="1.5" marker-end="url(#push-arrow-head)"/>`;
+    }).join('');
+    // Ensure arrowhead marker is defined
+    let defs = document.getElementById('push-svg-defs');
+    if(!defs){
+      const svg = document.getElementById('push-circle-svg');
+      defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+      defs.id = 'push-svg-defs';
+      defs.innerHTML = `<marker id="push-arrow-head" markerWidth="6" markerHeight="6"
+        refX="3" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L6,3 z" fill="#f97316"/>
+      </marker>`;
+      svg.prepend(defs);
+    }
+  } else {
+    arrowsG.innerHTML = '';
+  }
+}
+
+// ── Attach push tool event listeners after map loads ─────────────────────────
+function _initPushTool(){
+  const mapEl = document.getElementById('map');
+
+  mapEl.addEventListener('mousedown', e => { if(pushWpMode) _onPushMouseDown(e); });
+  mapEl.addEventListener('mousemove', e => { if(pushWpMode) _onPushMouseMove(e); });
+  mapEl.addEventListener('mouseup',   e => { if(pushWpMode) _onPushMouseUp(e); });
+  mapEl.addEventListener('mouseleave',e => {
+    if(pushWpMode){
+      _onPushMouseUp(e);
+      document.getElementById('push-circle-svg').style.display = 'none';
+    }
+  });
+
+  // Ctrl+Z undo
+  document.addEventListener('keydown', e => {
+    if((e.ctrlKey || e.metaKey) && e.key === 'z' && pushWpMode && _pushUndoStack.length){
+      e.preventDefault();
+      undoPush();
+    }
+  });
 }
 
 function insertWaypoint(lon, lat){
@@ -2911,6 +3185,10 @@ function clearAll(){
   // Reset all passage chips (avoid + force-via)
   activeVia.clear();
   document.querySelectorAll('#passage-chips .pchip, #via-chips .pchip').forEach(c => c.classList.remove('on'));
+  // Reset push tool
+  if(pushWpMode) setPushWpMode(false);
+  _pushUndoStack = [];
+  document.getElementById('push-undo-hint').style.display = 'none';
   document.getElementById('wx-route-section').style.display='none';
   document.getElementById('o-port-input').value='';
   document.getElementById('d-port-input').value='';
