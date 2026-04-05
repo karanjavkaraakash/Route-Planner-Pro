@@ -1960,15 +1960,19 @@ async function fetchOpenMeteoWindBatch(legs){
     if(targetSec < startSec - 3600 || targetSec > endSec + 3600) continue;
 
     windLayer.setAnimationTime(targetSec);
-    // 60ms grace — WindLayer updates its particle/data field after seek
-    await new Promise(r => setTimeout(r, 60));
+    // 150ms grace — WindLayer needs more time to update the full vector field
+    // (speed scalar updates faster than direction vector after a seek)
+    await new Promise(r => setTimeout(r, 150));
 
     try {
       const val = windLayer.pickAt(nlon, lat);
       if(val?.speedMetersPerSecond != null){
+        // directionDegrees = direction wind blows TOWARD (0°=N, 90°=E)
+        // Try both property names — SDK versions differ
+        const rawDir = val.directionDegrees ?? val.direction ?? null;
         results[idx] = {
           windKn:  (val.speedMetersPerSecond * 1.94384).toFixed(1),
-          windDir: val.directionDegrees != null ? Math.round(val.directionDegrees) : null
+          windDir: rawDir != null ? Math.round(rawDir) : null
         };
       }
     } catch(_){}
@@ -2168,13 +2172,18 @@ async function fetchRouteWeather(){
     legs.push({ i, midLon, midLat, tArr, distNm, bearing });
   }
 
-  // Parallel fetch: wind + marine (wave+current+directions)
-  // Wind batch updates progress steps 0→1 internally
-  // Marine runs in parallel — we update step 2 after both complete
-  const [windResults, marineResults] = await Promise.all([
-    fetchOpenMeteoWindBatch(legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))),
-    Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr)))
-  ]);
+  // ── Sequential: wind first (requires WindLayer seeking), then marine in parallel ──
+  // Running wind and marine in parallel caused a race where marine resolved first
+  // and the PDF builder used stale _wxResults. Wind must complete fully before marine.
+  const windResults = await fetchOpenMeteoWindBatch(
+    legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))
+  );
+
+  // Marine fetch can now run — pure HTTP, no map interaction
+  setProgressStep(2, 'Fetching wave & current data (Open-Meteo Marine)…');
+  const marineResults = await Promise.all(
+    legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr))
+  );
   setProgressStep(2, 'Wave & current data received — computing speed model…');
 
   // ── Build results WITH weather speed adjustment ───────────────
