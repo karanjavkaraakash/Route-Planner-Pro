@@ -697,6 +697,20 @@ body.adding-wp #map { cursor: cell; }
     <div class="form-row"><label>Vessel Name</label><input type="text" id="pdf-vessel" placeholder="MV Example"/></div>
     <div class="form-row"><label>Voyage Number</label><input type="text" id="pdf-voyage" placeholder="VOY-2024-001"/></div>
     <div class="form-row"><label>Prepared By</label><input type="text" id="pdf-prepby" placeholder="Name / Company"/></div>
+    <!-- Port name override — shown only when coordinates (not named ports) are used -->
+    <div id="pdf-port-override" style="display:none">
+      <div style="margin:10px 0 6px;padding:8px 10px;background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.2);border-radius:6px;font-size:11px;color:var(--muted)">
+        📍 Coordinate route detected — optionally name your ports for the report
+      </div>
+      <div class="form-row">
+        <label>Departure Port <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <input type="text" id="pdf-origin-name" placeholder="Leave blank to use coordinates"/>
+      </div>
+      <div class="form-row">
+        <label>Arrival Port <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <input type="text" id="pdf-dest-name" placeholder="Leave blank to use coordinates"/>
+      </div>
+    </div>
     <div class="btn-group" style="margin-top:14px">
       <button class="btn btn-primary" onclick="generateVoyageReport()">Generate PDF</button>
       <button class="btn btn-secondary" onclick="closeModal('export-modal')">Cancel</button>
@@ -2982,6 +2996,43 @@ function stopSimulation(){
    ═══════════════════════════════════════════════════════════════ */
 function openExportModal(){
   if(!routeData){ notify('Calculate a route first','err'); return; }
+
+  // Determine if either endpoint is using coordinates (not a named port)
+  const oIsCoord = oMode === 'coord' || !oPort;
+  const dIsCoord = dMode === 'coord' || !dPort;
+  const showOverride = oIsCoord || dIsCoord;
+
+  const overrideEl = document.getElementById('pdf-port-override');
+  overrideEl.style.display = showOverride ? 'block' : 'none';
+
+  if(showOverride){
+    // Pre-fill placeholders with coordinate strings as hints
+    const oCoords = getOriginCoords();
+    const dCoords = getDestCoords();
+    const originEl = document.getElementById('pdf-origin-name');
+    const destEl   = document.getElementById('pdf-dest-name');
+
+    // Only pre-fill placeholder (not value) — user types the name themselves
+    if(oIsCoord && oCoords){
+      originEl.placeholder = fmtCoord(oCoords.la, oCoords.lo) + ' (leave blank to use this)';
+    } else {
+      originEl.placeholder = oPort?.name || 'Leave blank';
+      originEl.style.display = 'none'; // named port — hide this field
+      originEl.closest('.form-row').style.display = 'none';
+    }
+    if(dIsCoord && dCoords){
+      destEl.placeholder = fmtCoord(dCoords.la, dCoords.lo) + ' (leave blank to use this)';
+    } else {
+      destEl.placeholder = dPort?.name || 'Leave blank';
+      destEl.closest('.form-row').style.display = 'none';
+    }
+
+    // Reset hidden state for rows each time modal opens
+    document.querySelectorAll('#pdf-port-override .form-row').forEach(r => r.style.display = '');
+    if(!oIsCoord) originEl.closest('.form-row').style.display = 'none';
+    if(!dIsCoord) destEl.closest('.form-row').style.display = 'none';
+  }
+
   document.getElementById('export-modal').classList.add('open');
 }
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
@@ -3164,8 +3215,17 @@ async function generateVoyageReport(){
   const transitH = dist / speed;
   const eta      = new Date(dep.getTime() + transitH * 3600 * 1000);
 
-  const originName = oPort?.name || (getOriginCoords() ? fmtCoord(getOriginCoords().la, getOriginCoords().lo) : 'Origin');
-  const destName   = dPort?.name || (getDestCoords()   ? fmtCoord(getDestCoords().la,   getDestCoords().lo)   : 'Destination');
+  // Resolve port names: named port > manual override > coordinate string
+  const oOverride = document.getElementById('pdf-origin-name')?.value.trim();
+  const dOverride = document.getElementById('pdf-dest-name')?.value.trim();
+  const oCoords   = getOriginCoords();
+  const dCoords   = getDestCoords();
+  const originName = oPort?.name
+    || oOverride
+    || (oCoords ? fmtCoord(oCoords.la, oCoords.lo) : 'Origin');
+  const destName   = dPort?.name
+    || dOverride
+    || (dCoords ? fmtCoord(dCoords.la, dCoords.lo) : 'Destination');
 
   closeModal('export-modal');
 
