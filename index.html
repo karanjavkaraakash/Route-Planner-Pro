@@ -236,6 +236,9 @@ body.adding-wp #map { cursor: cell; }
 }
 .maplibregl-popup-tip { border-top-color: var(--surface) !important; }
 .maplibregl-ctrl-bottom-left, .maplibregl-ctrl-bottom-right { font-size: 10px; }
+/* Hide compass (reset north) and geolocate — not required for voyage planning */
+.maplibregl-ctrl-compass,
+.maplibregl-ctrl-geolocate { display: none !important; }
 
 /* ═══════════ IMPORT/EXPORT ROW ═══════════ */
 .ie-row { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -372,16 +375,12 @@ body.adding-wp #map { cursor: cell; }
 .wind-hover-val { font-weight: 700; color: var(--accent2); font-size: 14px; }
 
 /* ═══════════ LAYER LEGEND PANEL ═══════════ */
-#layer-legend {
+/* ═══════════ CHECKBOX ═══════════ */
   position: absolute; right: 12px; bottom: 90px; z-index: 600;
   background: rgba(11,15,26,.92); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 14px; font-size: 11px; display: none; min-width: 180px;
   backdrop-filter: blur(6px);
 }
-#layer-legend.visible { display: block; }
-#layer-legend-title { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
-.legend-gradient { height: 10px; border-radius: 3px; margin: 4px 0; }
-.legend-scale { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); }
 
 /* ═══════════ MAX STATS CARDS ═══════════ */
 .max-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
@@ -639,7 +638,6 @@ body.adding-wp #map { cursor: cell; }
       <button class="tool-btn" id="tb-wave"    title="Wave (Copernicus)"  onclick="toggleWx('wave')">🌊</button>
       <button class="tool-btn" id="tb-current" title="Current (Copernicus)" onclick="toggleWx('current')">🌀</button>
       <button class="tool-btn" id="tb-legend"  title="ECA Legend"   onclick="toggleEcaLegend()">◉</button>
-      <button class="tool-btn" id="tb-wxlegend" title="Layer Legend" onclick="toggleLayerLegend()">🎨</button>
     </div>
 
     <!-- ECA LEGEND -->
@@ -670,12 +668,6 @@ body.adding-wp #map { cursor: cell; }
           <div class="wind-hover-val" id="wh-dir">—</div>
         </div>
       </div>
-    </div>
-
-    <!-- LAYER LEGEND PANEL -->
-    <div id="layer-legend">
-      <div id="layer-legend-title">LEGEND</div>
-      <div id="layer-legend-body"></div>
     </div>
 
     <!-- NOTIFICATION AREA -->
@@ -1496,8 +1488,7 @@ function toggleWx(mode){
     precacheCmemsTiles(wxMode);
     showCacheProgress(wxMode);
   }
-  // Refresh layer legend if visible
-  if(document.getElementById('layer-legend').classList.contains('visible')) updateLayerLegend();
+  // (layer legend removed)
 }
 
 function buildWindTimeSteps(){
@@ -1688,46 +1679,6 @@ function toggleEcaLegend(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   LAYER LEGEND (wind / wave / current colour scale)
-   ═══════════════════════════════════════════════════════════════ */
-function toggleLayerLegend(){
-  const el = document.getElementById('layer-legend');
-  el.classList.toggle('visible');
-  if(el.classList.contains('visible')) updateLayerLegend();
-}
-function updateLayerLegend(){
-  const body = document.getElementById('layer-legend-body');
-  const title = document.getElementById('layer-legend-title');
-  if(!wxMode){ body.innerHTML='<div style="color:var(--muted);font-size:11px">Enable a weather layer first.</div>'; return; }
-  const configs = {
-    wind:{
-      label:'WIND SPEED', unit:'knots',
-      stops:['0','5','10','15','20','25+'],
-      gradient:'linear-gradient(to right,#0ea5e9,#22c55e,#eab308,#f97316,#ef4444,#dc2626)'
-    },
-    wave:{
-      label:'WAVE HEIGHT', unit:'meters',
-      stops:['0','1','2','3','4','5','6','7','8+'],
-      gradient:'linear-gradient(to right,#0c4a6e,#0284c7,#22c55e,#facc15,#f97316,#dc2626,#7e22ce)'
-    },
-    current:{
-      label:'CURRENT SPEED', unit:'m/s',
-      stops:['0','0.5','1','1.5','2+'],
-      gradient:'linear-gradient(to right,#064e3b,#065f46,#059669,#f59e0b,#dc2626)'
-    }
-  };
-  const c = configs[wxMode];
-  title.textContent = c.label;
-  body.innerHTML = `
-    <div class="legend-gradient" style="background:${c.gradient}"></div>
-    <div class="legend-scale">
-      ${c.stops.map(s=>`<span>${s}</span>`).join('')}
-    </div>
-    <div style="color:var(--muted);font-size:10px;margin-top:6px">${c.unit}</div>
-  `;
-}
-
-/* ═══════════════════════════════════════════════════════════════
    MAP CLICK & MOUSE EVENTS
    ═══════════════════════════════════════════════════════════════ */
 function onMapClick(e){
@@ -1768,9 +1719,24 @@ function onMapMouseMove(e){
     const val = windLayer.pickAt(e.lngLat.lng, e.lngLat.lat);
     if(val && val.speedMetersPerSecond != null){
       const kn = (val.speedMetersPerSecond * 1.94384).toFixed(1);
-      const dir = val.directionDegrees != null ? Math.round(val.directionDegrees) + '°' : '—';
+
+      // Compute direction from u/v components if directionDegrees is null
+      // MapTiler WindLayer returns u (east) and v (north) component vectors
+      // Meteorological convention: direction FROM which wind blows
+      // atan2(-u, -v) gives met direction; convert to 0–360°
+      let dirDeg = val.directionDegrees;
+      if(dirDeg == null && val.uComponentMetersPerSecond != null && val.vComponentMetersPerSecond != null){
+        const u = val.uComponentMetersPerSecond;
+        const v = val.vComponentMetersPerSecond;
+        dirDeg = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
+      }
+      const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+      const compassStr = dirDeg != null
+        ? dirs[Math.round(dirDeg / 22.5) % 16] + ' ' + Math.round(dirDeg) + '°'
+        : '—';
+
       document.getElementById('wh-speed').textContent = kn + ' kn';
-      document.getElementById('wh-dir').textContent = dir;
+      document.getElementById('wh-dir').textContent   = compassStr;
       tile.classList.add('visible');
     } else {
       tile.classList.remove('visible');
