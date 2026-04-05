@@ -439,6 +439,20 @@ body.adding-wp #map { cursor: cell; }
           <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kt) on route</div></div>
           <div class="max-stat-card"><div class="val" id="m-maxwave" style="color:var(--accent2)">—</div><div class="key">Max Wave (m) on route</div></div>
         </div>
+        <!-- Weather delay section — shown after weather fetch -->
+        <div id="wx-delay-section" style="display:none;margin-bottom:8px">
+          <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:8px 10px">
+            <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">⚡ Weather Impact</div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11px;color:var(--text)">Weather-adj. ETA</span>
+              <span style="font-size:12px;font-weight:700;color:var(--accent2)" id="m-adj-eta">—</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px">
+              <span style="font-size:11px;color:var(--text)">Total delay</span>
+              <span style="font-size:13px;font-weight:700" id="m-wxdelay">—</span>
+            </div>
+          </div>
+        </div>
         <!-- Scrollable waypoint table -->
         <div id="wp-table-wrap">
           <table class="wp-table" id="wp-table">
@@ -1895,83 +1909,240 @@ async function fetchOpenMeteoWindFallback(legs){
 async function fetchOpenMeteoMarine(lat, lon, targetDate){
   const nlon = normLon(lon);
   const diffDays = (targetDate - new Date()) / 86400000;
-  if(diffDays < -1 || diffDays > 6.5) return { waveM: null, currentKn: null };
+  if(diffDays < -1 || diffDays > 6.5) return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
 
   try {
     const dateStr = targetDate.toISOString().slice(0,10);
-    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat.toFixed(4)}&longitude=${nlon.toFixed(4)}&hourly=wave_height,ocean_current_velocity&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}`;
+    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat.toFixed(4)}&longitude=${nlon.toFixed(4)}&hourly=wave_height,wave_direction,ocean_current_velocity,ocean_current_direction&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}`;
     const r = await fetch(url);
-    if(!r.ok) return { waveM: null, currentKn: null };
+    if(!r.ok) return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
     const d = await r.json();
-    if(!d.hourly) return { waveM: null, currentKn: null };
+    if(!d.hourly) return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
     const hr = targetDate.getUTCHours();
-    const wh  = d.hourly.wave_height?.[hr]             ?? null;
-    const cur = d.hourly.ocean_current_velocity?.[hr]  ?? null;
+    const wh   = d.hourly.wave_height?.[hr]              ?? null;
+    const wd   = d.hourly.wave_direction?.[hr]           ?? null;
+    const cur  = d.hourly.ocean_current_velocity?.[hr]   ?? null;
+    const cdir = d.hourly.ocean_current_direction?.[hr]  ?? null;
     return {
-      waveM:     wh  != null ? parseFloat(wh).toFixed(2)          : null,
-      currentKn: cur != null ? (parseFloat(cur) * 1.94384).toFixed(2) : null
+      waveM:      wh   != null ? parseFloat(wh).toFixed(2)               : null,
+      waveDir:    wd   != null ? Math.round(parseFloat(wd))               : null,
+      currentKn:  cur  != null ? (parseFloat(cur) * 1.94384).toFixed(2)  : null,
+      currentDir: cdir != null ? Math.round(parseFloat(cdir))            : null
     };
   } catch(e){
     console.warn('Marine fetch:', e.message);
-    return { waveM: null, currentKn: null };
+    return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PHASE 1 WEATHER SPEED MODEL
+   Computes the effective vessel speed at a route point given:
+     - ordered speed (knots)
+     - vessel heading (degrees true)
+     - wind speed (kt) + direction (degrees FROM)
+     - wave height (m) + direction (degrees FROM)
+     - current speed (kt) + direction (degrees TO, i.e. flowing toward)
+   Returns { effectiveKn, windLoss, waveLoss, currentGain, delayH }
+   ═══════════════════════════════════════════════════════════════ */
+function computeWeatherAdjustedSpeed(orderedKn, headingDeg, windKn, windDirFrom, waveM, waveDirFrom, currentKn, currentDirTo){
+  const D2R = Math.PI / 180;
+
+  // ── Helper: angular difference → [-180,180] ──────────────────
+  const angDiff = (a, b) => {
+    let d = ((a - b) + 360) % 360;
+    return d > 180 ? d - 360 : d;
+  };
+
+  // ── Wave speed loss (Beaufort-based table × direction factor) ──
+  // Table derived from published speed loss data for typical cargo vessels.
+  // Head seas = full loss, beam seas = 60% of tabulated loss, stern = 15%.
+  let waveLoss = 0;
+  if(waveM != null){
+    const wh = parseFloat(waveM);
+    // Tabulated speed loss (kt) by significant wave height
+    const waveTable = [
+      [1.0, 0.0],   // 0–1m:  no loss
+      [1.5, 0.2],   // 1–1.5m: minor
+      [2.0, 0.5],   // 1.5–2m
+      [2.5, 0.9],   // 2–2.5m
+      [3.0, 1.4],   // 2.5–3m
+      [3.5, 2.0],   // 3–3.5m
+      [4.0, 2.8],   // 3.5–4m
+      [4.5, 3.5],   // 4–4.5m
+      [5.0, 4.5],   // 4.5–5m
+      [99,  5.5],   // >5m
+    ];
+    let rawLoss = 0;
+    for(const [limit, loss] of waveTable){
+      if(wh <= limit){ rawLoss = loss; break; }
+    }
+    // Direction factor: head = 1.0, beam = 0.6, stern = 0.15
+    let dirFactor = 0.5; // default if no direction
+    if(waveDirFrom != null){
+      // Wave direction is FROM — vessel experiences waves coming FROM that direction
+      const relAngle = Math.abs(angDiff(headingDeg, waveDirFrom));
+      // 0° = head seas (worst), 90° = beam, 180° = stern (best)
+      dirFactor = relAngle <= 90
+        ? 1.0 - (relAngle / 90) * 0.4   // 1.0 → 0.6 (head to beam)
+        : 0.6 - ((relAngle - 90) / 90) * 0.45; // 0.6 → 0.15 (beam to stern)
+    }
+    waveLoss = rawLoss * dirFactor;
+  }
+
+  // ── Wind speed loss (simplified, smaller effect than waves) ───
+  let windLoss = 0;
+  if(windKn != null){
+    const ws = parseFloat(windKn);
+    // Only meaningful above 10kt — below that negligible effect
+    if(ws > 10){
+      const rawWindLoss = (ws - 10) * 0.025; // ~0.025kt loss per kt above 10kt
+      let windDirFactor = 0.5;
+      if(windDirFrom != null){
+        const relAngle = Math.abs(angDiff(headingDeg, windDirFrom));
+        windDirFactor = relAngle <= 90
+          ? 1.0 - (relAngle / 90) * 0.5
+          : 0.5 - ((relAngle - 90) / 90) * 0.45;
+      }
+      windLoss = rawWindLoss * windDirFactor;
+    }
+  }
+
+  // ── Current gain/loss (vector projection onto heading) ────────
+  let currentGain = 0;
+  if(currentKn != null && currentDirTo != null){
+    // currentDirTo = direction the current is FLOWING TOWARD
+    // Project current vector onto vessel heading
+    const relAngle = angDiff(currentDirTo, headingDeg) * D2R;
+    currentGain = parseFloat(currentKn) * Math.cos(relAngle);
+    // Cap benefit at +2kt, cap penalty at -2kt (avoid unrealistic extremes)
+    currentGain = Math.max(-2.0, Math.min(2.0, currentGain));
+  }
+
+  const effectiveKn = Math.max(4, orderedKn - waveLoss - windLoss + currentGain);
+  return {
+    effectiveKn: parseFloat(effectiveKn.toFixed(2)),
+    windLoss:    parseFloat(windLoss.toFixed(2)),
+    waveLoss:    parseFloat(waveLoss.toFixed(2)),
+    currentGain: parseFloat(currentGain.toFixed(2))
+  };
 }
 
 async function fetchRouteWeather(){
   if(wpCoords.length < 2) return;
   document.getElementById('wx-route-rows').innerHTML = '';
 
-  const speed  = parseFloat(document.getElementById('speed').value) || 14;
+  const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
   const depStr = document.getElementById('dep-time').value;
   const dep    = depStr ? new Date(depStr) : new Date();
 
-  // Build leg list
+  // Build leg list using ORDERED speed initially (ETA will be corrected below)
   let timeAccH = 0;
   const legs = [];
   for(let i = 0; i < wpCoords.length - 1; i++){
     const [lo1, la1] = wpCoords[i];
     const [lo2, la2] = wpCoords[i+1];
-    const distNm = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
-    const midLon = normLon((lo1 + lo2) / 2);
-    const midLat = (la1 + la2) / 2;
-    const tArr   = new Date(dep.getTime() + timeAccH * 3600 * 1000);
-    timeAccH    += distNm / speed;
-    legs.push({ i, midLon, midLat, tArr });
+    const distNm  = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+    const bearing = GEO.initialBearing(la1, lo1, la2, lo2);
+    const midLon  = normLon((lo1 + lo2) / 2);
+    const midLat  = (la1 + la2) / 2;
+    const tArr    = new Date(dep.getTime() + timeAccH * 3600 * 1000);
+    timeAccH     += distNm / orderedKn;
+    legs.push({ i, midLon, midLat, tArr, distNm, bearing });
   }
 
-  // Parallel fetch: wind (Open-Meteo ECMWF 16d) + marine (wave+current 7d)
+  // Parallel fetch: wind + marine (wave+current+directions)
   const [windResults, marineResults] = await Promise.all([
     fetchOpenMeteoWindBatch(legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))),
     Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr)))
   ]);
 
+  // ── Build results WITH weather speed adjustment ───────────────
+  // Re-propagate ETA leg-by-leg using effective speed so later legs
+  // get the correct arrival time accounting for earlier delays
+  let adjustedTimeAccH = 0;
   const results = legs.map((leg, idx) => {
     const w = windResults[idx];
     const m = marineResults[idx];
-    const windKn    = w?.windKn    ?? null;
-    const windDir   = w?.windDir   ?? null;
-    const waveM     = m?.waveM     ?? null;
-    const currentKn = m?.currentKn ?? null;
-    let color = '#3b82f6';
-    if(windKn != null){
-      const ws = parseFloat(windKn);
-      color = ws < 10 ? '#22c55e' : ws < 20 ? '#f59e0b' : ws < 30 ? '#f97316' : '#ef4444';
-    }
-    return { ...leg, windKn, windDir, waveM, currentKn, color };
+    const windKn    = w?.windKn    != null ? parseFloat(w.windKn)    : null;
+    const windDir   = w?.windDir   != null ? w.windDir               : null;
+    const waveM     = m?.waveM     != null ? m.waveM                 : null;
+    const waveDir   = m?.waveDir   != null ? m.waveDir               : null;
+    const currentKn = m?.currentKn != null ? m.currentKn             : null;
+    const currentDir= m?.currentDir!= null ? m.currentDir            : null;
+
+    // Compute weather-adjusted speed
+    const adj = computeWeatherAdjustedSpeed(
+      orderedKn, leg.bearing,
+      windKn, windDir,
+      waveM, waveDir,
+      currentKn, currentDir
+    );
+
+    // Adjusted ETA: arrival time using effective speed
+    const adjustedTArr = new Date(dep.getTime() + adjustedTimeAccH * 3600 * 1000);
+    adjustedTimeAccH  += leg.distNm / adj.effectiveKn;
+
+    // Colour by effective speed relative to ordered speed (green = on time, red = delayed)
+    const speedRatio = adj.effectiveKn / orderedKn;
+    const color = speedRatio > 0.95 ? '#22c55e'
+                : speedRatio > 0.85 ? '#f59e0b'
+                : speedRatio > 0.70 ? '#f97316'
+                : '#ef4444';
+
+    return {
+      ...leg,
+      windKn:      windKn  != null ? windKn.toFixed(1)  : null,
+      windDir,
+      waveM,
+      waveDir,
+      currentKn,
+      currentDir,
+      effectiveKn: adj.effectiveKn,
+      windLoss:    adj.windLoss,
+      waveLoss:    adj.waveLoss,
+      currentGain: adj.currentGain,
+      adjustedTArr,
+      color
+    };
   });
 
-  window._wxResults = results;
+  // ── Compute total weather delay ───────────────────────────────
+  const orderedTotalH  = legs.reduce((s, l) => s + l.distNm / orderedKn, 0);
+  const adjustedTotalH = results.reduce((s, r) => s + r.distNm / r.effectiveKn, 0);
+  const totalDelayH    = Math.max(0, adjustedTotalH - orderedTotalH);
 
-  // Update max stat cards
-  const maxWind = results.reduce((m,r) => r.windKn != null ? Math.max(m, parseFloat(r.windKn)) : m, 0);
-  const maxWave = results.reduce((m,r) => r.waveM  != null ? Math.max(m, parseFloat(r.waveM))  : m, 0);
+  window._wxResults     = results;
+  window._wxDelayH      = totalDelayH;
+  window._wxAdjTotalH   = adjustedTotalH;
+
+  // Update max stat cards + weather delay card
+  const maxWind = results.reduce((m,r) => r.windKn!=null ? Math.max(m, parseFloat(r.windKn)) : m, 0);
+  const maxWave = results.reduce((m,r) => r.waveM !=null ? Math.max(m, parseFloat(r.waveM))  : m, 0);
   if(maxWind > 0 || maxWave > 0){
     document.getElementById('m-maxwind').textContent = maxWind > 0 ? maxWind.toFixed(1) : '—';
     document.getElementById('m-maxwave').textContent = maxWave > 0 ? maxWave.toFixed(2) : '—';
     document.getElementById('max-stat-section').style.display = 'grid';
   }
 
-  // Update route line colouring
+  // Show weather delay in sidebar if significant
+  const delayEl = document.getElementById('m-wxdelay');
+  if(delayEl){
+    if(totalDelayH >= 0.5){
+      const depStr2 = document.getElementById('dep-time').value;
+      const dep2    = depStr2 ? new Date(depStr2) : new Date();
+      const adjEta  = new Date(dep2.getTime() + adjustedTotalH * 3600 * 1000);
+      const adjEtaStr = adjEta.toISOString().slice(0,16).replace('T',' ') + 'Z';
+      document.getElementById('m-adj-eta').textContent = adjEtaStr;
+      delayEl.textContent = '+' + totalDelayH.toFixed(1) + 'h delay';
+      delayEl.style.color = totalDelayH > 12 ? 'var(--danger)' : 'var(--warn)';
+      document.getElementById('wx-delay-section').style.display = 'block';
+    } else {
+      document.getElementById('wx-delay-section').style.display = 'none';
+    }
+  }
+
+  // Update route line colouring by effective speed ratio
   wxRouteCache = {
     segments: results.map((r, idx) => {
       const [lo1, la1] = wpCoords[idx];
@@ -1998,7 +2169,9 @@ function clearAll(){
   if(map.getSource('route')) map.getSource('route').setData({type:'FeatureCollection',features:[]});
   document.getElementById('metrics-section').style.display='none';
   document.getElementById('max-stat-section').style.display='none';
+  document.getElementById('wx-delay-section').style.display='none';
   window._wxResults = null;
+  window._wxDelayH  = null;
   document.getElementById('wx-route-section').style.display='none';
   document.getElementById('o-port-input').value='';
   document.getElementById('d-port-input').value='';
@@ -2132,19 +2305,40 @@ async function generateVoyageReport(){
     </tr>`;
   }).join('');
 
+
   const wxFiltered = wxResults.slice(0,40).filter(r => r.windKn!=null || r.waveM!=null);
+
+  // Helper: degrees → compass bearing label
+  const degToCompass = deg => {
+    if(deg == null) return '—';
+    const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    return dirs[Math.round(deg / 22.5) % 16] + ' (' + deg + '°)';
+  };
+
   const wxRows5d = wxFiltered.map(r => {
     const wc = r.windKn!=null ? windColor(parseFloat(r.windKn)) : '#888';
-    const dirStr = r.windDir!=null ? ` ${r.windDir}°` : '';
-    return `<tr>
+    // Speed ratio drives row background
+    const speedRatio = r.effectiveKn / orderedKn;
+    const rowBg = speedRatio > 0.95 ? '' : speedRatio > 0.85 ? 'background:#fffbeb' : speedRatio > 0.70 ? 'background:#fff7ed' : 'background:#fef2f2';
+    const effColor = speedRatio > 0.95 ? '#16a34a' : speedRatio > 0.85 ? '#d97706' : speedRatio > 0.70 ? '#ea580c' : '#dc2626';
+    return `<tr style="${rowBg}">
       <td>${r.i+1}</td>
-      <td>${fmtDate(r.tArr)}</td>
+      <td>${fmtDate(r.adjustedTArr ?? r.tArr)}</td>
       <td>${fmtCoord(r.midLat, r.midLon)}</td>
-      <td style="color:${wc};font-weight:600">${r.windKn!=null ? r.windKn+' kt'+dirStr : '—'}</td>
+      <td style="color:${wc};font-weight:600">${r.windKn!=null ? r.windKn+' kt' : '—'}</td>
+      <td>${r.windDir!=null ? degToCompass(r.windDir) : '—'}</td>
       <td>${r.waveM!=null ? r.waveM+' m' : '—'}</td>
+      <td>${r.waveDir!=null ? degToCompass(r.waveDir) : '—'}</td>
       <td>${r.currentKn!=null ? r.currentKn+' kt' : '—'}</td>
+      <td style="color:${effColor};font-weight:700">${r.effectiveKn!=null ? r.effectiveKn.toFixed(1)+' kt' : orderedKn+' kt'}</td>
     </tr>`;
   }).join('');
+
+  // Weather-adjusted ETA
+  const totalDelayH    = window._wxDelayH ?? 0;
+  const adjTotalH      = window._wxAdjTotalH ?? transitH;
+  const adjEta         = new Date(dep.getTime() + adjTotalH * 3600 * 1000);
+  const hasWeatherData = wxFiltered.length > 0;
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <title>Voyage Report — ${vessel}</title>
@@ -2227,13 +2421,13 @@ async function generateVoyageReport(){
   </div>
   <table class="info-table">
     <tr><td>Total Distance</td><td>${Math.round(dist).toLocaleString()} nm</td></tr>
-    <tr><td>Ordered Speed</td><td>${speed} kt (constant — no weather/current correction)</td></tr>
+    <tr><td>Ordered Speed</td><td>${speed} kt (constant)</td></tr>
+    <tr><td>Ordered ETA</td><td>${fmtDate(eta)}</td></tr>
+    ${hasWeatherData ? `<tr style="background:#f0fdf4"><td style="font-weight:700;color:#15803d">Weather-Adjusted ETA</td><td style="font-weight:800;color:#15803d">${fmtDate(adjEta)} ${totalDelayH>=0.5?'<span style="color:'+(totalDelayH>12?'#dc2626':'#d97706')+'"> (+'+totalDelayH.toFixed(1)+'h delay)</span>':''}</td></tr>` : ''}
     <tr><td>Transit Time</td><td>${(transitH/24).toFixed(1)} days (${Math.floor(transitH)}h ${Math.round((transitH%1)*60)}min)</td></tr>
     <tr><td>ECA Miles</td><td>${Math.round(ecaMiles).toLocaleString()} nm (${ecaPct}% of voyage)</td></tr>
     <tr><td>Total Waypoints</td><td>${wpCoords.length}</td></tr>
     <tr><td>Route Type</td><td>Great Circle (sea routing via MARNET)</td></tr>
-    <tr><td>Wind Data Source</td><td>MapTiler GFS (5-day, same as live map layer)</td></tr>
-    <tr><td>Wave/Current Source</td><td>Open-Meteo Marine / Copernicus SMOC (7-day)</td></tr>
   </table>
   <div class="stat-row">
     <div class="stat-box ${maxWind>=35?'danger':maxWind>=20?'warn':maxWind>0?'success':'neutral'}">
@@ -2246,9 +2440,10 @@ async function generateVoyageReport(){
       <div class="stat-k">Max Wave on Route</div>
       ${maxWaveLeg?`<div class="stat-sub">${fmtDate(maxWaveLeg.r.tArr).slice(0,11)}</div>`:''}
     </div>
-    <div class="stat-box neutral">
-      <div class="stat-v">${(transitH/24).toFixed(1)}d</div>
-      <div class="stat-k">Transit Time</div>
+    <div class="stat-box ${totalDelayH>12?'danger':totalDelayH>3?'warn':hasWeatherData?'success':'neutral'}">
+      <div class="stat-v" style="color:${totalDelayH>12?'#dc2626':totalDelayH>3?'#d97706':hasWeatherData?'#16a34a':'#888'}">${hasWeatherData?(totalDelayH>=0.5?'+'+totalDelayH.toFixed(1)+'h':'On time'):'—'}</div>
+      <div class="stat-k">Weather Delay</div>
+      ${hasWeatherData?`<div class="stat-sub">Adj. ETA: ${fmtDate(adjEta).slice(0,11)}</div>`:''}
     </div>
     <div class="stat-box neutral">
       <div class="stat-v">${Math.round(ecaMiles).toLocaleString()}</div>
@@ -2266,11 +2461,22 @@ async function generateVoyageReport(){
   </table>
   ${wxFiltered.length ? `
   <div class="section-head">Forecast Weather Along Route</div>
-  <p class="sub">Wind: MapTiler GFS (same as live map layer, up to 5 days) · Wave &amp; Current: Open-Meteo Marine / Copernicus SMOC (up to 7 days) · Wind dir = degrees true (0°=N, 90°=E) · "—" = beyond forecast range or land point</p>
+  <p class="sub">
+    Wind: MapTiler GFS (5-day) · Wave/Current: Open-Meteo Marine / Copernicus SMOC (7-day) ·
+    Eff. Speed = ordered speed adjusted for waves + wind + current (row colour: <span style="color:#16a34a">■</span>normal <span style="color:#d97706">■</span>mild loss <span style="color:#ea580c">■</span>moderate <span style="color:#dc2626">■</span>heavy) ·
+    Directions: compass from (wave/wind) or to (current) · "—" = beyond forecast range
+  </p>
   <table>
-    <thead><tr><th>Leg</th><th>ETA (UTC)</th><th>Position</th><th>Wind</th><th>Wave Ht</th><th>Current</th></tr></thead>
+    <thead>
+      <tr>
+        <th>Leg</th><th>Adj. ETA (UTC)</th><th>Position</th>
+        <th>Wind Speed</th><th>Wind Dir</th>
+        <th>Wave Ht</th><th>Wave Dir</th>
+        <th>Current</th><th>Eff. Speed</th>
+      </tr>
+    </thead>
     <tbody>${wxRows5d}</tbody>
-  </table>` : `<p style="color:#94a3b8;font-size:11px;margin-top:8px">No weather data available — ensure Wind layer was active before generating report.</p>`}
+  </table>` : `<p style="color:#94a3b8;font-size:11px;margin-top:8px">No weather data available.</p>`}
 </div>
 
 <div class="content">
