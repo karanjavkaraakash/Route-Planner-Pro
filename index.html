@@ -2758,6 +2758,145 @@ function fmtDate(d){
   const mm = String(d.getUTCMinutes()).padStart(2,'0');
   return `${dd} ${mon} ${yyyy}, ${hh}:${mm} UTC`;
 }
+/* ═══════════════════════════════════════════════════════════════
+   HEAVY WEATHER RISK BLOCK BUILDER
+   Scans wxResults for adverse weather windows and generates a
+   plain-English risk summary block for the voyage report.
+   ═══════════════════════════════════════════════════════════════ */
+function buildHeavyWeatherRiskBlock(wxResults, orderedKn){
+  if(!wxResults || !wxResults.length) return '';
+
+  // Classify each leg by severity
+  // heavy   : wave ≥3m  OR wind ≥25kt OR speed ratio ≤0.70
+  // moderate: wave ≥2m  OR wind ≥18kt OR speed ratio ≤0.85
+  // mild    : wave ≥1.5m OR wind ≥12kt OR speed ratio ≤0.95
+  // ok      : everything else
+  const legSeverity = r => {
+    const wave  = r.waveM     != null ? parseFloat(r.waveM)     : 0;
+    const wind  = r.windKn    != null ? parseFloat(r.windKn)    : 0;
+    const ratio = r.effectiveKn != null ? r.effectiveKn / orderedKn : 1;
+    if(wave >= 3.0 || wind >= 25 || ratio <= 0.70) return 3; // heavy
+    if(wave >= 2.0 || wind >= 18 || ratio <= 0.85) return 2; // moderate
+    if(wave >= 1.5 || wind >= 12 || ratio <= 0.95) return 1; // mild
+    return 0; // ok
+  };
+
+  // Scan for contiguous windows of severity ≥2 (moderate or worse)
+  // Merge gaps of ≤2 ok-legs so nearby bad weather appears as one window
+  const THRESHOLD = 2; // minimum severity to flag
+  const windows = [];
+  let inWindow = false, wStart = 0;
+
+  for(let i = 0; i <= wxResults.length; i++){
+    const sev = i < wxResults.length ? legSeverity(wxResults[i]) : 0;
+    if(!inWindow && sev >= THRESHOLD){
+      inWindow = true; wStart = i;
+    } else if(inWindow){
+      // Allow up to 2 ok-legs gap before closing window
+      const ahead = wxResults.slice(i, Math.min(i+3, wxResults.length));
+      const gapHasMore = ahead.some(r => legSeverity(r) >= THRESHOLD);
+      if(sev < THRESHOLD && !gapHasMore){
+        windows.push({ start: wStart, end: i - 1 });
+        inWindow = false;
+      }
+    }
+  }
+
+  // Minimum 3 consecutive legs to be worth flagging
+  const significantWindows = windows.filter(w => (w.end - w.start + 1) >= 3);
+
+  // Build stats for each window
+  const enriched = significantWindows.map(w => {
+    const legs = wxResults.slice(w.start, w.end + 1);
+    const peakWave  = legs.reduce((m,r) => r.waveM  ? Math.max(m, parseFloat(r.waveM))  : m, 0);
+    const peakWind  = legs.reduce((m,r) => r.windKn ? Math.max(m, parseFloat(r.windKn)) : m, 0);
+    const minSpeed  = legs.reduce((m,r) => r.effectiveKn ? Math.min(m, r.effectiveKn) : m, orderedKn);
+    const maxSev    = Math.max(...legs.map(r => legSeverity(r)));
+    const startDate = legs[0].adjustedTArr ?? legs[0].tArr;
+    const endDate   = legs[legs.length-1].adjustedTArr ?? legs[legs.length-1].tArr;
+
+    // Delay contribution from this window
+    const windowDelayH = legs.reduce((s,r) => {
+      const ordH = r.distNm / orderedKn;
+      const adjH = r.distNm / (r.effectiveKn || orderedKn);
+      return s + Math.max(0, adjH - ordH);
+    }, 0);
+
+    // Dominant weather type for narrative
+    const waveStr  = peakWave >= 1 ? `wave heights up to ${peakWave.toFixed(1)}m` : '';
+    const windStr  = peakWind >= 10 ? `winds up to ${peakWind.toFixed(0)} kt` : '';
+    const spdStr   = minSpeed < orderedKn * 0.85 ? `reducing speed to ${minSpeed.toFixed(1)} kt` : '';
+    const condParts = [waveStr, windStr, spdStr].filter(Boolean);
+    const conditions = condParts.join(', ');
+
+    // Duration
+    const durationH = Math.round((endDate - startDate) / 3600000);
+    const durationStr = durationH < 24 ? `${durationH}h` : `${(durationH/24).toFixed(1)} days`;
+
+    // Severity label
+    const sevLabel = maxSev >= 3 ? 'HIGH' : 'MODERATE';
+    const sevClass = maxSev >= 3 ? 'high' : 'medium';
+    const badgeClass = maxSev >= 3 ? 'risk-badge-danger' : 'risk-badge-warn';
+
+    // Date range for display
+    const d1 = fmtDate(startDate).slice(0,11);
+    const d2 = fmtDate(endDate).slice(0,11);
+    const dateRange = d1 === d2 ? d1 : `${d1} – ${d2}`;
+
+    return { legs, peakWave, peakWind, minSpeed, maxSev, sevLabel, sevClass,
+             badgeClass, startDate, endDate, dateRange, durationStr,
+             conditions, windowDelayH, legRange:`Legs ${w.start+1}–${w.end+1}` };
+  });
+
+  if(!enriched.length){
+    return `
+    <div class="risk-block">
+      <div class="risk-block-header">
+        <span style="font-size:18px">🛡️</span>
+        <div class="risk-block-title">Heavy Weather Risk Assessment</div>
+        <span class="risk-block-badge risk-badge-ok">NO SIGNIFICANT HAZARDS</span>
+      </div>
+      <div class="risk-ok-msg">✅ No moderate or heavy weather windows detected along this route within the forecast period.</div>
+    </div>`;
+  }
+
+  const overallSev   = Math.max(...enriched.map(w => w.maxSev));
+  const overallLabel = overallSev >= 3 ? 'HIGH RISK' : 'MODERATE RISK';
+  const overallBadge = overallSev >= 3 ? 'risk-badge-danger' : 'risk-badge-warn';
+  const totalWxDelay = enriched.reduce((s,w) => s + w.windowDelayH, 0);
+
+  const windowsHtml = enriched.map(w => `
+    <div class="risk-window">
+      <div class="risk-window-sev ${w.sevClass}"></div>
+      <div class="risk-window-body">
+        <div class="risk-window-title">
+          ${w.maxSev >= 3 ? '⚠️' : '⚡'} ${w.sevLabel} — ${w.dateRange} &nbsp;·&nbsp; ${w.legRange} &nbsp;·&nbsp; Duration: ${w.durationStr}
+        </div>
+        <div class="risk-window-detail">
+          ${w.conditions ? `Conditions: ${w.conditions}.` : ''}
+          ${w.windowDelayH >= 0.5 ? ` Estimated delay contribution: <strong>+${w.windowDelayH.toFixed(1)}h</strong>.` : ''}
+          ${w.minSpeed < w.legs[0] ? '' : ''}
+        </div>
+      </div>
+      <div class="risk-window-stats">
+        ${w.peakWave > 0 ? `<div class="risk-stat"><div class="risk-stat-v" style="color:${w.peakWave>=4?'#dc2626':w.peakWave>=2?'#d97706':'#0284c7'}">${w.peakWave.toFixed(1)}m</div><div class="risk-stat-k">Peak Wave</div></div>` : ''}
+        ${w.peakWind > 0 ? `<div class="risk-stat"><div class="risk-stat-v" style="color:${w.peakWind>=30?'#dc2626':w.peakWind>=20?'#d97706':'#0284c7'}">${w.peakWind.toFixed(0)}kt</div><div class="risk-stat-k">Peak Wind</div></div>` : ''}
+        <div class="risk-stat"><div class="risk-stat-v" style="color:${w.minSpeed < orderedKn*0.80?'#dc2626':'#d97706'}">${w.minSpeed.toFixed(1)}kt</div><div class="risk-stat-k">Min Speed</div></div>
+      </div>
+    </div>`).join('');
+
+  return `
+  <div class="risk-block">
+    <div class="risk-block-header">
+      <span style="font-size:18px">⚠️</span>
+      <div class="risk-block-title">Heavy Weather Risk Assessment</div>
+      <span class="risk-block-badge ${overallBadge}">${overallLabel}</span>
+      <span style="margin-left:auto;font-size:10px;color:#64748b">${enriched.length} weather window${enriched.length>1?'s':''} detected · Total delay contribution: +${totalWxDelay.toFixed(1)}h</span>
+    </div>
+    <div class="risk-windows">${windowsHtml}</div>
+  </div>`;
+}
+
 async function generateVoyageReport(){
   if(!routeData){ notify('No route data','err'); return; }
 
@@ -2911,6 +3050,28 @@ async function generateVoyageReport(){
   .badge{font-size:8px;font-weight:700;padding:1px 5px;border-radius:6px;margin-left:3px;vertical-align:middle}
   .badge-entry{background:#fef08a;color:#854d0e}
   .badge-exit{background:#bfdbfe;color:#1e3a8a}
+  .risk-block{margin:14px 0 0;background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0}
+  .risk-block-header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #e2e8f0}
+  .risk-block-title{font-size:12px;font-weight:800;color:#0f172a;letter-spacing:.3px}
+  .risk-block-badge{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;letter-spacing:.5px}
+  .risk-badge-ok    {background:#dcfce7;color:#15803d}
+  .risk-badge-warn  {background:#fef9c3;color:#854d0e}
+  .risk-badge-danger{background:#fee2e2;color:#991b1b}
+  .risk-windows{display:flex;flex-direction:column;gap:0}
+  .risk-window{display:grid;grid-template-columns:auto 1fr auto;gap:0;align-items:stretch;border-bottom:1px solid #f1f5f9}
+  .risk-window:last-child{border-bottom:none}
+  .risk-window-sev{width:5px;flex-shrink:0}
+  .risk-window-sev.low   {background:#22c55e}
+  .risk-window-sev.medium{background:#f59e0b}
+  .risk-window-sev.high  {background:#ef4444}
+  .risk-window-body{padding:9px 14px;flex:1}
+  .risk-window-title{font-size:11px;font-weight:700;color:#0f172a;margin-bottom:3px}
+  .risk-window-detail{font-size:10px;color:#475569;line-height:1.5}
+  .risk-window-stats{display:flex;gap:14px;padding:9px 14px;align-items:center;background:#f8fafc}
+  .risk-stat{text-align:center}
+  .risk-stat-v{font-size:13px;font-weight:800;color:#0f172a}
+  .risk-stat-k{font-size:8px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
+  .risk-ok-msg{padding:12px 14px;font-size:11px;color:#15803d;font-weight:600;display:flex;align-items:center;gap:8px}
   .footer{margin-top:20px;font-size:9px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px;text-align:center}
   @page { size: A4 landscape; margin: 15mm 18mm; }
   @media print{
@@ -2975,6 +3136,7 @@ async function generateVoyageReport(){
       <div class="stat-k">ECA Miles (${ecaPct}%)</div>
     </div>
   </div>
+  ${hasWeatherData ? buildHeavyWeatherRiskBlock(wxResults, orderedKn) : ''}
 </div>
 
 <div class="content page-break">
