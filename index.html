@@ -259,6 +259,16 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
 .checkbox-row { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; font-size: 12px; cursor: pointer; }
 .checkbox-row input { width: auto; accent-color: var(--accent); }
 
+/* ═══════════ WEATHER INTERVAL CHIPS ═══════════ */
+.wx-int-chip {
+  flex: 1; padding: 4px 0; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); font-size: 11px; font-weight: 600; cursor: pointer;
+  color: var(--muted); transition: all .15s; text-align: center;
+}
+.wx-int-chip[aria-selected="true"] {
+  background: rgba(14,165,233,.18); border-color: #0ea5e9; color: #0ea5e9;
+}
+
 /* ═══════════ PASSAGE CHIPS ═══════════ */
 .passage-grid { display: flex; flex-wrap: wrap; gap: 5px; }
 .pchip {
@@ -596,6 +606,22 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
         </button>
         <div id="wx-status-hint" style="font-size:10px;color:var(--muted);text-align:center;margin-bottom:6px">
           Fetches wind, wave &amp; current data along the full route
+        </div>
+
+        <!-- Ocean leg weather interval selector -->
+        <div style="margin:0 0 8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px">
+            🌊 Ocean Leg Sampling Interval
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap" id="wx-interval-chips">
+            <button class="wx-int-chip" data-h="3"  onclick="setWxInterval(this)">3h</button>
+            <button class="wx-int-chip" data-h="6"  onclick="setWxInterval(this)" aria-selected="true">6h ✓</button>
+            <button class="wx-int-chip" data-h="9"  onclick="setWxInterval(this)">9h</button>
+            <button class="wx-int-chip" data-h="12" onclick="setWxInterval(this)">12h</button>
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:5px;line-height:1.5" id="wx-interval-hint">
+            6h — balanced detail for most voyages
+          </div>
         </div>
 
         <!-- Max wind / wave highlight cards (shown after weather loads) -->
@@ -16398,6 +16424,33 @@ function hideWxAnalysisOverlay(){
    LOAD WEATHER & ANALYSE ROUTE
    Main entry point for weather loading — user-triggered
    ═══════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   WEATHER INTERVAL SELECTOR
+   Controls how often ocean passages are sampled (sub-leg interval)
+   ═══════════════════════════════════════════════════════════════ */
+const WX_INTERVAL_HINTS = {
+  3:  '3h — maximum detail, ideal for severe weather conditions',
+  6:  '6h — balanced detail for most voyages',
+  9:  '9h — moderate detail, fewer API calls',
+  12: '12h — coarse detail, fastest load for calm passages',
+};
+
+function setWxInterval(chip){
+  document.querySelectorAll('#wx-interval-chips .wx-int-chip').forEach(c => {
+    c.removeAttribute('aria-selected');
+    c.textContent = c.dataset.h + 'h';
+  });
+  chip.setAttribute('aria-selected', 'true');
+  chip.textContent = chip.dataset.h + 'h ✓';
+  document.getElementById('wx-interval-hint').textContent =
+    WX_INTERVAL_HINTS[chip.dataset.h] || '';
+}
+
+function getWxIntervalH(){
+  const active = document.querySelector('#wx-interval-chips .wx-int-chip[aria-selected="true"]');
+  return active ? parseFloat(active.dataset.h) : 6;
+}
+
 async function loadWeatherAndAnalyse(){
   if(!routeData){ notify('Calculate a route first','err'); return; }
 
@@ -16823,8 +16876,8 @@ async function fetchRouteWeather(){
   // Long ocean passages (>120nm) are split into sub-legs at 6-hour intervals
   // so the weather table provides timely updates throughout each ocean crossing.
   // Short legs (<120nm) stay as single entries — no change for coastal segments.
-  const SPLIT_THRESHOLD_NM = 120;   // legs longer than this get subdivided
-  const SUBLEGGING_INTERVAL_H = 6;  // target interval between weather samples
+  const SPLIT_THRESHOLD_NM  = 120;              // legs longer than this get subdivided
+  const SUBLEGGING_INTERVAL_H = getWxIntervalH(); // read from sidebar selector (3/6/9/12h)
 
   let timeAccH = 0;
   const legs = [];
@@ -16955,6 +17008,7 @@ async function fetchRouteWeather(){
   });
 
   window._wxResults   = results;
+  window._wxIntervalH = SUBLEGGING_INTERVAL_H; // store for PDF subtitle
   setWxaStep(7);
 
   // Compute delay
@@ -17570,7 +17624,7 @@ async function generateVoyageReport(){
     Row colour: <span style="color:#16a34a">■</span>normal <span style="color:#d97706">■</span>mild loss <span style="color:#ea580c">■</span>moderate <span style="color:#dc2626">■</span>heavy ·
     Wave Ht colour: <span style="color:#d97706">■</span>≥1.5m <span style="color:#ea580c">■</span>≥2m <span style="color:#dc2626">■</span>≥3m ·
     Directions: from (wave/wind) · to (current) · "—" = beyond forecast range ·
-    Legs &gt;120nm split into 6-hourly sub-legs (73a, 73b…) for ocean passage detail
+    Legs &gt;120nm split into ${window._wxIntervalH || 6}h sub-legs (73a, 73b…) for ocean passage detail
   </p>
   <table>
     <thead>
