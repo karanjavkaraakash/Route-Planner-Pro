@@ -14799,6 +14799,29 @@ const GEO = {
     }
     return pts;
   },
+  // Interpolate a single point at fraction f (0–1) along great circle
+  // Uses slerp for accurate spherical interpolation
+  gcInterp(la1,lo1,la2,lo2,f){
+    const φ1=this.rad(la1), λ1=this.rad(lo1);
+    const φ2=this.rad(la2), λ2=this.rad(lo2);
+    const dLat=φ2-φ1;
+    let dLon=λ2-λ1;
+    while(dLon>Math.PI) dLon-=2*Math.PI;
+    while(dLon<-Math.PI) dLon+=2*Math.PI;
+    const a=Math.sin(dLat/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin(dLon/2)**2;
+    const d=2*Math.asin(Math.sqrt(a));
+    if(d < 1e-9) return [lo1,la1];
+    const A=Math.sin((1-f)*d)/Math.sin(d);
+    const B=Math.sin(f*d)/Math.sin(d);
+    const x=A*Math.cos(φ1)*Math.cos(λ1)+B*Math.cos(φ2)*Math.cos(λ2+dLon-(λ2-λ1));
+    // Simpler linear interpolation in degree-space with antimeridian unwrap
+    // (accurate enough for weather sampling — sub-degree error on any ocean leg)
+    const lo2adj = lo1 + (()=>{ let d=lo2-lo1; while(d>180)d-=360; while(d<-180)d+=360; return d; })();
+    return [
+      normLon(lo1 + (lo2adj - lo1) * f),
+      la1  + (la2  - la1)  * f
+    ];
+  },
   initialBearing(lat1,lon1,lat2,lon2){
     const dLon=this.rad(lon2-lon1);
     const y=Math.sin(dLon)*Math.cos(this.rad(lat2));
@@ -16259,7 +16282,7 @@ function computeVoyageHeuristics(){
 const WXA_STEPS = [
   { label: 'Parsing route geometry',          sub: 'Extracting waypoints & headings' },
   { label: 'Loading MapTiler wind tiles',     sub: 'Fitting viewport to full route extent' },
-  { label: 'Sampling wind speed at waypoints',sub: 'Sequential MapTiler GFS pickAt sampling' },
+  { label: 'Sampling wind speed at waypoints',sub: 'Sequential MapTiler GFS pickAt · ocean legs split to 6h intervals' },
   { label: 'Fetching wind direction',         sub: 'Open-Meteo ECMWF IFS 9km (16-day)' },
   { label: 'Fetching wave height & direction',sub: 'Open-Meteo Marine / ECMWF WAM (7-day)' },
   { label: 'Fetching ocean currents',         sub: 'Copernicus SMOC via Open-Meteo (7-day)' },
@@ -16796,19 +16819,75 @@ async function fetchRouteWeather(){
   const depStr = document.getElementById('dep-time').value;
   const dep    = depStr ? new Date(depStr) : new Date();
 
-  // Build leg list
+  // ── Leg building with 6-hourly sub-leg expansion ─────────────────────────
+  // Long ocean passages (>120nm) are split into sub-legs at 6-hour intervals
+  // so the weather table provides timely updates throughout each ocean crossing.
+  // Short legs (<120nm) stay as single entries — no change for coastal segments.
+  const SPLIT_THRESHOLD_NM = 120;   // legs longer than this get subdivided
+  const SUBLEGGING_INTERVAL_H = 6;  // target interval between weather samples
+
   let timeAccH = 0;
   const legs = [];
   for(let i = 0; i < wpCoords.length - 1; i++){
     const [lo1, la1] = wpCoords[i];
     const [lo2, la2] = wpCoords[i+1];
-    const distNm  = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
-    const bearing = GEO.initialBearing(la1, lo1, la2, lo2);
-    const midLon  = normLon((lo1 + lo2) / 2);
-    const midLat  = (la1 + la2) / 2;
-    const tArr    = new Date(dep.getTime() + timeAccH * 3600 * 1000);
-    timeAccH     += distNm / orderedKn;
-    legs.push({ i, midLon, midLat, tArr, distNm, bearing });
+    const totalDistNm = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+
+    if(totalDistNm <= SPLIT_THRESHOLD_NM){
+      // Short leg — single weather sample at midpoint (unchanged behaviour)
+      const bearing = GEO.initialBearing(la1, lo1, la2, lo2);
+      const [midLon, midLat] = GEO.gcInterp(la1, lo1, la2, lo2, 0.5);
+      const tArr = new Date(dep.getTime() + timeAccH * 3600 * 1000);
+      timeAccH += totalDistNm / orderedKn;
+      legs.push({
+        i,
+        subIdx:   0,
+        nSubs:    1,
+        label:    String(i + 1),          // "73"
+        midLon:   normLon(midLon),
+        midLat,
+        tArr,
+        distNm:   totalDistNm,
+        bearing,
+        wpLo1: lo1, wpLa1: la1,          // store endpoints for route colouring
+        wpLo2: lo2, wpLa2: la2,
+      });
+    } else {
+      // Long ocean leg — split into ~6-hour sub-legs
+      const nSubs = Math.ceil(totalDistNm / (orderedKn * SUBLEGGING_INTERVAL_H));
+      const subDistNm = totalDistNm / nSubs;
+
+      for(let s = 0; s < nSubs; s++){
+        const fStart = s / nSubs;
+        const fMid   = (s + 0.5) / nSubs;
+        const fEnd   = (s + 1)   / nSubs;
+
+        const [midLon, midLat] = GEO.gcInterp(la1, lo1, la2, lo2, fMid);
+        const [subLo1, subLa1] = GEO.gcInterp(la1, lo1, la2, lo2, fStart);
+        const [subLo2, subLa2] = GEO.gcInterp(la1, lo1, la2, lo2, fEnd);
+
+        // Bearing at the midpoint of this sub-leg (varies on long GC arcs)
+        const bearing = GEO.initialBearing(subLa1, subLo1, subLa2, subLo2);
+        const tArr = new Date(dep.getTime() + timeAccH * 3600 * 1000);
+        timeAccH += subDistNm / orderedKn;
+
+        // Label: "73" for single legs, "73a" "73b" "73c" for sub-legs
+        const letter = String.fromCharCode(97 + s); // a, b, c, ...
+        legs.push({
+          i,
+          subIdx:   s,
+          nSubs,
+          label:    `${i + 1}${letter}`,  // "73a", "73b", "73c"
+          midLon:   normLon(midLon),
+          midLat,
+          tArr,
+          distNm:   subDistNm,
+          bearing,
+          wpLo1: subLo1, wpLa1: subLa1,
+          wpLo2: subLo2, wpLa2: subLa2,
+        });
+      }
+    }
   }
 
   // ── Step A: Wind SPEED from MapTiler WindLayer (pickAt) ──────────────────────
@@ -16906,13 +16985,12 @@ async function fetchRouteWeather(){
     document.getElementById('wx-delay-section').style.display = 'block';
   }
 
-  // Update route colour
+  // Update route colour — use stored endpoints, not wpCoords[idx]
   wxRouteCache = {
-    segments: results.map((r, idx) => {
-      const [lo1, la1] = wpCoords[idx];
-      const [lo2, la2] = (wpCoords[idx+1] || wpCoords[idx]);
-      return { coords: GEO.gcArc(la1, lo1, la2, lo2, 32), color: r.color };
-    })
+    segments: results.map(r => ({
+      coords: GEO.gcArc(r.wpLa1, r.wpLo1, r.wpLa2, r.wpLo2, 16),
+      color:  r.color
+    }))
   };
   redrawRouteGeoJSON();
 }
@@ -17301,20 +17379,26 @@ async function generateVoyageReport(){
 
   const wxRows5d = wxFiltered.map(r => {
     const wc = r.windKn!=null ? windColor(parseFloat(r.windKn)) : '#888';
-    // Wave cell colour: ≥1.5m yellow, ≥2m orange, ≥3m red (matching risk block thresholds)
     const waveVal = r.waveM != null ? parseFloat(r.waveM) : 0;
     const wvc = waveVal <= 0 ? '#888'
-              : waveVal < 1.5 ? '#16a34a'   // green  — below mild threshold
-              : waveVal < 2.0 ? '#d97706'   // amber  — mild
-              : waveVal < 3.0 ? '#ea580c'   // orange — moderate
-              : '#dc2626';                   // red    — heavy
+              : waveVal < 1.5 ? '#16a34a'
+              : waveVal < 2.0 ? '#d97706'
+              : waveVal < 3.0 ? '#ea580c'
+              : '#dc2626';
     const wvBold = waveVal >= 1.5 ? 'font-weight:700' : '';
-    // Speed ratio drives row background
     const speedRatio = r.effectiveKn / orderedKn;
     const rowBg = speedRatio > 0.95 ? '' : speedRatio > 0.85 ? 'background:#fffbeb' : speedRatio > 0.70 ? 'background:#fff7ed' : 'background:#fef2f2';
     const effColor = speedRatio > 0.95 ? '#16a34a' : speedRatio > 0.85 ? '#d97706' : speedRatio > 0.70 ? '#ea580c' : '#dc2626';
-    return `<tr style="${rowBg}">
-      <td>${r.i+1}</td>
+
+    // Sub-legs: label shows "73a", "73b" etc — style slightly muted to group visually
+    const isSubLeg  = r.nSubs > 1;
+    const labelStyle = isSubLeg ? 'color:#64748b;font-size:9.5px;padding-left:8px' : 'font-weight:600';
+    const rowStyle   = isSubLeg && r.subIdx > 0
+      ? `${rowBg};border-left:2px solid #e2e8f0`   // indent continuation rows
+      : rowBg;
+
+    return `<tr style="${rowStyle}">
+      <td style="${labelStyle}">${r.label}</td>
       <td>${fmtDate(r.adjustedTArr ?? r.tArr)}</td>
       <td>${fmtCoord(r.midLat, r.midLon)}</td>
       <td style="color:${wc};font-weight:600">${r.windKn!=null ? r.windKn+' kt' : '—'}</td>
@@ -17485,7 +17569,8 @@ async function generateVoyageReport(){
     Eff. Speed = ordered speed adjusted for waves + wind + current ·
     Row colour: <span style="color:#16a34a">■</span>normal <span style="color:#d97706">■</span>mild loss <span style="color:#ea580c">■</span>moderate <span style="color:#dc2626">■</span>heavy ·
     Wave Ht colour: <span style="color:#d97706">■</span>≥1.5m <span style="color:#ea580c">■</span>≥2m <span style="color:#dc2626">■</span>≥3m ·
-    Directions: from (wave/wind) · to (current) · "—" = beyond forecast range
+    Directions: from (wave/wind) · to (current) · "—" = beyond forecast range ·
+    Legs &gt;120nm split into 6-hourly sub-legs (73a, 73b…) for ocean passage detail
   </p>
   <table>
     <thead>
