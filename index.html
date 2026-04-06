@@ -2007,6 +2007,7 @@ function setAddWpMode(val){
 let pushWpMode      = false;
 let _pushActive     = false;   // true = broom is sweeping (between click1 and click2)
 let _pushUndoStack  = [];      // snapshot before first activation
+let _prevPushGeo    = null;    // previous cursor geo position — for movement vector
 
 // Degrees-latitude per nautical mile (constant)
 function _nmToDeglat(nm){ return nm / 60; }
@@ -2046,7 +2047,8 @@ function setPushWpMode(val){
 
   if(val){
     // Tool just turned on — idle state, waiting for first click
-    _pushActive = false;
+    _pushActive  = false;
+    _prevPushGeo = null;
     _setPushStateLabel('idle');
     setAddWpMode(false);
     document.getElementById('add-wp-chk').checked = false;
@@ -2086,32 +2088,92 @@ function undoPush(){
   notify('Push undone','ok');
 }
 
-// ── Core broom algorithm: rigid contact constraint ────────────────────────────
-// Any waypoint inside the circle is instantly projected to the circle edge.
-// This makes waypoints physically ride the edge — they can never be inside.
-function _applyBroomRepulsion(circleLng, circleLat, radiusNm){
+// ── Core broom algorithm: bulldozer push in movement direction ────────────────
+// Key insight: waypoints should be pushed in the direction the circle is MOVING,
+// not radially away from the circle centre. This prevents the "sliding on curve"
+// effect where waypoints orbit around the edge as the circle passes them.
+//
+// Algorithm:
+//   1. If waypoint is inside circle: push it forward to the edge in the movement direction
+//   2. If waypoint is on the edge and in the forward hemisphere: keep it there, pushed forward
+//   3. If waypoint is behind or to the side beyond a threshold: leave it (circle has passed)
+function _applyBroomRepulsion(circleLng, circleLat, radiusNm, moveDLng, moveDLat){
   let anyMoved = false;
-  for(let i = 1; i < wpCoords.length - 1; i++){   // skip endpoints
+
+  // Normalise movement vector (in degrees, with cos correction for lon)
+  const moveMagLat = moveDLat;
+  const moveMagLon = moveDLng * Math.cos(circleLat * Math.PI / 180);
+  const moveMag = Math.sqrt(moveMagLat*moveMagLat + moveMagLon*moveMagLon);
+  const hasMovement = moveMag > 1e-9;
+
+  for(let i = 1; i < wpCoords.length - 1; i++){   // skip origin/destination
     const [wlon, wlat] = wpCoords[i];
     const d = _distNm(circleLng, circleLat, wlon, wlat);
-    if(d >= radiusNm) continue;   // outside circle — no effect
 
-    // Direction from circle centre → waypoint
-    let dlat = wlat - circleLat;
-    let dlon = wlon - circleLng;
-    const mag = Math.sqrt(dlat*dlat + dlon*dlon);
+    if(d >= radiusNm * 1.02) continue;  // well outside circle — no effect
 
-    if(mag < 1e-9){
-      // Waypoint exactly at centre — push north by default
-      dlat = 1; dlon = 0;
-    } else {
-      dlat /= mag; dlon /= mag;
+    if(!hasMovement){
+      // No movement vector yet — first frame, just ensure waypoint is outside circle
+      // Push radially to edge
+      let dlat = wlat - circleLat;
+      let dlon = wlon - circleLng;
+      const mag = Math.sqrt(dlat*dlat + dlon*dlon);
+      if(mag < 1e-9){ dlat = 1; dlon = 0; }
+      else { dlat /= mag; dlon /= mag; }
+      wpCoords[i] = [
+        circleLng + dlon * _nmToDeglon(radiusNm, circleLat),
+        circleLat + dlat * _nmToDeglat(radiusNm)
+      ];
+      anyMoved = true;
+      continue;
     }
 
-    // Project to exact edge of circle
-    const newLat = circleLat + dlat * _nmToDeglat(radiusNm);
-    const newLon = circleLng + dlon * _nmToDeglon(radiusNm, circleLat);
-    wpCoords[i] = [newLon, newLat];
+    // ── Bulldozer push: move waypoint in the circle's movement direction ──────
+    // Normalised movement direction in degree space
+    const dirLat = moveDLat / moveMag;
+    const dirLon = moveDLng / moveMag * Math.cos(circleLat * Math.PI / 180) / moveMag * moveMag;
+
+    // Compute how far ahead of the circle the waypoint needs to be
+    // Project circle → waypoint vector onto movement direction
+    const toWpLat = wlat - circleLat;
+    const toWpLon = (wlon - circleLng) * Math.cos(circleLat * Math.PI / 180);
+    const dotFwd  = toWpLat * (moveDLat / moveMag) + toWpLon * (moveMagLon / moveMag);
+
+    // Only push if waypoint is in front of or beside the circle (not behind it)
+    // "Behind" means the dot product with movement direction is strongly negative
+    if(dotFwd < -radiusNm * 0.3 / 60) continue;  // circle has already passed this WP
+
+    // Push waypoint to be exactly radiusNm ahead of circle in movement direction
+    // New position = circle_centre + move_direction × radius
+    const pushLat = circleLat + (moveDLat / moveMag) * _nmToDeglat(radiusNm);
+    const pushLon = circleLng + (moveDLng / moveMag) * _nmToDeglon(radiusNm, circleLat);
+
+    // Preserve the waypoint's perpendicular offset from the movement axis
+    // so waypoints don't all pile up on the same point
+    const perpLat = toWpLat - dotFwd * (moveDLat / moveMag);
+    const perpLon = toWpLon - dotFwd * (moveMagLon / moveMag);
+    const perpMagNm = Math.sqrt(perpLat*perpLat + perpLon*perpLon) * 60;
+
+    // Cap perpendicular offset to just inside radius so waypoints stay separated
+    const perpCapNm = Math.min(perpMagNm, radiusNm * 0.9);
+    const perpScale = perpMagNm > 1e-6 ? perpCapNm / perpMagNm : 0;
+
+    const newLat = pushLat + (perpLat * perpScale) / 60;
+    const newLon = pushLon + (perpLon * perpScale) / (60 * Math.cos(circleLat * Math.PI / 180));
+
+    // Final check: ensure result is actually outside the circle
+    const dNew = _distNm(circleLng, circleLat, newLon, newLat);
+    if(dNew < radiusNm * 0.98){
+      // Fallback: radial push if geometry is degenerate
+      const fl = wlat - circleLat, fo = wlon - circleLng;
+      const fm = Math.sqrt(fl*fl + fo*fo) || 1e-9;
+      wpCoords[i] = [
+        circleLng + (fo/fm) * _nmToDeglon(radiusNm, circleLat),
+        circleLat + (fl/fm) * _nmToDeglat(radiusNm)
+      ];
+    } else {
+      wpCoords[i] = [newLon, newLat];
+    }
     anyMoved = true;
   }
   return anyMoved;
@@ -2132,7 +2194,8 @@ function _onPushClick(e){
     // tooltip will update on next mousemove
   } else {
     // ── Second click: save and deactivate ────────────────────────────────
-    _pushActive = false;
+    _pushActive  = false;
+    _prevPushGeo = null;
     _setPushStateLabel('idle');
     _setPushTooltip(null);
     document.querySelectorAll('.wp-marker').forEach(el => el.classList.remove('wp-marker-pushed'));
@@ -2160,20 +2223,28 @@ function _onPushMouseMove(e){
     : '🟠 Click to activate pusher';
   _setPushTooltip(tooltipText, px.x, px.y);
 
-  if(!_pushActive) return;
+  if(!_pushActive){
+    // Store last position even when idle so we have it on first active frame
+    _prevPushGeo = { lng: geo.lng, lat: geo.lat };
+    return;
+  }
 
-  // Apply rigid broom repulsion
-  const anyMoved = _applyBroomRepulsion(geo.lng, geo.lat, radiusNm);
+  // ── Movement vector: current position minus previous position ─────────────
+  const moveDLng = _prevPushGeo ? geo.lng - _prevPushGeo.lng : 0;
+  const moveDLat = _prevPushGeo ? geo.lat - _prevPushGeo.lat : 0;
+  _prevPushGeo = { lng: geo.lng, lat: geo.lat };
+
+  // Apply bulldozer push in movement direction
+  const anyMoved = _applyBroomRepulsion(geo.lng, geo.lat, radiusNm, moveDLng, moveDLat);
 
   if(anyMoved){
-    // Highlight waypoints sitting on the edge of the circle
+    // Highlight waypoints being pushed (near the front face of the circle)
     document.querySelectorAll('.wp-marker').forEach((el, j) => {
       const idx = wpMarkers[j]?.idx;
       if(idx == null) return;
       const [wlon, wlat] = wpCoords[idx];
       const d = _distNm(geo.lng, geo.lat, wlon, wlat);
-      // "on the edge" = within 10% of radius (just been pushed there)
-      el.classList.toggle('wp-marker-pushed', Math.abs(d - radiusNm) < radiusNm * 0.12);
+      el.classList.toggle('wp-marker-pushed', Math.abs(d - radiusNm) < radiusNm * 0.15);
     });
     rebuildWaypointMarkers();
     redrawRouteGeoJSON();
