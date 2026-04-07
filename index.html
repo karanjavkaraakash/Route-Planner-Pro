@@ -184,13 +184,95 @@ input:focus, select:focus { border-color: var(--accent); }
 
 /* ═══════════ SIMULATE VOYAGE ═══════════ */
 #sim-bar {
-  position: absolute; bottom: 0; left: 0; right: 0; height: 4px;
-  background: var(--border); z-index: 700; display: none;
+  position: absolute; bottom: 0; left: 0; right: 0; height: 5px;
+  background: rgba(255,255,255,.15); z-index: 700; display: none;
 }
-#sim-bar-fill { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
+#sim-bar-fill { height: 100%; background: linear-gradient(90deg,#0ea5e9,#22d3ee); width: 0%; transition: none; }
+
+/* Vessel marker — rotating SVG ship arrow */
 #sim-vessel {
-  position: absolute; z-index: 800; font-size: 20px; pointer-events: none;
-  transform: translate(-50%, -50%); display: none; transition: none;
+  position: absolute; z-index: 800; pointer-events: none;
+  width: 28px; height: 28px;
+  transform: translate(-50%, -50%) rotate(0deg);
+  display: none; transition: none;
+  filter: drop-shadow(0 0 6px rgba(14,165,233,.8));
+}
+
+/* Simulation HUD — floating info card */
+#sim-hud {
+  display: none;
+  position: absolute; top: 56px; right: 12px;
+  z-index: 750; width: 220px;
+  background: rgba(10,17,32,.88);
+  border: 1px solid rgba(14,165,233,.35);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  padding: 10px 12px;
+  font-family: 'Segoe UI', sans-serif;
+  color: #f1f5f9;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+}
+#sim-hud .hud-title {
+  font-size: 9px; font-weight: 700; color: #0ea5e9;
+  text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+#sim-hud .hud-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 5px;
+}
+#sim-hud .hud-label {
+  font-size: 9px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px;
+}
+#sim-hud .hud-val {
+  font-size: 12px; font-weight: 700; color: #f1f5f9;
+}
+#sim-hud .hud-val.accent { color: #0ea5e9; }
+#sim-hud .hud-val.warn   { color: #f59e0b; }
+#sim-hud .hud-val.danger { color: #ef4444; }
+#sim-hud .hud-divider {
+  height: 1px; background: rgba(255,255,255,.08); margin: 6px 0;
+}
+#sim-hud .hud-progress-bar {
+  height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 8px;
+}
+#sim-hud .hud-progress-fill {
+  height: 100%; background: linear-gradient(90deg,#0ea5e9,#22d3ee);
+  border-radius: 2px; transition: none;
+}
+#sim-hud .hud-beyond-fcst {
+  font-size: 9px; color: #f59e0b; text-align: center; margin-top: 6px;
+  display: none;
+}
+
+/* Simulation controls bar */
+#sim-controls {
+  display: none;
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 750;
+  background: rgba(10,17,32,.88);
+  border: 1px solid rgba(14,165,233,.25);
+  border-radius: 24px;
+  backdrop-filter: blur(8px);
+  padding: 6px 14px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+#sim-controls button {
+  background: none; border: none; color: #f1f5f9; cursor: pointer;
+  font-size: 16px; padding: 2px 4px; line-height: 1;
+  transition: color .15s;
+}
+#sim-controls button:hover { color: #0ea5e9; }
+.sim-speed-chip {
+  font-size: 10px; font-weight: 700; padding: 2px 8px;
+  border-radius: 10px; border: 1px solid rgba(255,255,255,.2);
+  color: #94a3b8; cursor: pointer; background: none; transition: all .15s;
+}
+.sim-speed-chip[aria-selected="true"] {
+  background: rgba(14,165,233,.2); border-color: #0ea5e9; color: #0ea5e9;
 }
 
 /* ═══════════ MODAL ═══════════ */
@@ -656,7 +738,8 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
         </div>
         <!-- ACTION BUTTONS -->
         <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px">
-          <button class="btn btn-success btn-full" onclick="startSimulation()">🚢 Simulate Voyage</button>
+          <button class="btn btn-success btn-full" id="sim-btn" onclick="startSimulation()" disabled
+            title="Load weather first to enable simulation">🚢 Simulate Voyage</button>
           <button class="btn btn-outline btn-full" id="export-btn" onclick="openExportModal()" disabled
             title="Click 'Load Weather' first">📄 Export Voyage Report</button>
         </div>
@@ -754,10 +837,60 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
   <!-- NOTIFICATION AREA -->
     <div id="notif-area"></div>
 
-    <!-- SIM BAR -->
+    <!-- SIM BAR — voyage progress timeline -->
     <div id="sim-bar"><div id="sim-bar-fill"></div></div>
-    <!-- SIM VESSEL EMOJI -->
-    <div id="sim-vessel">🚢</div>
+
+    <!-- SIM VESSEL — rotating SVG ship arrow -->
+    <svg id="sim-vessel" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+      <!-- Ship hull shape pointing UP (north = 0°) -->
+      <polygon points="14,2 22,24 14,20 6,24" fill="#0ea5e9" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+      <circle cx="14" cy="14" r="2.5" fill="#fff" opacity="0.9"/>
+    </svg>
+
+    <!-- SIM HUD — floating voyage info card -->
+    <div id="sim-hud">
+      <div class="hud-title">
+        <span>⚓ Voyage Simulation</span>
+        <span id="sim-hud-status" style="font-size:9px;color:#22d3ee">▶ PLAYING</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Date / Time</span>
+        <span class="hud-val accent" id="sim-hud-time">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Position</span>
+        <span class="hud-val" id="sim-hud-pos" style="font-size:10px">—</span>
+      </div>
+      <div class="hud-divider"></div>
+      <div class="hud-row">
+        <span class="hud-label">Wind</span>
+        <span class="hud-val" id="sim-hud-wind">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Wave</span>
+        <span class="hud-val" id="sim-hud-wave">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Eff. Speed</span>
+        <span class="hud-val" id="sim-hud-speed">—</span>
+      </div>
+      <div class="hud-divider"></div>
+      <div class="hud-row">
+        <span class="hud-label">Progress</span>
+        <span class="hud-val" id="sim-hud-progress">Day 0 of —</span>
+      </div>
+      <div class="hud-progress-bar"><div class="hud-progress-fill" id="sim-hud-pbar" style="width:0%"></div></div>
+    </div>
+
+    <!-- SIM CONTROLS — play/pause/stop + speed -->
+    <div id="sim-controls">
+      <button id="sim-btn-playpause" onclick="simTogglePlayPause()" title="Play / Pause">⏸</button>
+      <button onclick="stopSimulation()" title="Stop">⏹</button>
+      <div style="width:1px;height:16px;background:rgba(255,255,255,.15)"></div>
+      <button class="sim-speed-chip" data-h="3"  onclick="simSetSpeed(this)">0.5×</button>
+      <button class="sim-speed-chip" data-h="6"  onclick="simSetSpeed(this)" aria-selected="true">1×</button>
+      <button class="sim-speed-chip" data-h="12" onclick="simSetSpeed(this)">2×</button>
+    </div>
   </div>
 
 </div><!-- /app -->
@@ -16139,6 +16272,8 @@ async function calculateRoute(){
     window._wxDelayH  = null;
     const exportBtn = document.getElementById('export-btn');
     if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Click "Load Weather" first'; }
+    const simBtnR = document.getElementById('sim-btn');
+    if(simBtnR){ simBtnR.disabled = true; simBtnR.title = 'Load weather first to enable simulation'; }
     document.getElementById('max-stat-section').style.display = 'none';
     document.getElementById('wx-delay-section').style.display = 'none';
 
@@ -16309,7 +16444,7 @@ const WXA_STEPS = [
   { label: 'Parsing route geometry',          sub: 'Extracting waypoints & headings' },
   { label: 'Loading MapTiler wind tiles',     sub: 'Fitting viewport to full route extent' },
   { label: 'Sampling wind speed at waypoints',sub: 'Sequential MapTiler GFS pickAt · ocean legs split to 6h intervals' },
-  { label: 'Fetching wind direction',         sub: 'Open-Meteo ECMWF IFS 9km (16-day)' },
+  { label: 'Fetching wind direction',         sub: 'Open-Meteo ECMWF IFS · 2° resolution · sequential to avoid rate limits (~15s)' },
   { label: 'Fetching wave height & direction',sub: 'Open-Meteo Marine / ECMWF WAM (7-day)' },
   { label: 'Fetching ocean currents',         sub: 'Copernicus SMOC via Open-Meteo (7-day)' },
   { label: 'Applying speed loss model',       sub: 'Wave × direction factor + wind + current vector' },
@@ -16411,6 +16546,14 @@ function setWxaStep(idx){
   if(pctEl) pctEl.textContent = pct + '%';
 }
 
+// Update sub-text of a specific WXA step (used for live progress counters)
+function setWxaSubText(stepIdx, text){
+  const el = document.getElementById(`wxstep-${stepIdx}`);
+  if(!el) return;
+  const sub = el.querySelector('.wxa-step-sub');
+  if(sub) sub.textContent = text;
+}
+
 function hideWxAnalysisOverlay(){
   clearInterval(window._wxaTipTimer);
   const overlay = document.getElementById('wx-analysis-overlay');
@@ -16475,9 +16618,11 @@ async function loadWeatherAndAnalyse(){
       notify('Wind data coverage low ('+Math.round(coverage*100)+'%). Try again or check connection.','err');
       if(wxBtn){ wxBtn.disabled = false; wxBtn.textContent = '🌊 Retry Weather Analysis'; }
     } else {
-      // Enable export
+      // Enable export and simulation
       const exportBtn = document.getElementById('export-btn');
       if(exportBtn){ exportBtn.disabled = false; exportBtn.title = ''; }
+      const simBtn = document.getElementById('sim-btn');
+      if(simBtn){ simBtn.disabled = false; simBtn.title = ''; }
       if(wxBtn){
         wxBtn.textContent = '✅ Weather Loaded — Reload?';
         wxBtn.disabled = false;
@@ -16670,7 +16815,7 @@ async function fetchWindSpeedFromLayer(legs){
     if(targetSec < startSec - 3600 || targetSec > endSec + 3600) continue;
 
     windLayer.setAnimationTime(targetSec);
-    await new Promise(r => setTimeout(r, 80)); // speed field updates quickly
+    await new Promise(r => setTimeout(r, 50)); // speed field updates quickly
 
     try {
       const val = windLayer.pickAt(nlon, lat);
@@ -16688,21 +16833,40 @@ async function fetchWindSpeedFromLayer(legs){
 
 // ── Open-Meteo — wind DIRECTION (+ fallback speed) ────────────────────────────
 // Uses ECMWF IFS 025 model. Batched by 2° grid cell + date to minimise API calls.
-// Key fix: use start_date/end_date WITHOUT forecast_days — they conflict.
+// Wind direction from Open-Meteo ECMWF IFS 025.
+//
+// Rate-limit strategy (Open-Meteo free tier ~10 req/s):
+//   - 2° grid clustering: preserves ~220nm weather resolution (correct for maritime use)
+//     A full transatlantic voyage produces ~40-50 unique groups — manageable.
+//   - Sequential requests, one at a time with 300ms gap: ~15s for 50 groups.
+//     This is slower than batching but completely avoids rate-limit 429s.
+//   - On 429: exponential backoff — wait 2s then 4s, up to 2 retries per group.
+//   - On 502/504/empty: skip immediately (beyond model range or server error).
+//   - Hard cap: skip legs beyond 10 days (ecmwf_ifs025 reliable limit).
+//
+// 2° clustering keeps full weather detail. Total time ~10-20s depending on voyage length.
 async function fetchOpenMeteoWindDirBatch(legs){
   if(!legs.length) return legs.map(() => null);
   const results = new Array(legs.length).fill(null);
 
+  const MAX_FORECAST_DAYS = 10;   // ecmwf_ifs025 reliable limit
+  const CLUSTER_DEG       = 2;    // 2° grid — ~220nm resolution, correct for maritime
+  const GAP_MS            = 300;  // ms between sequential requests
+  const TIMEOUT_MS        = 8000; // per-request timeout
+  const MAX_RETRIES       = 2;    // retries on 429
+  const RETRY_DELAY_MS    = 2000; // base wait before retry on 429 (doubles each retry)
+
+  // Build groups — cluster to CLUSTER_DEG grid to deduplicate nearby sub-legs
   const groups = new Map();
   legs.forEach(({ lat, lon, date }, idx) => {
     const nlon = normLon(lon);
     const diffDays = (date - new Date()) / 86400000;
-    if(diffDays < -1 || diffDays > 15.5) return;
-    // 2° grid clustering — round to nearest even integer
-    const gLat = (Math.round(lat  / 2) * 2).toFixed(2);
-    const gLon = (Math.round(nlon / 2) * 2).toFixed(2);
+    if(diffDays < -1 || diffDays > MAX_FORECAST_DAYS) return;
+
+    const gLat    = (Math.round(lat  / CLUSTER_DEG) * CLUSTER_DEG).toFixed(2);
+    const gLon    = (Math.round(nlon / CLUSTER_DEG) * CLUSTER_DEG).toFixed(2);
     const dateStr = date.toISOString().slice(0,10);
-    const key = `${gLat}|${gLon}|${dateStr}`;
+    const key     = `${gLat}|${gLon}|${dateStr}`;
     if(!groups.has(key)) groups.set(key, {
       lat: parseFloat(gLat), lon: parseFloat(gLon),
       dateStr, indices: []
@@ -16711,20 +16875,36 @@ async function fetchOpenMeteoWindDirBatch(legs){
   });
 
   const groupList = [...groups.values()];
-  for(let i = 0; i < groupList.length; i += 4){
-    await Promise.all(groupList.slice(i, i+4).map(async g => {
+
+  // Fetch one group — sequential, with retry on 429
+  async function fetchGroup(g){
+    const url = `https://api.open-meteo.com/v1/forecast`
+      + `?latitude=${g.lat.toFixed(2)}&longitude=${g.lon.toFixed(2)}`
+      + `&hourly=wind_speed_10m,wind_direction_10m`
+      + `&wind_speed_unit=kn&timezone=UTC`
+      + `&models=ecmwf_ifs025`
+      + `&start_date=${g.dateStr}&end_date=${g.dateStr}`;
+
+    for(let attempt = 0; attempt <= MAX_RETRIES; attempt++){
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
       try {
-        // Use start_date + end_date only — do NOT include forecast_days (it overrides the dates)
-        const url = `https://api.open-meteo.com/v1/forecast`
-          + `?latitude=${g.lat.toFixed(2)}&longitude=${g.lon.toFixed(2)}`
-          + `&hourly=wind_speed_10m,wind_direction_10m`
-          + `&wind_speed_unit=kn&timezone=UTC`
-          + `&models=ecmwf_ifs025`
-          + `&start_date=${g.dateStr}&end_date=${g.dateStr}`;
-        const r = await fetch(url);
-        if(!r.ok) return;
+        const r = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(timer);
+
+        if(r.status === 429){
+          if(attempt < MAX_RETRIES){
+            // Exponential backoff: 2s, 4s
+            await new Promise(res => setTimeout(res, RETRY_DELAY_MS * (attempt + 1)));
+            continue;
+          }
+          return; // give up after retries
+        }
+        if(!r.ok) return; // 502/504 — beyond model range, skip
+
         const d = await r.json();
         if(!d.hourly?.wind_direction_10m) return;
+
         g.indices.forEach(idx => {
           const hr = legs[idx].date.getUTCHours();
           const ws = d.hourly.wind_speed_10m?.[hr];
@@ -16734,10 +16914,25 @@ async function fetchOpenMeteoWindDirBatch(legs){
             windDir: Math.round(wd)
           };
         });
-      } catch(e){ console.warn('WindDir fetch error:', e.message); }
-    }));
-    if(i + 4 < groupList.length) await new Promise(r => setTimeout(r, 120));
+        return; // success
+
+      } catch(e){
+        clearTimeout(timer);
+        if(e.name !== 'AbortError') console.warn('WindDir fetch error:', e.message);
+        return;
+      }
+    }
   }
+
+  // Fire ALL groups sequentially — one request at a time, 300ms gap
+  // ~40-50 groups × 300ms = 12-15s for a full transatlantic voyage
+  for(let i = 0; i < groupList.length; i++){
+    setWxaSubText(3, `Open-Meteo ECMWF IFS · 2° resolution · ${i+1} / ${groupList.length} points`);
+    await fetchGroup(groupList[i]);
+    if(i < groupList.length - 1) await new Promise(r => setTimeout(r, GAP_MS));
+  }
+  setWxaSubText(3, `Open-Meteo ECMWF IFS · 2° resolution · ${groupList.length} points complete`);
+
   return results;
 }
 
@@ -16747,10 +16942,13 @@ async function fetchOpenMeteoMarine(lat, lon, targetDate){
   const diffDays = (targetDate - new Date()) / 86400000;
   if(diffDays < -1 || diffDays > 6.5) return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
 
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
     const dateStr = targetDate.toISOString().slice(0,10);
     const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat.toFixed(4)}&longitude=${nlon.toFixed(4)}&hourly=wave_height,wave_direction,ocean_current_velocity,ocean_current_direction&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}`;
-    const r = await fetch(url);
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
     if(!r.ok) return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
     const d = await r.json();
     if(!d.hourly) return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
@@ -16766,9 +16964,32 @@ async function fetchOpenMeteoMarine(lat, lon, targetDate){
       currentDir: cdir != null ? Math.round(parseFloat(cdir))            : null
     };
   } catch(e){
-    console.warn('Marine fetch:', e.message);
+    clearTimeout(timer);
+    if(e.name !== 'AbortError') console.warn('Marine fetch:', e.message);
     return { waveM: null, waveDir: null, currentKn: null, currentDir: null };
   }
+}
+
+// ── Throttled marine batch: max 4 parallel, 400ms between batches ─────────────
+// marine-api.open-meteo.com has its own separate rate limit.
+// 4 parallel with 400ms gap ≈ 10 req/s max, well within free tier.
+// Legs already filtered by fetchOpenMeteoMarine's diffDays check.
+async function fetchOpenMeteoMarineBatch(legs){
+  const NULL_RESULT = { waveM: null, waveDir: null, currentKn: null, currentDir: null };
+  const MARINE_BATCH  = 4;
+  const MARINE_GAP_MS = 400;
+  const results = [];
+
+  for(let i = 0; i < legs.length; i += MARINE_BATCH){
+    const batch = legs.slice(i, i + MARINE_BATCH);
+    const batchResults = await Promise.all(
+      batch.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr)
+        .catch(() => NULL_RESULT))
+    );
+    results.push(...batchResults);
+    if(i + MARINE_BATCH < legs.length) await new Promise(r => setTimeout(r, MARINE_GAP_MS));
+  }
+  return results;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -16949,12 +17170,16 @@ async function fetchRouteWeather(){
     legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))
   );
 
-  // ── Step B: Wind DIRECTION + fallback speed from Open-Meteo ──────────────────
+  // ── Step B: Wind DIRECTION + marine — run sequentially to avoid rate limits ──
+  // Wind direction: sequential 1-at-a-time with 300ms gaps (handles 429 with backoff)
+  // Marine: batches of 4 with 400ms gaps (separate API endpoint, separate limit)
   setWxaStep(3);
-  const [windDirResults, marineResults] = await Promise.all([
-    fetchOpenMeteoWindDirBatch(legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))),
-    (setWxaStep(4), Promise.all(legs.map(l => fetchOpenMeteoMarine(l.midLat, l.midLon, l.tArr))))
-  ]);
+  const windDirResults = await fetchOpenMeteoWindDirBatch(
+    legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }))
+  );
+
+  setWxaStep(4);
+  const marineResults = await fetchOpenMeteoMarineBatch(legs);
   setWxaStep(6);
 
   // ── Merge: prefer MapTiler speed, Open-Meteo direction ───────────────────────
@@ -17071,6 +17296,8 @@ function clearAll(){
   window._wxDelayH  = null;
   const exportBtn = document.getElementById('export-btn');
   if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Calculate a route first'; }
+  const simBtnC = document.getElementById('sim-btn');
+  if(simBtnC){ simBtnC.disabled = true; simBtnC.title = 'Load weather first to enable simulation'; }
   const wxBtn = document.getElementById('load-wx-btn');
   if(wxBtn){
     wxBtn.disabled = false;
@@ -17093,43 +17320,235 @@ function clearAll(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   VOYAGE SIMULATION
+   VOYAGE SIMULATION ENGINE
+   ---------------------------------------------------------------
+   Reads vessel position from pre-built arc points (wpCoords).
+   Reads all weather data from window._wxResults — the same table
+   used for PDF generation. No API calls, no wind layer control.
+   Wind layer remains in whatever state the user left it.
    ═══════════════════════════════════════════════════════════════ */
-function startSimulation(){
-  if(wpCoords.length<2){ notify('Calculate a route first','err'); return; }
-  stopSimulation();
-  const vessel=document.getElementById('sim-vessel');
-  vessel.style.display='block';
-  document.getElementById('sim-bar').style.display='block';
-  const pts=buildSimPoints();
-  let idx=0;
-  function step(){
-    if(idx>=pts.length){ stopSimulation(); return; }
-    const [lon,lat]=pts[idx];
-    const px=map.project([lon,lat]);
-    vessel.style.left=px.x+'px';
-    vessel.style.top=px.y+'px';
-    document.getElementById('sim-bar-fill').style.width=(idx/pts.length*100)+'%';
-    idx++;
-    simTimer=setTimeout(step,40);
-  }
-  step();
-}
+
+let simPaused     = false;
+let simVoyageH    = 0;       // current elapsed voyage hours
+let simTotalH     = 0;       // total voyage hours (weather-adjusted, from _wxResults)
+let simDepMs      = 0;       // departure epoch ms
+let simLastRealMs = null;    // last rAF timestamp
+let simSpeedH     = 6;       // voyage hours per real second (default 1×)
+let simSimPts     = [];      // [{lon,lat,voyageH,bearing}] — smooth arc points
+
+// ── Build smooth arc points from wpCoords ─────────────────────────────────
+// Uses adjusted total hours from _wxResults so timing matches the weather table.
 function buildSimPoints(){
-  const pts=[];
-  for(let i=0;i<wpCoords.length-1;i++){
-    const [lo1,la1]=wpCoords[i],[lo2,la2]=wpCoords[i+1];
-    const arc=GEO.gcArc(la1,lo1,la2,lo2,80);
-    if(i>0) arc.shift();
-    pts.push(...arc);
+  const wxr = window._wxResults;
+  // Use weather-adjusted total time if available, else ordered
+  const adjTotalH = window._wxAdjTotalH;
+  const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
+
+  const pts = [];
+  let accH = 0;
+
+  for(let i = 0; i < wpCoords.length - 1; i++){
+    const [lo1, la1] = wpCoords[i];
+    const [lo2, la2] = wpCoords[i + 1];
+    const arc       = GEO.gcArc(la1, lo1, la2, lo2, 60);
+    const segDistNm = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+    const segH      = segDistNm / orderedKn;
+
+    for(let j = (i === 0 ? 0 : 1); j < arc.length; j++){
+      const f   = j / (arc.length - 1);
+      const ptH = accH + f * segH;
+      let bearing = 0;
+      if(j < arc.length - 1){
+        bearing = GEO.initialBearing(arc[j][1], arc[j][0], arc[j+1][1], arc[j+1][0]);
+      } else if(pts.length > 0){
+        bearing = pts[pts.length - 1].bearing;
+      }
+      pts.push({ lon: arc[j][0], lat: arc[j][1], voyageH: ptH, bearing });
+    }
+    accH += segH;
   }
   return pts;
 }
-function stopSimulation(){
-  if(simTimer){ clearTimeout(simTimer); simTimer=null; }
-  document.getElementById('sim-vessel').style.display='none';
-  document.getElementById('sim-bar').style.display='none';
+
+// ── Interpolate position at voyage hour h ─────────────────────────────────
+function simPtAtH(h){
+  if(!simSimPts.length) return null;
+  if(h <= 0)            return simSimPts[0];
+  if(h >= simTotalH)    return simSimPts[simSimPts.length - 1];
+  let lo = 0, hi = simSimPts.length - 1;
+  while(lo < hi - 1){
+    const mid = (lo + hi) >> 1;
+    if(simSimPts[mid].voyageH <= h) lo = mid; else hi = mid;
+  }
+  const a = simSimPts[lo], b = simSimPts[hi];
+  const f = (h - a.voyageH) / Math.max(1e-9, b.voyageH - a.voyageH);
+  let dLon = b.lon - a.lon;
+  while(dLon >  180) dLon -= 360;
+  while(dLon < -180) dLon += 360;
+  return {
+    lon:     normLon(a.lon + dLon * f),
+    lat:     a.lat + (b.lat - a.lat) * f,
+    voyageH: h,
+    bearing: a.bearing
+  };
 }
+
+// ── Find nearest _wxResults entry for a given voyage hour ─────────────────
+function simWxAtH(h){
+  const wxr = window._wxResults;
+  if(!wxr || !wxr.length) return null;
+  let best = null, bestDiff = Infinity;
+  for(const r of wxr){
+    const rH = ((r.adjustedTArr ?? r.tArr).getTime() - simDepMs) / 3600000;
+    const diff = Math.abs(rH - h);
+    if(diff < bestDiff){ bestDiff = diff; best = r; }
+  }
+  return best;
+}
+
+// ── Update HUD from _wxResults ─────────────────────────────────────────────
+function simUpdateHud(pt, h){
+  if(!pt) return;
+
+  // Date/time
+  const t = new Date(simDepMs + h * 3600000);
+  document.getElementById('sim-hud-time').textContent =
+    t.toUTCString().slice(5,22) + ' UTC';
+
+  // Position
+  document.getElementById('sim-hud-pos').textContent = fmtCoord(pt.lat, pt.lon);
+
+  // Progress
+  const dayNum = Math.floor(h / 24) + 1;
+  const totalD = Math.ceil(simTotalH / 24);
+  document.getElementById('sim-hud-progress').textContent = `Day ${dayNum} of ${totalD}`;
+  document.getElementById('sim-hud-pbar').style.width =
+    Math.min(100, (h / simTotalH) * 100).toFixed(1) + '%';
+
+  // Weather from _wxResults — same data as PDF table
+  const wx = simWxAtH(h);
+  if(wx){
+    const dirs   = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    const windKn = wx.windKn != null ? parseFloat(wx.windKn) : null;
+    const windDir= wx.windDir != null ? ' ' + dirs[Math.round(wx.windDir/22.5)%16] + ' ' + wx.windDir + '°' : '';
+    const windEl = document.getElementById('sim-hud-wind');
+    windEl.textContent = windKn != null ? windKn.toFixed(1) + ' kt' + windDir : '—';
+    windEl.className   = 'hud-val' + (windKn >= 25 ? ' danger' : windKn >= 18 ? ' warn' : '');
+
+    const waveM  = wx.waveM != null ? parseFloat(wx.waveM) : null;
+    const waveEl = document.getElementById('sim-hud-wave');
+    waveEl.textContent = waveM != null ? waveM.toFixed(1) + ' m' : '—';
+    waveEl.className   = 'hud-val' + (waveM >= 3 ? ' danger' : waveM >= 2 ? ' warn' : '');
+
+    const effEl = document.getElementById('sim-hud-speed');
+    effEl.textContent = wx.effectiveKn != null ? wx.effectiveKn.toFixed(1) + ' kt' : '—';
+    effEl.className   = 'hud-val' + (wx.effectiveKn < 8 ? ' danger' : wx.effectiveKn < 11 ? ' warn' : ' accent');
+  } else {
+    ['sim-hud-wind','sim-hud-wave','sim-hud-speed'].forEach(id => {
+      const el = document.getElementById(id);
+      el.textContent = '—'; el.className = 'hud-val';
+    });
+  }
+}
+
+// ── rAF animation loop ─────────────────────────────────────────────────────
+function simFrame(realMs){
+  if(!simTimer) return;
+
+  if(!simPaused && simLastRealMs != null){
+    simVoyageH += (realMs - simLastRealMs) / 1000 * simSpeedH;
+  }
+  simLastRealMs = realMs;
+
+  if(simVoyageH >= simTotalH){
+    simVoyageH = simTotalH;
+    simFinish();
+    return;
+  }
+
+  const pt = simPtAtH(simVoyageH);
+  if(pt){
+    const px = map.project([pt.lon, pt.lat]);
+    const vessel = document.getElementById('sim-vessel');
+    vessel.style.left      = px.x + 'px';
+    vessel.style.top       = px.y + 'px';
+    vessel.style.transform = `translate(-50%,-50%) rotate(${pt.bearing.toFixed(0)}deg)`;
+  }
+
+  document.getElementById('sim-bar-fill').style.width =
+    (simVoyageH / simTotalH * 100).toFixed(2) + '%';
+
+  simUpdateHud(pt, simVoyageH);
+
+  // Note: wind layer is NOT driven here — user controls it independently
+  simTimer = requestAnimationFrame(simFrame);
+}
+
+function simFinish(){
+  simTimer = null;
+  document.getElementById('sim-btn-playpause').textContent = '▶';
+  document.getElementById('sim-hud-status').textContent    = '✓ COMPLETE';
+  document.getElementById('sim-bar-fill').style.width      = '100%';
+  notify('Simulation complete','ok');
+}
+
+// ── Public controls ────────────────────────────────────────────────────────
+function startSimulation(){
+  if(wpCoords.length < 2)    { notify('Calculate a route first','err'); return; }
+  if(!window._wxResults)     { notify('Load weather first','err');      return; }
+  stopSimulation();
+
+  // Build position arc and timing from wpCoords + _wxResults
+  simSimPts     = buildSimPoints();
+  simTotalH     = window._wxAdjTotalH
+                  || (simSimPts[simSimPts.length - 1]?.voyageH || 0);
+  simVoyageH    = 0;
+  simPaused     = false;
+  simLastRealMs = null;
+
+  const depStr  = document.getElementById('dep-time').value;
+  simDepMs      = depStr ? new Date(depStr).getTime() : Date.now();
+
+  // Show UI — wind layer is NOT touched
+  document.getElementById('sim-vessel').style.display      = 'block';
+  document.getElementById('sim-bar').style.display         = 'block';
+  document.getElementById('sim-hud').style.display         = 'block';
+  document.getElementById('sim-controls').style.display    = 'flex';
+  document.getElementById('sim-btn-playpause').textContent = '⏸';
+  document.getElementById('sim-hud-status').textContent    = '▶ PLAYING';
+  document.getElementById('sim-bar-fill').style.width      = '0%';
+
+  simTimer = requestAnimationFrame(simFrame);
+  notify('Simulation started — toggle wind/wave layers as needed','ok');
+}
+
+function simTogglePlayPause(){
+  simPaused = !simPaused;
+  simLastRealMs = null;
+  document.getElementById('sim-btn-playpause').textContent = simPaused ? '▶' : '⏸';
+  document.getElementById('sim-hud-status').textContent    = simPaused ? '⏸ PAUSED' : '▶ PLAYING';
+  if(!simPaused && !simTimer) simTimer = requestAnimationFrame(simFrame);
+}
+
+function simSetSpeed(chip){
+  document.querySelectorAll('.sim-speed-chip').forEach(c => c.removeAttribute('aria-selected'));
+  chip.setAttribute('aria-selected','true');
+  simSpeedH     = parseFloat(chip.dataset.h);
+  simLastRealMs = null;
+}
+
+function stopSimulation(){
+  if(simTimer){ cancelAnimationFrame(simTimer); simTimer = null; }
+  simPaused = false;
+  document.getElementById('sim-vessel').style.display      = 'none';
+  document.getElementById('sim-bar').style.display         = 'none';
+  document.getElementById('sim-hud').style.display         = 'none';
+  document.getElementById('sim-controls').style.display    = 'none';
+  document.getElementById('sim-bar-fill').style.width      = '0%';
+  // Wind layer intentionally NOT touched — remains in user's chosen state
+}
+
+function buildSimPoints_legacy(){ return buildSimPoints(); }
 
 /* ═══════════════════════════════════════════════════════════════
    EXPORT MODAL
