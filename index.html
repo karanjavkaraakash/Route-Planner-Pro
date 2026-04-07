@@ -880,7 +880,6 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
         <span class="hud-val" id="sim-hud-progress">Day 0 of —</span>
       </div>
       <div class="hud-progress-bar"><div class="hud-progress-fill" id="sim-hud-pbar" style="width:0%"></div></div>
-      <div class="hud-beyond-fcst" id="sim-beyond-fcst">⚠ Beyond wind forecast range</div>
     </div>
 
     <!-- SIM CONTROLS — play/pause/stop + speed -->
@@ -17321,44 +17320,43 @@ function clearAll(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   VOYAGE SIMULATION
-   ═══════════════════════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════════════════════
    VOYAGE SIMULATION ENGINE
    ---------------------------------------------------------------
-   Time-based playback using requestAnimationFrame.
-   Vessel moves along the route proportional to elapsed voyage time.
-   Wind layer advances in sync with vessel time (freezes after 5-day
-   GFS forecast, but HUD continues from _wxResults for full voyage).
+   Reads vessel position from pre-built arc points (wpCoords).
+   Reads all weather data from window._wxResults — the same table
+   used for PDF generation. No API calls, no wind layer control.
+   Wind layer remains in whatever state the user left it.
    ═══════════════════════════════════════════════════════════════ */
 
-let simPaused       = false;
-let simVoyageH      = 0;        // current elapsed voyage hours
-let simTotalH       = 0;        // total voyage hours (ordered)
-let simDepMs        = 0;        // departure epoch ms
-let simLastRealMs   = null;     // last rAF timestamp
-let simSpeedH       = 6;        // voyage hours per real second (default 1×)
-let simSimPts       = [];       // [{lon,lat,voyageH,bearing}] — pre-built
+let simPaused     = false;
+let simVoyageH    = 0;       // current elapsed voyage hours
+let simTotalH     = 0;       // total voyage hours (weather-adjusted, from _wxResults)
+let simDepMs      = 0;       // departure epoch ms
+let simLastRealMs = null;    // last rAF timestamp
+let simSpeedH     = 6;       // voyage hours per real second (default 1×)
+let simSimPts     = [];      // [{lon,lat,voyageH,bearing}] — smooth arc points
 
-// ── Build simulation waypoints ─────────────────────────────────────────────
-// Each point carries its accumulated voyage hours so we can interpolate
-// vessel position from simVoyageH at any time.
+// ── Build smooth arc points from wpCoords ─────────────────────────────────
+// Uses adjusted total hours from _wxResults so timing matches the weather table.
 function buildSimPoints(){
+  const wxr = window._wxResults;
+  // Use weather-adjusted total time if available, else ordered
+  const adjTotalH = window._wxAdjTotalH;
   const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
+
   const pts = [];
   let accH = 0;
 
   for(let i = 0; i < wpCoords.length - 1; i++){
     const [lo1, la1] = wpCoords[i];
     const [lo2, la2] = wpCoords[i + 1];
-    const arc        = GEO.gcArc(la1, lo1, la2, lo2, 60);
-    const segDistNm  = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
-    const segH       = segDistNm / orderedKn;
+    const arc       = GEO.gcArc(la1, lo1, la2, lo2, 60);
+    const segDistNm = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+    const segH      = segDistNm / orderedKn;
 
     for(let j = (i === 0 ? 0 : 1); j < arc.length; j++){
       const f   = j / (arc.length - 1);
       const ptH = accH + f * segH;
-      // Bearing: use direction to next arc point
       let bearing = 0;
       if(j < arc.length - 1){
         bearing = GEO.initialBearing(arc[j][1], arc[j][0], arc[j+1][1], arc[j+1][0]);
@@ -17372,18 +17370,16 @@ function buildSimPoints(){
   return pts;
 }
 
-// ── Find sim point for a given voyage hour ─────────────────────────────────
+// ── Interpolate position at voyage hour h ─────────────────────────────────
 function simPtAtH(h){
   if(!simSimPts.length) return null;
-  if(h <= 0)           return simSimPts[0];
-  if(h >= simTotalH)   return simSimPts[simSimPts.length - 1];
-  // Binary search
+  if(h <= 0)            return simSimPts[0];
+  if(h >= simTotalH)    return simSimPts[simSimPts.length - 1];
   let lo = 0, hi = simSimPts.length - 1;
   while(lo < hi - 1){
     const mid = (lo + hi) >> 1;
     if(simSimPts[mid].voyageH <= h) lo = mid; else hi = mid;
   }
-  // Interpolate between lo and hi
   const a = simSimPts[lo], b = simSimPts[hi];
   const f = (h - a.voyageH) / Math.max(1e-9, b.voyageH - a.voyageH);
   let dLon = b.lon - a.lon;
@@ -17397,23 +17393,20 @@ function simPtAtH(h){
   };
 }
 
-// ── Find best _wxResults entry for a given voyage hour ────────────────────
+// ── Find nearest _wxResults entry for a given voyage hour ─────────────────
 function simWxAtH(h){
   const wxr = window._wxResults;
   if(!wxr || !wxr.length) return null;
-  // Find the result whose voyage time is closest to h
-  // Results have tArr (ordered) and adjustedTArr
-  const depMs = simDepMs;
   let best = null, bestDiff = Infinity;
   for(const r of wxr){
-    const rH = ((r.adjustedTArr ?? r.tArr).getTime() - depMs) / 3600000;
+    const rH = ((r.adjustedTArr ?? r.tArr).getTime() - simDepMs) / 3600000;
     const diff = Math.abs(rH - h);
     if(diff < bestDiff){ bestDiff = diff; best = r; }
   }
   return best;
 }
 
-// ── Update HUD ─────────────────────────────────────────────────────────────
+// ── Update HUD from _wxResults ─────────────────────────────────────────────
 function simUpdateHud(pt, h){
   if(!pt) return;
 
@@ -17423,80 +17416,47 @@ function simUpdateHud(pt, h){
     t.toUTCString().slice(5,22) + ' UTC';
 
   // Position
-  document.getElementById('sim-hud-pos').textContent =
-    fmtCoord(pt.lat, pt.lon);
+  document.getElementById('sim-hud-pos').textContent = fmtCoord(pt.lat, pt.lon);
 
-  // Day progress
-  const dayNum  = Math.floor(h / 24) + 1;
-  const totalD  = Math.ceil(simTotalH / 24);
-  document.getElementById('sim-hud-progress').textContent =
-    `Day ${dayNum} of ${totalD}`;
+  // Progress
+  const dayNum = Math.floor(h / 24) + 1;
+  const totalD = Math.ceil(simTotalH / 24);
+  document.getElementById('sim-hud-progress').textContent = `Day ${dayNum} of ${totalD}`;
   document.getElementById('sim-hud-pbar').style.width =
     Math.min(100, (h / simTotalH) * 100).toFixed(1) + '%';
 
-  // Weather from wxResults
+  // Weather from _wxResults — same data as PDF table
   const wx = simWxAtH(h);
   if(wx){
-    // Wind
-    const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-    const windDir = wx.windDir != null ? dirs[Math.round(wx.windDir/22.5)%16]+' '+wx.windDir+'°' : '';
-    const windKn  = wx.windKn  != null ? parseFloat(wx.windKn) : null;
-    const windTxt = windKn != null ? windKn.toFixed(1)+' kt' + (windDir ? '  '+windDir : '') : '—';
-    const windEl  = document.getElementById('sim-hud-wind');
-    windEl.textContent = windTxt;
+    const dirs   = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    const windKn = wx.windKn != null ? parseFloat(wx.windKn) : null;
+    const windDir= wx.windDir != null ? ' ' + dirs[Math.round(wx.windDir/22.5)%16] + ' ' + wx.windDir + '°' : '';
+    const windEl = document.getElementById('sim-hud-wind');
+    windEl.textContent = windKn != null ? windKn.toFixed(1) + ' kt' + windDir : '—';
     windEl.className   = 'hud-val' + (windKn >= 25 ? ' danger' : windKn >= 18 ? ' warn' : '');
 
-    // Wave
     const waveM  = wx.waveM != null ? parseFloat(wx.waveM) : null;
     const waveEl = document.getElementById('sim-hud-wave');
-    waveEl.textContent = waveM != null ? waveM.toFixed(1)+' m' : '—';
+    waveEl.textContent = waveM != null ? waveM.toFixed(1) + ' m' : '—';
     waveEl.className   = 'hud-val' + (waveM >= 3 ? ' danger' : waveM >= 2 ? ' warn' : '');
 
-    // Effective speed
     const effEl = document.getElementById('sim-hud-speed');
-    effEl.textContent  = wx.effectiveKn != null ? wx.effectiveKn.toFixed(1)+' kt' : '—';
-    effEl.className    = 'hud-val' + (wx.effectiveKn < 8 ? ' danger' : wx.effectiveKn < 11 ? ' warn' : ' accent');
+    effEl.textContent = wx.effectiveKn != null ? wx.effectiveKn.toFixed(1) + ' kt' : '—';
+    effEl.className   = 'hud-val' + (wx.effectiveKn < 8 ? ' danger' : wx.effectiveKn < 11 ? ' warn' : ' accent');
   } else {
     ['sim-hud-wind','sim-hud-wave','sim-hud-speed'].forEach(id => {
-      document.getElementById(id).textContent = '—';
-      document.getElementById(id).className = 'hud-val';
+      const el = document.getElementById(id);
+      el.textContent = '—'; el.className = 'hud-val';
     });
   }
-
-  // Beyond forecast warning
-  const windFcstEndH = 5 * 24; // MapTiler GFS 5-day
-  document.getElementById('sim-beyond-fcst').style.display =
-    h > windFcstEndH ? 'block' : 'none';
 }
 
-// ── Sync wind layer to current voyage time ─────────────────────────────────
-function simSyncWindLayer(h){
-  if(!windLayer) return;
-  const tSec = (simDepMs / 1000) + h * 3600;
-  const startSec = typeof windLayer.getAnimationStart === 'function' ? windLayer.getAnimationStart() : null;
-  const endSec   = typeof windLayer.getAnimationEnd   === 'function' ? windLayer.getAnimationEnd()   : null;
-  if(startSec == null || endSec == null) return;
-
-  if(tSec <= endSec){
-    // Within forecast range — set to exact voyage time
-    const clampedSec = Math.max(startSec, Math.min(endSec, tSec));
-    windLayer.animateByFactor(0);   // pause auto-animation
-    windLayer.setAnimationTime(clampedSec);
-  } else {
-    // Beyond forecast — freeze at last frame
-    windLayer.animateByFactor(0);
-    windLayer.setAnimationTime(endSec);
-  }
-}
-
-// ── Main animation loop ────────────────────────────────────────────────────
+// ── rAF animation loop ─────────────────────────────────────────────────────
 function simFrame(realMs){
-  if(!simTimer) return; // stopped
+  if(!simTimer) return;
 
-  // Advance voyage time
   if(!simPaused && simLastRealMs != null){
-    const dtReal = (realMs - simLastRealMs) / 1000; // real seconds elapsed
-    simVoyageH  += dtReal * simSpeedH;              // voyage hours advanced
+    simVoyageH += (realMs - simLastRealMs) / 1000 * simSpeedH;
   }
   simLastRealMs = realMs;
 
@@ -17506,106 +17466,89 @@ function simFrame(realMs){
     return;
   }
 
-  // Get position
   const pt = simPtAtH(simVoyageH);
   if(pt){
     const px = map.project([pt.lon, pt.lat]);
     const vessel = document.getElementById('sim-vessel');
-    vessel.style.left = px.x + 'px';
-    vessel.style.top  = px.y + 'px';
-    // Rotate: SVG points UP (north) at 0°. CSS rotation adds bearing.
+    vessel.style.left      = px.x + 'px';
+    vessel.style.top       = px.y + 'px';
     vessel.style.transform = `translate(-50%,-50%) rotate(${pt.bearing.toFixed(0)}deg)`;
   }
 
-  // Progress bar
-  const pct = (simVoyageH / simTotalH * 100).toFixed(2);
-  document.getElementById('sim-bar-fill').style.width = pct + '%';
+  document.getElementById('sim-bar-fill').style.width =
+    (simVoyageH / simTotalH * 100).toFixed(2) + '%';
 
-  // HUD update
   simUpdateHud(pt, simVoyageH);
 
-  // Wind layer sync
-  simSyncWindLayer(simVoyageH);
-
+  // Note: wind layer is NOT driven here — user controls it independently
   simTimer = requestAnimationFrame(simFrame);
 }
 
-// ── Finish simulation ──────────────────────────────────────────────────────
 function simFinish(){
   simTimer = null;
   document.getElementById('sim-btn-playpause').textContent = '▶';
-  document.getElementById('sim-hud-status').textContent = '✓ COMPLETE';
-  document.getElementById('sim-bar-fill').style.width = '100%';
-  // Resume wind auto-animation
-  if(windLayer) windLayer.animateByFactor(3600);
+  document.getElementById('sim-hud-status').textContent    = '✓ COMPLETE';
+  document.getElementById('sim-bar-fill').style.width      = '100%';
   notify('Simulation complete','ok');
 }
 
 // ── Public controls ────────────────────────────────────────────────────────
 function startSimulation(){
-  if(wpCoords.length < 2){ notify('Calculate a route first','err'); return; }
-  if(!window._wxResults){ notify('Load weather first','err'); return; }
+  if(wpCoords.length < 2)    { notify('Calculate a route first','err'); return; }
+  if(!window._wxResults)     { notify('Load weather first','err');      return; }
   stopSimulation();
 
-  // Activate wind layer for simulation
-  if(wxMode !== 'wind') toggleWx('wind');
-
-  // Build points and state
-  simSimPts  = buildSimPoints();
-  simTotalH  = simSimPts[simSimPts.length - 1]?.voyageH || 0;
-  simVoyageH = 0;
-  simPaused  = false;
+  // Build position arc and timing from wpCoords + _wxResults
+  simSimPts     = buildSimPoints();
+  simTotalH     = window._wxAdjTotalH
+                  || (simSimPts[simSimPts.length - 1]?.voyageH || 0);
+  simVoyageH    = 0;
+  simPaused     = false;
   simLastRealMs = null;
 
-  const depStr = document.getElementById('dep-time').value;
-  simDepMs = depStr ? new Date(depStr).getTime() : Date.now();
+  const depStr  = document.getElementById('dep-time').value;
+  simDepMs      = depStr ? new Date(depStr).getTime() : Date.now();
 
-  // Show UI
-  document.getElementById('sim-vessel').style.display = 'block';
-  document.getElementById('sim-bar').style.display    = 'block';
-  document.getElementById('sim-hud').style.display    = 'block';
-  document.getElementById('sim-controls').style.display = 'flex';
+  // Show UI — wind layer is NOT touched
+  document.getElementById('sim-vessel').style.display      = 'block';
+  document.getElementById('sim-bar').style.display         = 'block';
+  document.getElementById('sim-hud').style.display         = 'block';
+  document.getElementById('sim-controls').style.display    = 'flex';
   document.getElementById('sim-btn-playpause').textContent = '⏸';
   document.getElementById('sim-hud-status').textContent    = '▶ PLAYING';
   document.getElementById('sim-bar-fill').style.width      = '0%';
 
-  // Pause wind auto-play — we'll drive it
-  if(windLayer) windLayer.animateByFactor(0);
-
   simTimer = requestAnimationFrame(simFrame);
-  notify('Simulation started — use controls below the map','ok');
+  notify('Simulation started — toggle wind/wave layers as needed','ok');
 }
 
 function simTogglePlayPause(){
   simPaused = !simPaused;
-  simLastRealMs = null; // reset delta so no jump on resume
+  simLastRealMs = null;
   document.getElementById('sim-btn-playpause').textContent = simPaused ? '▶' : '⏸';
   document.getElementById('sim-hud-status').textContent    = simPaused ? '⏸ PAUSED' : '▶ PLAYING';
-  if(!simPaused && !simTimer){
-    simTimer = requestAnimationFrame(simFrame);
-  }
+  if(!simPaused && !simTimer) simTimer = requestAnimationFrame(simFrame);
 }
 
 function simSetSpeed(chip){
   document.querySelectorAll('.sim-speed-chip').forEach(c => c.removeAttribute('aria-selected'));
   chip.setAttribute('aria-selected','true');
-  simSpeedH = parseFloat(chip.dataset.h);
-  simLastRealMs = null; // reset delta
+  simSpeedH     = parseFloat(chip.dataset.h);
+  simLastRealMs = null;
 }
 
 function stopSimulation(){
   if(simTimer){ cancelAnimationFrame(simTimer); simTimer = null; }
   simPaused = false;
-  document.getElementById('sim-vessel').style.display   = 'none';
-  document.getElementById('sim-bar').style.display      = 'none';
-  document.getElementById('sim-hud').style.display      = 'none';
-  document.getElementById('sim-controls').style.display = 'none';
-  document.getElementById('sim-bar-fill').style.width   = '0%';
-  // Resume wind auto-animation
-  if(windLayer) windLayer.animateByFactor(3600);
+  document.getElementById('sim-vessel').style.display      = 'none';
+  document.getElementById('sim-bar').style.display         = 'none';
+  document.getElementById('sim-hud').style.display         = 'none';
+  document.getElementById('sim-controls').style.display    = 'none';
+  document.getElementById('sim-bar-fill').style.width      = '0%';
+  // Wind layer intentionally NOT touched — remains in user's chosen state
 }
 
-function buildSimPoints_legacy(){ return buildSimPoints(); } // compat
+function buildSimPoints_legacy(){ return buildSimPoints(); }
 
 /* ═══════════════════════════════════════════════════════════════
    EXPORT MODAL
