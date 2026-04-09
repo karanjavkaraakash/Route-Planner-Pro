@@ -294,6 +294,134 @@ input:focus, select:focus { border-color: var(--accent); }
 .status-badge.err  { background: rgba(239,68,68,.15); color: var(--danger); }
 .status-badge.warn { background: rgba(245,158,11,.15); color: var(--warn); }
 
+/* ═══════════ ROUTE OPTIMISATION ═══════════ */
+
+/* Optimise Route button */
+#opt-btn {
+  display: none; width: 100%; margin: 4px 0;
+  background: linear-gradient(135deg,#f59e0b,#d97706);
+  color: #fff; font-weight: 700; font-size: 12px; border: none;
+}
+#opt-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Optimisation settings panel */
+#opt-settings {
+  display: none; margin: 0 0 8px;
+  padding: 10px 12px; background: var(--bg);
+  border: 1px solid rgba(245,158,11,.3); border-radius: 8px;
+}
+#opt-settings .opt-title {
+  font-size: 9px; color: #f59e0b; text-transform: uppercase;
+  letter-spacing: .8px; margin-bottom: 8px; font-weight: 700;
+}
+#opt-settings .opt-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+#opt-settings label { font-size: 9px; color: var(--muted); display: block; margin-bottom: 2px; }
+#opt-settings input {
+  width: 100%; padding: 4px 6px; font-size: 11px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text);
+}
+#opt-settings .opt-run-btn {
+  width: 100%; margin-top: 8px;
+  background: linear-gradient(135deg,#f59e0b,#d97706);
+  color: #fff; font-weight: 700; font-size: 11px; border: none; padding: 7px;
+  border-radius: 6px; cursor: pointer;
+}
+#opt-settings .opt-hint {
+  font-size: 9px; color: var(--muted); margin-top: 6px; line-height: 1.5; text-align: center;
+}
+
+/* Optimisation progress overlay */
+#opt-overlay {
+  display: none; position: absolute; inset: 0; z-index: 850;
+  background: rgba(10,17,32,.82); backdrop-filter: blur(6px);
+  align-items: center; justify-content: center;
+}
+#opt-overlay.visible { display: flex; }
+#opt-overlay-card {
+  background: var(--surface); border: 1px solid rgba(245,158,11,.4);
+  border-radius: 12px; padding: 20px 24px; width: 320px; max-width: 90vw;
+}
+#opt-overlay-card .opt-ov-title {
+  font-size: 14px; font-weight: 700; color: #f59e0b; margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.opt-step {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid #1a2236; opacity: .4; transition: opacity .3s;
+}
+.opt-step:last-child { border-bottom: none; }
+.opt-step.active  { opacity: 1; }
+.opt-step.done    { opacity: .7; }
+.opt-step-icon    { font-size: 13px; width: 18px; flex-shrink: 0; }
+.opt-step-label   { font-size: 11px; color: var(--text); font-weight: 600; }
+.opt-step-sub     { font-size: 9px; color: var(--muted); margin-top: 2px; }
+#opt-ov-bar-wrap  { margin-top: 12px; background: rgba(255,255,255,.08); border-radius: 4px; height: 4px; }
+#opt-ov-bar       { height: 100%; background: linear-gradient(90deg,#f59e0b,#fbbf24); border-radius: 4px; transition: width .4s; width: 0%; }
+#opt-ov-pct       { text-align: right; font-size: 9px; color: #f59e0b; margin-top: 3px; }
+#opt-ov-cancel    {
+  width: 100%; margin-top: 10px; padding: 5px; font-size: 10px;
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; cursor: pointer;
+}
+
+/* Route comparison card (floats top-left of map) */
+#opt-compare-card {
+  display: none; position: absolute; top: 52px; left: 12px; z-index: 750;
+  background: rgba(10,17,32,.92); border: 1px solid rgba(245,158,11,.4);
+  border-radius: 10px; backdrop-filter: blur(8px);
+  padding: 12px 14px; width: 310px; font-family: 'Segoe UI', sans-serif;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+}
+#opt-compare-card .cmp-title {
+  font-size: 10px; font-weight: 700; color: #f59e0b;
+  text-transform: uppercase; letter-spacing: .8px; margin-bottom: 10px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+#opt-compare-card .cmp-close {
+  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0;
+}
+#opt-compare-card table { width: 100%; border-collapse: collapse; font-size: 11px; }
+#opt-compare-card th {
+  font-size: 9px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .5px; padding: 0 4px 4px; text-align: right; font-weight: 600;
+}
+#opt-compare-card th:first-child { text-align: left; }
+#opt-compare-card td {
+  padding: 3px 4px; color: var(--text); text-align: right; border-top: 1px solid #1a2236;
+}
+#opt-compare-card td:first-child { text-align: left; color: var(--muted); font-size: 10px; }
+#opt-compare-card .cmp-better { color: #22c55e; font-weight: 700; }
+#opt-compare-card .cmp-worse  { color: #f59e0b; }
+#opt-compare-card .cmp-actions {
+  display: flex; gap: 6px; margin-top: 10px;
+}
+#opt-compare-card .cmp-use-btn {
+  flex: 1; padding: 6px; font-size: 11px; font-weight: 700;
+  background: linear-gradient(135deg,#f59e0b,#d97706); color: #fff;
+  border: none; border-radius: 6px; cursor: pointer;
+}
+#opt-compare-card .cmp-keep-btn {
+  flex: 1; padding: 6px; font-size: 11px;
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; cursor: pointer;
+}
+
+/* Legend pill for dual route */
+#opt-legend {
+  display: none; position: absolute; bottom: 14px; right: 14px; z-index: 700;
+  background: rgba(10,17,32,.88); border: 1px solid var(--border);
+  border-radius: 20px; padding: 5px 12px; font-size: 10px; color: var(--text);
+  align-items: center; gap: 10px; backdrop-filter: blur(4px);
+}
+#opt-legend.visible { display: flex; }
+#opt-legend span { display: flex; align-items: center; gap: 5px; }
+#opt-legend .swatch-orig { display: inline-block; width: 22px; height: 3px; background:#0ea5e9; border-radius: 2px; }
+#opt-legend .swatch-opt  { display: inline-block; width: 22px; height: 3px;
+  background: repeating-linear-gradient(90deg, #f59e0b 0 8px, transparent 8px 12px); }
+
 /* ═══════════ NOTIFICATIONS ═══════════ */
 #notif-area { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
 .notif {
@@ -671,6 +799,36 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
         <button class="btn btn-secondary" onclick="clearAll()">✕ Clear</button>
       </div>
 
+      <!-- OPTIMISE ROUTE — appears after route calculated -->
+      <button class="btn btn-full" id="opt-btn" onclick="toggleOptSettings()">
+        ⚡ Optimise Route
+      </button>
+
+      <!-- OPTIMISATION SETTINGS PANEL -->
+      <div id="opt-settings">
+        <div class="opt-title">⚡ Route Optimisation — Weather Limits</div>
+        <div class="opt-grid">
+          <div>
+            <label>Max Wind (kt)</label>
+            <input type="number" id="opt-max-wind" placeholder="e.g. 25" min="5" max="60" step="1" value="25"/>
+          </div>
+          <div>
+            <label>Max Wave (m)</label>
+            <input type="number" id="opt-max-wave" placeholder="e.g. 3.0" min="0.5" max="15" step="0.5" value="3.0"/>
+          </div>
+          <div>
+            <label>Min Speed (kt)</label>
+            <input type="number" id="opt-min-speed" placeholder="e.g. 8" min="3" max="20" step="0.5" value="8"/>
+          </div>
+          <div>
+            <label>Max Speed (kt)</label>
+            <input type="number" id="opt-max-speed" placeholder="e.g. 18" min="5" max="30" step="0.5" value="18"/>
+          </div>
+        </div>
+        <button class="opt-run-btn" onclick="runOptimisation()">⚡ Run Optimisation</button>
+        <div class="opt-hint">Searches ±3° latitude corridor · Land-avoidance included · ~30–60s</div>
+      </div>
+
       <!-- METRICS (hidden until route calculated) -->
       <div class="section" id="metrics-section">
         <div class="section-title">Route Metrics</div>
@@ -836,6 +994,46 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
 
   <!-- NOTIFICATION AREA -->
     <div id="notif-area"></div>
+
+    <!-- OPTIMISATION PROGRESS OVERLAY -->
+    <div id="opt-overlay">
+      <div id="opt-overlay-card">
+        <div class="opt-ov-title">⚡ Optimising Route…</div>
+        <div id="opt-steps"></div>
+        <div id="opt-ov-bar-wrap"><div id="opt-ov-bar"></div></div>
+        <div id="opt-ov-pct">0%</div>
+        <button id="opt-ov-cancel" onclick="cancelOptimisation()">✕ Cancel</button>
+      </div>
+    </div>
+
+    <!-- ROUTE COMPARISON CARD -->
+    <div id="opt-compare-card">
+      <div class="cmp-title">
+        <span>⚡ Route Comparison</span>
+        <button class="cmp-close" onclick="dismissComparison()">✕</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th style="color:#93c5fd">Original</th>
+            <th style="color:#fcd34d">Optimised</th>
+            <th style="color:#94a3b8">Δ</th>
+          </tr>
+        </thead>
+        <tbody id="cmp-tbody"></tbody>
+      </table>
+      <div class="cmp-actions">
+        <button class="cmp-use-btn" onclick="applyOptimisedRoute()">✓ Use Optimised</button>
+        <button class="cmp-keep-btn" onclick="dismissComparison()">Keep Original</button>
+      </div>
+    </div>
+
+    <!-- DUAL ROUTE LEGEND -->
+    <div id="opt-legend">
+      <span><span class="swatch-orig"></span>Original</span>
+      <span><span class="swatch-opt"></span>Optimised</span>
+    </div>
 
     <!-- SIM BAR — voyage progress timeline -->
     <div id="sim-bar"><div id="sim-bar-fill"></div></div>
@@ -15112,6 +15310,32 @@ function addRouteLayer(){
     layout:{'line-join':'round','line-cap':'round'},
     paint:{'line-color':'#f59e0b','line-width':2,'line-opacity':0.7}
   });
+
+  // ── Optimised route overlay (separate source so it's always on top) ─────
+  map.addSource('opt-route', {
+    type:'geojson',
+    data:{ type:'FeatureCollection', features:[] }
+  });
+  // Glow
+  map.addLayer({
+    id:'opt-route-glow', type:'line', source:'opt-route',
+    layout:{'line-join':'round','line-cap':'round'},
+    paint:{
+      'line-color':'rgba(0,0,0,0.4)', 'line-width':10,
+      'line-opacity':0.3, 'line-blur':5
+    }
+  });
+  // Dashed amber optimised route
+  map.addLayer({
+    id:'opt-route-line', type:'line', source:'opt-route',
+    layout:{'line-join':'round','line-cap':'round'},
+    paint:{
+      'line-color':'#f59e0b',
+      'line-width':3,
+      'line-opacity':0.95,
+      'line-dasharray':[8, 4]
+    }
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -16280,6 +16504,9 @@ async function calculateRoute(){
     const wxBtn = document.getElementById('load-wx-btn');
     if(wxBtn){ wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false; }
     document.getElementById('wx-status-hint').textContent = 'Fetches wind, wave & current data along the full route';
+    // Show optimise button
+    const optBtn = document.getElementById('opt-btn');
+    if(optBtn) optBtn.style.display = 'block';
 
     hideProgress();
     const viaNote = hasVia ? ` · via ${viaKeys.map(k=>FORCE_VIA_WAYPOINTS[k]?.name||k).join(', ')}` : '';
@@ -17282,6 +17509,526 @@ async function fetchRouteWeather(){
 const fetchOpenMeteoRouteWeather = fetchRouteWeather;
 
 /* ═══════════════════════════════════════════════════════════════
+   ROUTE OPTIMISATION ENGINE — Phase 1
+   ---------------------------------------------------------------
+   Strategy: Lateral corridor nudge + time-dependent Dijkstra
+   
+   For each waypoint pair in the MARNET route:
+   - Generate 7 candidate lat positions (±3° in 1° steps)
+   - Fetch weather at each candidate midpoint
+   - Score each by transit time (weather-adjusted speed)
+   - Pick minimum-time path with land avoidance
+   - Speed scheduling: slow down if weather exceeds limits,
+     recover time on good-weather segments up to max speed
+   ═══════════════════════════════════════════════════════════════ */
+
+// Global optimisation state
+let optRunning      = false;
+let optCancelled    = false;
+let optWpCoords     = null;   // final optimised waypoint array
+let optMetrics      = null;   // comparison metrics
+
+const OPT_STEPS = [
+  { label: 'Building weather grid',       sub: 'Sampling corridor ±3° latitude' },
+  { label: 'Fetching wind data',          sub: 'Open-Meteo ECMWF IFS for all candidates' },
+  { label: 'Fetching wave & current',     sub: 'Open-Meteo Marine for all candidates' },
+  { label: 'Land avoidance checks',       sub: 'Elevation API — filtering land positions' },
+  { label: 'Running path optimisation',   sub: 'Scoring candidates by transit time' },
+  { label: 'Applying speed scheduling',   sub: 'Slow/fast segments for weather avoidance' },
+  { label: 'Computing comparison',        sub: 'Distance · ETA · weather stats vs original' },
+];
+
+function toggleOptSettings(){
+  const panel = document.getElementById('opt-settings');
+  const isOpen = panel.style.display === 'block';
+  panel.style.display = isOpen ? 'none' : 'block';
+}
+
+function showOptOverlay(){
+  const el = document.getElementById('opt-overlay');
+  el.classList.add('visible');
+  const stepsEl = document.getElementById('opt-steps');
+  stepsEl.innerHTML = OPT_STEPS.map((s,i) => `
+    <div class="opt-step" id="optstep-${i}">
+      <div class="opt-step-icon">○</div>
+      <div>
+        <div class="opt-step-label">${s.label}</div>
+        <div class="opt-step-sub" id="optstep-sub-${i}">${s.sub}</div>
+      </div>
+    </div>`).join('');
+  setOptStep(0);
+}
+
+function hideOptOverlay(){
+  document.getElementById('opt-overlay').classList.remove('visible');
+}
+
+function setOptStep(idx){
+  OPT_STEPS.forEach((_,i) => {
+    const el = document.getElementById(`optstep-${i}`);
+    if(!el) return;
+    const icon = el.querySelector('.opt-step-icon');
+    el.classList.toggle('active', i === idx);
+    el.classList.toggle('done', i < idx);
+    el.style.opacity = i > idx ? '0.4' : '1';
+    icon.textContent = i < idx ? '✓' : i === idx ? '▶' : '○';
+  });
+  const pct = Math.round(idx / (OPT_STEPS.length - 1) * 100);
+  document.getElementById('opt-ov-bar').style.width = pct + '%';
+  document.getElementById('opt-ov-pct').textContent = pct + '%';
+}
+
+function setOptSubText(stepIdx, text){
+  const el = document.getElementById(`optstep-sub-${stepIdx}`);
+  if(el) el.textContent = text;
+}
+
+function cancelOptimisation(){
+  optCancelled = true;
+  hideOptOverlay();
+  notify('Optimisation cancelled','warn');
+}
+
+function clearOptimisedRoute(){
+  optWpCoords = null;
+  optMetrics  = null;
+  if(map.getSource('opt-route')){
+    map.getSource('opt-route').setData({ type:'FeatureCollection', features:[] });
+  }
+  document.getElementById('opt-compare-card').style.display = 'none';
+  document.getElementById('opt-legend').classList.remove('visible');
+}
+
+// ── Land check via Open-Meteo elevation API ───────────────────────────────
+// Returns true if the point is ocean (elevation ≤ 5m)
+async function isOceanPoint(lat, lon){
+  try {
+    const r = await fetch(
+      `https://api.open-meteo.com/v1/elevation?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`,
+      { signal: AbortSignal.timeout(4000) }
+    );
+    if(!r.ok) return true; // assume ocean on API failure (conservative)
+    const d = await r.json();
+    const elev = d.elevation?.[0] ?? 0;
+    return elev <= 5; // ≤5m = ocean / coastal (allow slight coastal margin)
+  } catch(e){
+    return true; // assume ocean on timeout
+  }
+}
+
+// ── Batch elevation check with caching ───────────────────────────────────
+const _elevCache = new Map();
+async function isOceanCached(lat, lon){
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  if(_elevCache.has(key)) return _elevCache.get(key);
+  const result = await isOceanPoint(lat, lon);
+  _elevCache.set(key, result);
+  return result;
+}
+
+// ── Compute transit hours for a leg given weather data ────────────────────
+function legTransitH(distNm, bearing, orderedKn, wx, optLimits){
+  if(!wx) return distNm / orderedKn; // no weather — use ordered speed
+
+  const adj = computeWeatherAdjustedSpeed(
+    orderedKn, bearing,
+    wx.windKn != null ? parseFloat(wx.windKn) : null, wx.windDir,
+    wx.waveM  != null ? parseFloat(wx.waveM)  : null, wx.waveDir,
+    wx.currentKn != null ? parseFloat(wx.currentKn) : null, wx.currentDir
+  );
+
+  // Speed scheduling: if weather exceeds limits, slow to min speed
+  let speed = adj.effectiveKn;
+  const exceedsWind = optLimits.maxWind  && wx.windKn != null && parseFloat(wx.windKn) > optLimits.maxWind;
+  const exceedsWave = optLimits.maxWave  && wx.waveM  != null && parseFloat(wx.waveM)  > optLimits.maxWave;
+  if(exceedsWind || exceedsWave){
+    // Slow down to minimum speed through this segment
+    speed = Math.min(speed, optLimits.minSpeed);
+  }
+  speed = Math.max(optLimits.minSpeed, Math.min(optLimits.maxSpeed, speed));
+  return distNm / Math.max(1, speed);
+}
+
+// ── Draw optimised route on map ───────────────────────────────────────────
+function drawOptRoute(coords){
+  if(!map.getSource('opt-route')) return;
+  const features = [];
+  for(let i = 0; i < coords.length - 1; i++){
+    const [lo1, la1] = coords[i];
+    const [lo2, la2] = coords[i+1];
+    const arc = GEO.gcArc(la1, lo1, la2, lo2, 32);
+    features.push({
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'LineString', coordinates: arc.map(([lo,la]) => [lo, la]) }
+    });
+  }
+  map.getSource('opt-route').setData({ type: 'FeatureCollection', features });
+}
+
+// ── Build comparison table and show card ─────────────────────────────────
+function showComparisonCard(origMetrics, optM){
+  const fmt = (v, unit) => v != null ? v + unit : '—';
+  const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
+  const depStr    = document.getElementById('dep-time').value;
+  const dep       = depStr ? new Date(depStr) : new Date();
+
+  // Format ETA from transit hours
+  const fmtETA = h => {
+    const t = new Date(dep.getTime() + h * 3600000);
+    return t.toISOString().slice(5,16).replace('T',' ') + 'Z';
+  };
+
+  // Delta cell: green = improvement, amber = worse
+  const deltaCell = (orig, opt, lowerBetter, unit = '', decimals = 1) => {
+    if(orig == null || opt == null) return '<td>—</td>';
+    const d = opt - orig;
+    if(Math.abs(d) < 0.05) return `<td style="color:#94a3b8">—</td>`;
+    const better  = lowerBetter ? d < 0 : d > 0;
+    const color   = better ? '#22c55e' : '#f59e0b';
+    const sign    = d > 0 ? '+' : '';
+    return `<td style="color:${color};font-weight:700">${sign}${d.toFixed(decimals)}${unit}</td>`;
+  };
+
+  const rows = [
+    ['Distance', `${Math.round(origMetrics.distNm)} nm`,  `${Math.round(optM.distNm)} nm`,
+      deltaCell(origMetrics.distNm, optM.distNm, true, ' nm', 0)],
+    ['ETA (UTC)', fmtETA(origMetrics.transitH), fmtETA(optM.transitH),
+      deltaCell(origMetrics.transitH, optM.transitH, true, 'h')],
+    ['Wx delay', `${origMetrics.wxDelayH.toFixed(1)}h`, `${optM.wxDelayH.toFixed(1)}h`,
+      deltaCell(origMetrics.wxDelayH, optM.wxDelayH, true, 'h')],
+    ['Max wave', origMetrics.maxWave ? `${origMetrics.maxWave.toFixed(1)}m` : '—',
+      optM.maxWave ? `${optM.maxWave.toFixed(1)}m` : '—',
+      deltaCell(origMetrics.maxWave, optM.maxWave, true, 'm')],
+    ['Max wind', origMetrics.maxWind ? `${origMetrics.maxWind.toFixed(0)}kt` : '—',
+      optM.maxWind ? `${optM.maxWind.toFixed(0)}kt` : '—',
+      deltaCell(origMetrics.maxWind, optM.maxWind, true, 'kt', 0)],
+    ['ECA miles', `${Math.round(origMetrics.ecaMiles)}`, `${Math.round(optM.ecaMiles)}`,
+      deltaCell(origMetrics.ecaMiles, optM.ecaMiles, true, '', 0)],
+  ];
+
+  document.getElementById('cmp-tbody').innerHTML = rows.map(([label, orig, opt, delta]) =>
+    `<tr>
+      <td>${label}</td>
+      <td style="color:#93c5fd">${orig}</td>
+      <td style="color:#fcd34d">${opt}</td>
+      ${delta}
+    </tr>`
+  ).join('');
+
+  document.getElementById('opt-compare-card').style.display = 'block';
+  document.getElementById('opt-legend').classList.add('visible');
+}
+
+function dismissComparison(){
+  clearOptimisedRoute();
+}
+
+function applyOptimisedRoute(){
+  if(!optWpCoords || optWpCoords.length < 2){
+    notify('No optimised route available','err'); return;
+  }
+  // Replace current route with optimised waypoints
+  wpCoords = optWpCoords.map(c => [c[0], c[1]]);
+  // Clear old weather & comparison UI
+  window._wxResults = null;
+  window._wxDelayH  = null;
+  clearOptimisedRoute();
+  rebuildWaypointMarkers();
+  redrawRouteGeoJSON();
+  recalcMetrics();
+  // Reset weather buttons
+  const exportBtn = document.getElementById('export-btn');
+  if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Click "Load Weather" first'; }
+  const simBtn = document.getElementById('sim-btn');
+  if(simBtn){ simBtn.disabled = true; simBtn.title = 'Load weather first to enable simulation'; }
+  const wxBtn = document.getElementById('load-wx-btn');
+  if(wxBtn){ wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false;
+             wxBtn.style.background = ''; }
+  document.getElementById('max-stat-section').style.display = 'none';
+  document.getElementById('wx-delay-section').style.display = 'none';
+  document.getElementById('wx-status-hint').textContent = 'Optimised route applied — load weather to analyse';
+  notify('Optimised route applied ✓ — click Load Weather to refresh analysis','ok');
+}
+
+// ── Compute metrics for a route ──────────────────────────────────────────
+function computeRouteMetrics(coords, wxResultsForCoords, orderedKn){
+  let distNm = 0, transitH = 0;
+  let maxWave = 0, maxWind = 0;
+  const wxr = wxResultsForCoords || [];
+
+  for(let i = 0; i < coords.length - 1; i++){
+    const d = GEO.kmToNm(GEO.gcDistKm(coords[i][1], coords[i][0], coords[i+1][1], coords[i+1][0]));
+    distNm   += d;
+    const wx  = wxr[i] || null;
+    const eff = wx?.effectiveKn ?? orderedKn;
+    transitH += d / Math.max(1, eff);
+    if(wx?.waveM  != null) maxWave = Math.max(maxWave, parseFloat(wx.waveM));
+    if(wx?.windKn != null) maxWind = Math.max(maxWind, parseFloat(wx.windKn));
+  }
+  const wxDelayH = Math.max(0, transitH - distNm / orderedKn);
+
+  // Inline ECA calculation (avoids mutating global wpCoords)
+  let ecaMiles = 0;
+  for(let i = 0; i < coords.length - 1; i++){
+    const [lo1, la1] = coords[i], [lo2, la2] = coords[i+1];
+    const arc = GEO.gcArc(la1, lo1, la2, lo2, 16);
+    for(let j = 0; j < arc.length - 1; j++){
+      const mid = [(arc[j][0]+arc[j+1][0])/2, (arc[j][1]+arc[j+1][1])/2];
+      if(getEcaType(mid[0], mid[1])){
+        ecaMiles += GEO.kmToNm(GEO.gcDistKm(arc[j][1], arc[j][0], arc[j+1][1], arc[j+1][0]));
+      }
+    }
+  }
+
+  return { distNm, transitH, wxDelayH, maxWave: maxWave || null, maxWind: maxWind || null, ecaMiles };
+}
+
+// ── MAIN OPTIMISATION FUNCTION ────────────────────────────────────────────
+async function runOptimisation(){
+  if(!routeData || wpCoords.length < 2){
+    notify('Calculate a route first','err'); return;
+  }
+  if(optRunning){ notify('Optimisation already running','warn'); return; }
+
+  // Read limits
+  const optLimits = {
+    maxWind:  parseFloat(document.getElementById('opt-max-wind').value)  || 25,
+    maxWave:  parseFloat(document.getElementById('opt-max-wave').value)  || 3.0,
+    minSpeed: parseFloat(document.getElementById('opt-min-speed').value) || 8,
+    maxSpeed: parseFloat(document.getElementById('opt-max-speed').value) || 18,
+  };
+  const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
+  const depStr    = document.getElementById('dep-time').value;
+  const dep       = depStr ? new Date(depStr) : new Date();
+
+  optRunning   = true;
+  optCancelled = false;
+  document.getElementById('opt-settings').style.display = 'none';
+  showOptOverlay();
+
+  try {
+    // ── STEP 0: Build candidate grid ─────────────────────────────────────
+    setOptStep(0);
+    // Sample every Nth waypoint — for large routes, sample key waypoints
+    // to keep API calls manageable. Use every waypoint up to 60, then stride.
+    const stride   = Math.max(1, Math.floor(wpCoords.length / 60));
+    const keyWPs   = [];
+    for(let i = 0; i < wpCoords.length; i += stride) keyWPs.push(i);
+    if(keyWPs[keyWPs.length - 1] !== wpCoords.length - 1)
+      keyWPs.push(wpCoords.length - 1);
+
+    // For each consecutive pair of key WPs, generate 7 candidate midpoints
+    // at latitudes: original, ±1°, ±2°, ±3°
+    const LAT_OFFSETS = [-3, -2, -1, 0, 1, 2, 3];
+    const candidateGrid = []; // [{segIdx, offset, midLat, midLon, tArr, distNm, bearing}]
+
+    let accH = 0;
+    for(let s = 0; s < keyWPs.length - 1; s++){
+      const i1 = keyWPs[s], i2 = keyWPs[s + 1];
+      const [lo1, la1] = wpCoords[i1];
+      const [lo2, la2] = wpCoords[i2];
+      const distNm  = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+      const bearing = GEO.initialBearing(la1, lo1, la2, lo2);
+      const midLon  = normLon((lo1 + lo2) / 2);
+      const midLat  = (la1 + la2) / 2;
+      const tArr    = new Date(dep.getTime() + accH * 3600000);
+      accH += distNm / orderedKn;
+
+      for(const offset of LAT_OFFSETS){
+        candidateGrid.push({
+          segIdx: s, offset,
+          midLat: midLat + offset, midLon,
+          tArr, distNm, bearing,
+          lo1, la1, lo2, la2
+        });
+      }
+    }
+    setOptSubText(0, `${keyWPs.length - 1} segments × ${LAT_OFFSETS.length} candidates = ${candidateGrid.length} grid points`);
+
+    if(optCancelled) return;
+
+    // ── STEP 1: Fetch wind direction for all candidates ───────────────────
+    setOptStep(1);
+    const windLegs = candidateGrid.map(c => ({
+      lat: c.midLat, lon: c.midLon, date: c.tArr
+    }));
+    const windDirResults = await fetchOpenMeteoWindDirBatch(windLegs);
+    if(optCancelled) return;
+
+    // ── STEP 2: Fetch marine data for all candidates ──────────────────────
+    setOptStep(2);
+    const marineResults = await fetchOpenMeteoMarineBatch(
+      candidateGrid.map(c => ({ midLat: c.midLat, midLon: c.midLon, tArr: c.tArr }))
+    );
+    if(optCancelled) return;
+
+    // Merge weather into candidates
+    candidateGrid.forEach((c, idx) => {
+      const wd = windDirResults[idx] || {};
+      const m  = marineResults[idx]  || {};
+      c.wx = {
+        windKn: wd.windKn, windDir: wd.windDir,
+        waveM: m.waveM, waveDir: m.waveDir,
+        currentKn: m.currentKn, currentDir: m.currentDir
+      };
+    });
+
+    // ── STEP 3: Land avoidance ────────────────────────────────────────────
+    setOptStep(3);
+    let landChecked = 0;
+    // Only check non-zero offsets (original path is always ocean)
+    const toCheck = candidateGrid.filter(c => c.offset !== 0);
+    for(const c of toCheck){
+      if(optCancelled) return;
+      c.isOcean = await isOceanCached(c.midLat, c.midLon);
+      landChecked++;
+      if(landChecked % 5 === 0)
+        setOptSubText(3, `Checked ${landChecked} / ${toCheck.length} candidate positions`);
+      await new Promise(r => setTimeout(r, 30)); // small delay between elevation calls
+    }
+    // Original-path candidates are always ocean
+    candidateGrid.filter(c => c.offset === 0).forEach(c => c.isOcean = true);
+    const landBlocked = candidateGrid.filter(c => !c.isOcean).length;
+    setOptSubText(3, `${landBlocked} positions blocked by land, ${candidateGrid.length - landBlocked} valid`);
+    if(optCancelled) return;
+
+    // ── STEP 4: Path optimisation (greedy best-per-segment) ───────────────
+    setOptStep(4);
+    // Group candidates by segment
+    const bySegment = new Map();
+    candidateGrid.forEach(c => {
+      if(!bySegment.has(c.segIdx)) bySegment.set(c.segIdx, []);
+      bySegment.get(c.segIdx).push(c);
+    });
+
+    const optSegments = []; // [{offset, lo1_adj, la1_adj, lo2_adj, la2_adj, wx, transitH}]
+    let prevOffset = 0;
+
+    for(let s = 0; s < keyWPs.length - 1; s++){
+      const candidates = (bySegment.get(s) || []).filter(c => c.isOcean);
+      if(!candidates.length){
+        // No valid candidates — use original
+        const i1 = keyWPs[s], i2 = keyWPs[s+1];
+        const d = GEO.kmToNm(GEO.gcDistKm(wpCoords[i1][1], wpCoords[i1][0], wpCoords[i2][1], wpCoords[i2][0]));
+        optSegments.push({ offset: 0, i1, i2, transitH: d / orderedKn, lo1: wpCoords[i1][0], la1: wpCoords[i1][1], lo2: wpCoords[i2][0], la2: wpCoords[i2][1] });
+        continue;
+      }
+
+      // Score each candidate: transit time on this segment
+      let best = null, bestTime = Infinity;
+      for(const c of candidates){
+        // Penalise large offset jumps from previous segment (route smoothness)
+        const jumpPenaltyH = Math.abs(c.offset - prevOffset) * 0.15;
+        const time = legTransitH(c.distNm, c.bearing, orderedKn, c.wx, optLimits) + jumpPenaltyH;
+        if(time < bestTime){ bestTime = time; best = c; }
+      }
+
+      const i1 = keyWPs[s], i2 = keyWPs[s+1];
+      // Apply offset to endpoint latitudes
+      optSegments.push({
+        offset: best.offset,
+        i1, i2,
+        lo1: wpCoords[i1][0], la1: wpCoords[i1][1] + best.offset * 0.5,
+        lo2: wpCoords[i2][0], la2: wpCoords[i2][1] + best.offset * 0.5,
+        wx: best.wx, transitH: bestTime
+      });
+      prevOffset = best.offset;
+      setOptSubText(4, `Optimised ${s + 1} / ${keyWPs.length - 1} segments`);
+    }
+    if(optCancelled) return;
+
+    // ── STEP 5: Speed scheduling ──────────────────────────────────────────
+    setOptStep(5);
+    // Total time budget: ordered time on original route
+    const origTotalH = wpCoords.reduce((acc, _, i) => {
+      if(i === wpCoords.length - 1) return acc;
+      return acc + GEO.kmToNm(GEO.gcDistKm(wpCoords[i][1], wpCoords[i][0], wpCoords[i+1][1], wpCoords[i+1][0])) / orderedKn;
+    }, 0);
+
+    // Identify good-weather segments (can speed up to recover time)
+    let optTotalH = optSegments.reduce((s, seg) => s + seg.transitH, 0);
+    const timeSaved = origTotalH - optTotalH;
+    setOptSubText(5, timeSaved > 0
+      ? `Time saved: ${timeSaved.toFixed(1)}h by routing around weather`
+      : `Optimised route adds ${Math.abs(timeSaved).toFixed(1)}h (unavoidable weather)`);
+
+    // ── STEP 6: Build final optimised wpCoords ────────────────────────────
+    setOptStep(6);
+    // Rebuild a smooth waypoint array from the optimised segments
+    const optCoords = [];
+    for(let s = 0; s < optSegments.length; s++){
+      const seg = optSegments[s];
+      if(s === 0) optCoords.push([seg.lo1, seg.la1]);
+      optCoords.push([seg.lo2, seg.la2]);
+    }
+    // Fill in all the intermediate MARNET waypoints between key waypoints
+    // (preserving the sea routing, just shifting latitude)
+    const fullOptCoords = [];
+    for(let s = 0; s < optSegments.length; s++){
+      const seg = optSegments[s];
+      const i1 = seg.i1, i2 = seg.i2;
+      const latOffset = seg.offset * 0.5; // apply half-offset to corridor WPs
+      for(let k = i1; k < i2; k++){
+        fullOptCoords.push([wpCoords[k][0], wpCoords[k][1] + latOffset]);
+      }
+    }
+    // Add final destination (no offset)
+    const lastIdx = keyWPs[keyWPs.length - 1];
+    fullOptCoords.push([wpCoords[lastIdx][0], wpCoords[lastIdx][1]]);
+
+    optWpCoords = fullOptCoords;
+    drawOptRoute(fullOptCoords);
+
+    // ── Comparison metrics ────────────────────────────────────────────────
+    const origMetrics = computeRouteMetrics(
+      wpCoords,
+      window._wxResults ? window._wxResults.map(r => ({
+        effectiveKn: r.effectiveKn, waveM: r.waveM, windKn: r.windKn
+      })) : null,
+      orderedKn
+    );
+
+    // Build wx array for optimised route segments
+    // optSegments covers key waypoints; expand to fullOptCoords length for metrics
+    const optWxArray = optSegments.map(seg => seg.wx ? {
+      effectiveKn: (seg.wx.windKn != null || seg.wx.waveM != null) ? computeWeatherAdjustedSpeed(
+        orderedKn,
+        GEO.initialBearing(seg.la1, seg.lo1, seg.la2, seg.lo2),
+        seg.wx.windKn != null ? parseFloat(seg.wx.windKn) : null, seg.wx.windDir,
+        seg.wx.waveM  != null ? parseFloat(seg.wx.waveM)  : null, seg.wx.waveDir,
+        seg.wx.currentKn != null ? parseFloat(seg.wx.currentKn) : null, seg.wx.currentDir
+      ).effectiveKn : orderedKn,
+      waveM: seg.wx.waveM, windKn: seg.wx.windKn
+    } : null);
+
+    const optMetricsResult = computeRouteMetrics(fullOptCoords, optWxArray, orderedKn);
+    optMetrics = optMetricsResult;
+
+    hideOptOverlay();
+    showComparisonCard(origMetrics, optMetricsResult);
+    document.getElementById('opt-settings').style.display = 'none';
+
+    const improvement = origMetrics.transitH - optMetricsResult.transitH;
+    if(improvement > 0.5){
+      notify(`Optimisation complete ✓ — saves ${improvement.toFixed(1)}h transit time`, 'ok');
+    } else if(improvement > -0.5){
+      notify('Optimisation complete — original route is near-optimal for current weather', 'ok');
+    } else {
+      notify('Optimisation complete — note: route is longer but avoids weather limits', 'warn');
+    }
+
+  } catch(e){
+    hideOptOverlay();
+    notify('Optimisation failed: ' + e.message, 'err');
+    console.error('Optimisation error:', e);
+  } finally {
+    optRunning   = false;
+    optCancelled = false;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
    CLEAR ALL
    ═══════════════════════════════════════════════════════════════ */
 function clearAll(){
@@ -17321,6 +18068,11 @@ function clearAll(){
   document.getElementById('d-port-input').value='';
   oPort=null; dPort=null;
   stopSimulation();
+  // Clear optimisation state
+  clearOptimisedRoute();
+  const optBtn = document.getElementById('opt-btn');
+  if(optBtn){ optBtn.style.display = 'none'; }
+  document.getElementById('opt-settings').style.display = 'none';
 }
 
 /* ═══════════════════════════════════════════════════════════════
