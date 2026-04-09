@@ -17696,21 +17696,36 @@ async function runOptimisation(){
 
     for(let di = 0; di < deviations.length; di++){
       const dev = deviations[di];
-      // wxr entries have an `.i` property = the original wpCoords segment index
-      // (each wxr leg covers wpCoords[i] → wpCoords[i+1])
-      // Sub-legs from the same original segment all share the same .i value.
-      // entryLeg/exitLeg are wxr array indices — must use .i to get wpCoords index.
-      const entryOrigI = wxr[dev.entryLeg].i;                             // wpCoords segment start
-      const exitOrigI  = wxr[Math.min(dev.exitLeg, wxr.length-1)].i;     // wpCoords segment start
-      // Entry point = START of the entryLeg's original segment
-      // Exit point  = END of the exitLeg's original segment (i.e. wpCoords[exitOrigI + 1])
+
+      // ── CRITICAL: wxr leg indices ≠ wpCoords indices ──────────────────
+      // wxr legs include sub-legs (73a, 73b, 73c) so wxr.length >> wpCoords.length - 1
+      // Each wxr leg has an .i property = the wpCoords segment it belongs to
+      // entryLeg/exitLeg are wxr array indices — must use .i to get wpCoords index
+      const entryOrigI = wxr[dev.entryLeg]?.i ?? 0;
+      const exitOrigI  = wxr[Math.min(dev.exitLeg, wxr.length - 1)]?.i ?? (wpCoords.length - 2);
+
+      // Entry WP = START of the entryLeg's original wpCoords segment
+      // Exit WP  = END of the exitLeg's original wpCoords segment (i.e. segment i → i+1, so exitOrigI+1)
       const entryWpIdx = entryOrigI;
       const exitWpIdx  = Math.min(exitOrigI + 1, wpCoords.length - 1);
+
       dev.entryWpIdx   = entryWpIdx;
       dev.exitWpIdx    = exitWpIdx;
+      // Also store the weather window WP range — only WPs INSIDE the window get skipped
+      // (not the full entry-exit buffer zone, just the bad weather segment itself)
+      const windowEntryOrigI = wxr[dev.windowStart]?.i ?? entryOrigI;
+      const windowExitOrigI  = wxr[Math.min(dev.windowEnd, wxr.length - 1)]?.i ?? exitOrigI;
+      dev.windowEntryWpIdx = windowEntryOrigI;
+      dev.windowExitWpIdx  = Math.min(windowExitOrigI + 1, wpCoords.length - 1);
 
-      const entryPt  = wpCoords[entryWpIdx];
-      const exitPt   = wpCoords[exitWpIdx];
+      // Candidates are interpolated between the WINDOW entry/exit WPs
+      // (not the full buffer zone — the buffer WPs stay as original MARNET waypoints)
+      // This ensures:
+      //   - Original route followed right up to where bad weather starts
+      //   - Deviation arc replaces only the bad weather segment
+      //   - Original route resumes immediately after the bad weather ends
+      const windowEntryPt = wpCoords[dev.windowEntryWpIdx];
+      const windowExitPt  = wpCoords[dev.windowExitWpIdx];
       const entryT   = wxr[dev.entryLeg]?.adjustedTArr ?? wxr[dev.entryLeg]?.tArr ?? dep;
       const exitT    = wxr[Math.min(dev.exitLeg, wxr.length-1)]?.adjustedTArr ?? dep;
       const totalSec = exitT - entryT;
@@ -17724,9 +17739,9 @@ async function runOptimisation(){
           const taper  = Math.sin(f * Math.PI);
           const offset = maxOff * taper;
 
-          // Interpolate position along the direct entry→exit line (GC)
+          // Interpolate position along the window entry→exit GC arc
           const [intLon, intLat] = GEO.gcInterp(
-            entryPt[1], entryPt[0], exitPt[1], exitPt[0], f
+            windowEntryPt[1], windowEntryPt[0], windowExitPt[1], windowExitPt[0], f
           );
           const lat = intLat + offset;
           const lon = normLon(intLon);
@@ -17828,13 +17843,13 @@ async function runOptimisation(){
         pts.sort((a, b) => a.f - b.f);
 
         // Compute total delay through this deviation path
-        // Build segments: entry → pt0 → pt1 → … → exit
-        const entryPt  = wpCoords[dev.entryWpIdx];
-        const exitPt   = wpCoords[dev.exitWpIdx];
+        // Build segments: window_entry → pt0 → pt1 → … → window_exit
+        const wEntryPt = wpCoords[dev.windowEntryWpIdx];
+        const wExitPt  = wpCoords[dev.windowExitWpIdx];
         const pathPts  = [
-          { lon: entryPt[0], lat: entryPt[1] },
+          { lon: wEntryPt[0], lat: wEntryPt[1] },
           ...pts.map(c => ({ lon: c.lon, lat: c.lat, wx: c.wx })),
-          { lon: exitPt[0], lat: exitPt[1] }
+          { lon: wExitPt[0], lat: wExitPt[1] }
         ];
 
         let totalDelayH = 0;
@@ -17871,46 +17886,58 @@ async function runOptimisation(){
 
     // ─────────────────────────────────────────────────────────────────────
     // STEP 6: Assemble final route
-    // Replace each improved deviation zone with:
-    //   entryWP → [tapered nudged waypoints] → exitWP
-    //   SKIP all original waypoints between entryWp and exitWp
-    // Outside deviation zones: keep all original waypoints unchanged
+    //
+    // Structure per deviation:
+    //   [original WPs up to entryWpIdx]          ← unchanged, follows coast
+    //   → entryWpIdx (graceful departure point)
+    //   → [tapered nudged candidates]             ← deviation arc
+    //   → exitWpIdx (graceful return point)
+    //   → [original WPs from exitWpIdx onwards]  ← unchanged, follows coast
+    //
+    // ONLY skip WPs strictly inside the weather WINDOW itself
+    // (windowEntryWpIdx+1 → windowExitWpIdx-1).
+    // The buffer zone WPs (entry→window and window→exit) are KEPT
+    // because they follow the coastal MARNET path.
+    //
+    // The deviation arc (candidates) replaces only the weather window portion.
+    // The approach and departure from deviation follow the original MARNET route.
     // ─────────────────────────────────────────────────────────────────────
     setOptStep(6);
 
-    // Build a set of which original wp indices are INSIDE a deviation zone
-    // (these will be skipped)
+    // Build set of WP indices to skip — ONLY the WPs inside the weather window
     const skipWpIndices = new Set();
     for(const bd of bestDeviations){
       const dev = deviations[bd.devIdx];
-      for(let k = dev.entryWpIdx + 1; k < dev.exitWpIdx; k++){
+      // Skip only the WPs strictly inside the bad weather window
+      // Keep entry buffer WPs (entryWpIdx → windowEntryWpIdx) — original coastal route
+      // Keep exit buffer WPs (windowExitWpIdx → exitWpIdx) — original coastal route
+      for(let k = dev.windowEntryWpIdx + 1; k < dev.windowExitWpIdx; k++){
         skipWpIndices.add(k);
       }
     }
 
-    // Walk through wpCoords, inserting deviation paths where they apply
     const finalCoords = [];
     const deviationInserted = new Set();
 
     for(let k = 0; k < wpCoords.length; k++){
-      if(skipWpIndices.has(k)) continue; // skip original WPs inside deviation
-
-      // Check if this is an entry point for an improved deviation
-      const matchingDev = bestDeviations.find(bd => {
-        const dev = deviations[bd.devIdx];
-        return dev.entryWpIdx === k && !deviationInserted.has(bd.devIdx);
-      });
+      if(skipWpIndices.has(k)) continue; // skip WPs inside the weather window
 
       finalCoords.push([wpCoords[k][0], wpCoords[k][1]]);
 
+      // If this is the window entry point, insert tapered deviation candidates
+      const matchingDev = bestDeviations.find(bd => {
+        const dev = deviations[bd.devIdx];
+        return dev.windowEntryWpIdx === k && !deviationInserted.has(bd.devIdx);
+      });
+
       if(matchingDev){
         deviationInserted.add(matchingDev.devIdx);
-        // Insert the nudged waypoints between entry and exit
-        // These are the tapered samples (excluding endpoints)
+        // Insert the tapered nudged waypoints (the deviation arc)
         for(const pt of matchingDev.samples){
           finalCoords.push([pt.lon, pt.lat]);
         }
-        // Note: exitWpIdx will be added naturally in the main loop
+        // The windowExitWpIdx will be added naturally in the main loop
+        // (it's not in skipWpIndices, so it comes through on the next iteration)
       }
     }
 
