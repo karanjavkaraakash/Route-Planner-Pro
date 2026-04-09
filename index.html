@@ -17696,10 +17696,16 @@ async function runOptimisation(){
 
     for(let di = 0; di < deviations.length; di++){
       const dev = deviations[di];
-      // Map leg indices to wpCoords indices (wxr[i] covers wpCoords segment i → i+1)
-      // wpCoords has one more point than wxr legs
-      const entryWpIdx = dev.entryLeg;
-      const exitWpIdx  = Math.min(dev.exitLeg + 1, wpCoords.length - 1);
+      // wxr entries have an `.i` property = the original wpCoords segment index
+      // (each wxr leg covers wpCoords[i] → wpCoords[i+1])
+      // Sub-legs from the same original segment all share the same .i value.
+      // entryLeg/exitLeg are wxr array indices — must use .i to get wpCoords index.
+      const entryOrigI = wxr[dev.entryLeg].i;                             // wpCoords segment start
+      const exitOrigI  = wxr[Math.min(dev.exitLeg, wxr.length-1)].i;     // wpCoords segment start
+      // Entry point = START of the entryLeg's original segment
+      // Exit point  = END of the exitLeg's original segment (i.e. wpCoords[exitOrigI + 1])
+      const entryWpIdx = entryOrigI;
+      const exitWpIdx  = Math.min(exitOrigI + 1, wpCoords.length - 1);
       dev.entryWpIdx   = entryWpIdx;
       dev.exitWpIdx    = exitWpIdx;
 
