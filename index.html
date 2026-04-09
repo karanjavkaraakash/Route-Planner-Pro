@@ -800,7 +800,7 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
       </div>
 
       <!-- OPTIMISE ROUTE — appears after route calculated -->
-      <button class="btn btn-full" id="opt-btn" onclick="toggleOptSettings()">
+      <button class="btn btn-full" id="opt-btn" onclick="toggleOptSettings()" style="display:none">
         ⚡ Optimise Route
       </button>
 
@@ -826,7 +826,7 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
           </div>
         </div>
         <button class="opt-run-btn" onclick="runOptimisation()">⚡ Run Optimisation</button>
-        <div class="opt-hint">Searches ±3° latitude corridor · Land-avoidance included · ~30–60s</div>
+        <div class="opt-hint">Requires Load Weather first · Detours only around risk windows · Graceful alterations · ETA guaranteed ≤ original</div>
       </div>
 
       <!-- METRICS (hidden until route calculated) -->
@@ -17529,19 +17529,425 @@ let optWpCoords     = null;   // final optimised waypoint array
 let optMetrics      = null;   // comparison metrics
 
 const OPT_STEPS = [
-  { label: 'Building weather grid',       sub: 'Sampling corridor ±3° latitude' },
-  { label: 'Fetching wind data',          sub: 'Open-Meteo ECMWF IFS for all candidates' },
-  { label: 'Fetching wave & current',     sub: 'Open-Meteo Marine for all candidates' },
-  { label: 'Land avoidance checks',       sub: 'Elevation API — filtering land positions' },
-  { label: 'Running path optimisation',   sub: 'Scoring candidates by transit time' },
-  { label: 'Applying speed scheduling',   sub: 'Slow/fast segments for weather avoidance' },
-  { label: 'Computing comparison',        sub: 'Distance · ETA · weather stats vs original' },
+  { label: 'Analysing weather data',        sub: 'Identifying risk windows from loaded forecast' },
+  { label: 'Defining deviation zones',      sub: 'Locating graceful entry & exit waypoints' },
+  { label: 'Building candidate positions',  sub: 'Tapered latitude offsets — max at window centre' },
+  { label: 'Fetching weather at candidates',sub: 'Open-Meteo 16-day wind + 7-day marine' },
+  { label: 'Land avoidance checks',         sub: 'Elevation API — filtering land positions' },
+  { label: 'Scoring deviation paths',       sub: 'Minimising delay contribution per window' },
+  { label: 'Assembling optimised route',    sub: 'Skipping original WPs inside deviation zones' },
 ];
 
 function toggleOptSettings(){
   const panel = document.getElementById('opt-settings');
   const isOpen = panel.style.display === 'block';
   panel.style.display = isOpen ? 'none' : 'block';
+}
+
+// ── Leg severity — same as PDF risk block ────────────────────────────────
+function _optLegSeverity(r, orderedKn){
+  const wave  = r.waveM     != null ? parseFloat(r.waveM)     : 0;
+  const wind  = r.windKn    != null ? parseFloat(r.windKn)    : 0;
+  const ratio = r.effectiveKn != null ? r.effectiveKn / orderedKn : 1;
+  if(wave >= 3.0 || wind >= 25 || ratio <= 0.70) return 3; // heavy
+  if(wave >= 2.0 || wind >= 18 || ratio <= 0.85) return 2; // moderate
+  if(wave >= 1.5 || wind >= 12 || ratio <= 0.95) return 1; // mild
+  return 0;
+}
+
+// ── Delay contribution of a _wxResults leg ────────────────────────────────
+function _legDelayH(r, orderedKn){
+  const ordH = r.distNm / orderedKn;
+  const adjH = r.distNm / Math.max(1, r.effectiveKn || orderedKn);
+  return Math.max(0, adjH - ordH);
+}
+
+// ── MAIN OPTIMISATION FUNCTION (v2) ─────────────────────────────────────
+async function runOptimisation(){
+  if(!routeData || wpCoords.length < 2){
+    notify('Calculate a route first','err'); return;
+  }
+  if(!window._wxResults || !window._wxResults.length){
+    notify('Load Weather first — optimisation uses the loaded forecast','err'); return;
+  }
+  if(optRunning){ notify('Optimisation already running','warn'); return; }
+
+  const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
+  const optLimits = {
+    maxWind:  parseFloat(document.getElementById('opt-max-wind').value)  || 25,
+    maxWave:  parseFloat(document.getElementById('opt-max-wave').value)  || 3.0,
+    minSpeed: parseFloat(document.getElementById('opt-min-speed').value) || 8,
+    maxSpeed: parseFloat(document.getElementById('opt-max-speed').value) || 18,
+  };
+  const depStr = document.getElementById('dep-time').value;
+  const dep    = depStr ? new Date(depStr) : new Date();
+  const wxr    = window._wxResults;
+
+  optRunning   = true;
+  optCancelled = false;
+  document.getElementById('opt-settings').style.display = 'none';
+  showOptOverlay();
+
+  try {
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 0: Extract risk windows from loaded _wxResults
+    // Exactly the same logic as buildHeavyWeatherRiskBlock in the PDF report
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(0);
+
+    const THRESHOLD = 2; // moderate or worse
+    const rawWindows = [];
+    let inWin = false, wStart = 0;
+    for(let i = 0; i <= wxr.length; i++){
+      const sev = i < wxr.length ? _optLegSeverity(wxr[i], orderedKn) : 0;
+      if(!inWin && sev >= THRESHOLD){ inWin = true; wStart = i; }
+      else if(inWin){
+        const ahead = wxr.slice(i, Math.min(i + 3, wxr.length));
+        const gapHasMore = ahead.some(r => _optLegSeverity(r, orderedKn) >= THRESHOLD);
+        if(sev < THRESHOLD && !gapHasMore){
+          rawWindows.push({ start: wStart, end: i - 1 });
+          inWin = false;
+        }
+      }
+    }
+    const riskWindows = rawWindows.filter(w => (w.end - w.start + 1) >= 3);
+
+    if(!riskWindows.length){
+      hideOptOverlay();
+      notify('No significant weather windows — original route is already optimal ✓', 'ok');
+      optRunning = false; return;
+    }
+
+    // Compute delay contribution per window
+    riskWindows.forEach(w => {
+      w.delayH = wxr.slice(w.start, w.end + 1)
+        .reduce((s, r) => s + _legDelayH(r, orderedKn), 0);
+      w.peakSev = Math.max(...wxr.slice(w.start, w.end + 1)
+        .map(r => _optLegSeverity(r, orderedKn)));
+    });
+
+    setOptSubText(0, `Found ${riskWindows.length} risk window${riskWindows.length>1?'s':''} — ` +
+      riskWindows.map(w => `W${riskWindows.indexOf(w)+1}: ${w.delayH.toFixed(1)}h delay`).join(', '));
+
+    if(optCancelled) return;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 1: Define deviation zones — graceful entry & exit
+    // Entry: last OK leg where vessel is ≥200nm before the window start
+    // Exit:  first OK leg where vessel is ≥200nm after the window end
+    // The 200nm buffer gives the vessel ~14h at 14kt to alter course gracefully
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(1);
+
+    const BUFFER_NM = 200; // minimum sea room for a graceful deviation start/end
+
+    // Build cumulative distance array along the route (indexed by leg)
+    const cumDistNm = [0];
+    for(let i = 0; i < wxr.length; i++){
+      cumDistNm.push(cumDistNm[cumDistNm.length - 1] + (wxr[i].distNm || 0));
+    }
+    const totalRouteNm = cumDistNm[cumDistNm.length - 1];
+
+    const deviations = []; // [{entryLegIdx, exitLegIdx, windowStart, windowEnd}]
+
+    for(const w of riskWindows){
+      const windowStartNm = cumDistNm[w.start];
+      const windowEndNm   = cumDistNm[w.end + 1] || totalRouteNm;
+
+      // Entry: scan back from window start to find a point ≥BUFFER_NM before
+      let entryLeg = 0;
+      for(let i = w.start - 1; i >= 0; i--){
+        if(windowStartNm - cumDistNm[i] >= BUFFER_NM){
+          entryLeg = i; break;
+        }
+        if(i === 0) entryLeg = 0;
+      }
+
+      // Exit: scan forward from window end to find a point ≥BUFFER_NM after
+      let exitLeg = wxr.length - 1;
+      for(let i = w.end + 1; i < wxr.length; i++){
+        if(cumDistNm[i] - windowEndNm >= BUFFER_NM){
+          exitLeg = i; break;
+        }
+        if(i === wxr.length - 1) exitLeg = wxr.length - 1;
+      }
+
+      deviations.push({ entryLeg, exitLeg, windowStart: w.start, windowEnd: w.end,
+        windowDelayH: w.delayH, peakSev: w.peakSev });
+      setOptSubText(1,
+        `Window ${deviations.length}: entry at leg ${entryLeg+1}, exit at leg ${exitLeg+1} ` +
+        `(${Math.round(cumDistNm[entryLeg])}–${Math.round(cumDistNm[exitLeg])} nm)`);
+    }
+
+    if(optCancelled) return;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 2: Build candidate positions with TAPERED offsets
+    // Offset = 0 at entry, ramps up to max at window centre, tapers back to 0 at exit
+    // This creates a smooth bow/arc deviation — "graceful alteration"
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(2);
+
+    const LAT_OFFSETS_MAX = [1, 2, 3, -1, -2, -3]; // try both north and south
+    const SAMPLES_PER_ZONE = 7; // sample points along the deviation arc
+
+    // All candidate fetch points: [{lat, lon, date, devIdx, sampleIdx, offset}]
+    const allCandidates = [];
+
+    for(let di = 0; di < deviations.length; di++){
+      const dev = deviations[di];
+      // Map leg indices to wpCoords indices (wxr[i] covers wpCoords segment i → i+1)
+      // wpCoords has one more point than wxr legs
+      const entryWpIdx = dev.entryLeg;
+      const exitWpIdx  = Math.min(dev.exitLeg + 1, wpCoords.length - 1);
+      dev.entryWpIdx   = entryWpIdx;
+      dev.exitWpIdx    = exitWpIdx;
+
+      const entryPt  = wpCoords[entryWpIdx];
+      const exitPt   = wpCoords[exitWpIdx];
+      const entryT   = wxr[dev.entryLeg]?.adjustedTArr ?? wxr[dev.entryLeg]?.tArr ?? dep;
+      const exitT    = wxr[Math.min(dev.exitLeg, wxr.length-1)]?.adjustedTArr ?? dep;
+      const totalSec = exitT - entryT;
+
+      for(const maxOff of LAT_OFFSETS_MAX){
+        // Generate SAMPLES_PER_ZONE points along the deviation arc
+        for(let s = 0; s < SAMPLES_PER_ZONE; s++){
+          const f = (s + 1) / (SAMPLES_PER_ZONE + 1); // 0 < f < 1 — exclude endpoints
+
+          // Taper: sine curve so offset peaks at f=0.5 (window centre) and is 0 at edges
+          const taper  = Math.sin(f * Math.PI);
+          const offset = maxOff * taper;
+
+          // Interpolate position along the direct entry→exit line (GC)
+          const [intLon, intLat] = GEO.gcInterp(
+            entryPt[1], entryPt[0], exitPt[1], exitPt[0], f
+          );
+          const lat = intLat + offset;
+          const lon = normLon(intLon);
+
+          // Interpolate time
+          const tMs  = entryT.getTime() + f * totalSec;
+          const tArr = new Date(tMs);
+
+          allCandidates.push({
+            devIdx: di, sampleIdx: s, maxOffset: maxOff, taper, offset,
+            lat, lon, tArr,
+            f // fractional position along deviation
+          });
+        }
+      }
+    }
+
+    setOptSubText(2, `${deviations.length} deviation zone${deviations.length>1?'s':''} · ` +
+      `${LAT_OFFSETS_MAX.length} offset bands · ${allCandidates.length} candidate points`);
+
+    if(optCancelled) return;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 3: Fetch weather at all candidates
+    // Uses same 16-day ECMWF source as the PDF report
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(3);
+
+    const windLegs    = allCandidates.map(c => ({ lat: c.lat, lon: c.lon, date: c.tArr }));
+    const marineLegs  = allCandidates.map(c => ({ midLat: c.lat, midLon: c.lon, tArr: c.tArr }));
+
+    const [windResults, marineResults] = await Promise.all([
+      fetchOpenMeteoWindDirBatch(windLegs),
+      fetchOpenMeteoMarineBatch(marineLegs)
+    ]);
+
+    if(optCancelled) return;
+
+    allCandidates.forEach((c, i) => {
+      const wd = windResults[i]  || {};
+      const m  = marineResults[i] || {};
+      c.wx = {
+        windKn: wd.windKn, windDir: wd.windDir,
+        waveM: m.waveM, waveDir: m.waveDir,
+        currentKn: m.currentKn, currentDir: m.currentDir
+      };
+    });
+
+    setOptSubText(3, `Fetched weather for ${allCandidates.length} candidate positions`);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 4: Land avoidance
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(4);
+    let checked = 0;
+    for(const c of allCandidates){
+      if(optCancelled) return;
+      c.isOcean = await isOceanCached(c.lat, c.lon);
+      checked++;
+      if(checked % 10 === 0)
+        setOptSubText(4, `Checked ${checked} / ${allCandidates.length} positions`);
+      await new Promise(r => setTimeout(r, 20));
+    }
+    const blocked = allCandidates.filter(c => !c.isOcean).length;
+    setOptSubText(4, `${blocked} land-blocked · ${allCandidates.length - blocked} valid`);
+
+    if(optCancelled) return;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 5: Score deviation paths — pick best offset band per deviation
+    // Score = total delay contribution through the deviation zone
+    // Only accept if delay < original window delay (guarantee improvement)
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(5);
+
+    // Group candidates by [devIdx, maxOffset]
+    const byDevAndOffset = new Map();
+    for(const c of allCandidates){
+      if(!c.isOcean) continue;
+      const key = `${c.devIdx}|${c.maxOffset}`;
+      if(!byDevAndOffset.has(key)) byDevAndOffset.set(key, []);
+      byDevAndOffset.get(key).push(c);
+    }
+
+    // For each deviation, score each offset band
+    const bestDeviations = []; // [{devIdx, maxOffset, samples, delayH}]
+
+    for(let di = 0; di < deviations.length; di++){
+      const dev = deviations[di];
+      let bestOffsetResult = null;
+      let bestDelayH = dev.windowDelayH; // must beat this
+
+      for(const maxOff of LAT_OFFSETS_MAX){
+        const key   = `${di}|${maxOff}`;
+        const pts   = byDevAndOffset.get(key) || [];
+        if(pts.length < 3) continue; // too few valid points
+
+        // Sort by fractional position along the arc
+        pts.sort((a, b) => a.f - b.f);
+
+        // Compute total delay through this deviation path
+        // Build segments: entry → pt0 → pt1 → … → exit
+        const entryPt  = wpCoords[dev.entryWpIdx];
+        const exitPt   = wpCoords[dev.exitWpIdx];
+        const pathPts  = [
+          { lon: entryPt[0], lat: entryPt[1] },
+          ...pts.map(c => ({ lon: c.lon, lat: c.lat, wx: c.wx })),
+          { lon: exitPt[0], lat: exitPt[1] }
+        ];
+
+        let totalDelayH = 0;
+        for(let p = 0; p < pathPts.length - 1; p++){
+          const [lo1, la1] = [pathPts[p].lon, pathPts[p].lat];
+          const [lo2, la2] = [pathPts[p+1].lon, pathPts[p+1].lat];
+          const segNm   = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+          const bearing = GEO.initialBearing(la1, lo1, la2, lo2);
+          const wx      = pathPts[p+1].wx || null;
+
+          const transitH  = legTransitH(segNm, bearing, orderedKn, wx, optLimits);
+          const orderedH  = segNm / orderedKn;
+          totalDelayH    += Math.max(0, transitH - orderedH);
+        }
+
+        if(totalDelayH < bestDelayH){
+          bestDelayH = totalDelayH;
+          bestOffsetResult = { maxOffset: maxOff, samples: pts, delayH: totalDelayH, pathPts };
+        }
+      }
+
+      if(bestOffsetResult){
+        bestDeviations.push({ devIdx: di, ...bestOffsetResult,
+          originalDelayH: dev.windowDelayH,
+          savedH: dev.windowDelayH - bestOffsetResult.delayH });
+        setOptSubText(5, `Window ${di+1}: saves ${bestDeviations[bestDeviations.length-1].savedH.toFixed(1)}h ` +
+          `(offset ${bestOffsetResult.maxOffset > 0 ? '+' : ''}${bestOffsetResult.maxOffset}°)`);
+      } else {
+        setOptSubText(5, `Window ${di+1}: no better path found — keeping original`);
+      }
+    }
+
+    if(optCancelled) return;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 6: Assemble final route
+    // Replace each improved deviation zone with:
+    //   entryWP → [tapered nudged waypoints] → exitWP
+    //   SKIP all original waypoints between entryWp and exitWp
+    // Outside deviation zones: keep all original waypoints unchanged
+    // ─────────────────────────────────────────────────────────────────────
+    setOptStep(6);
+
+    // Build a set of which original wp indices are INSIDE a deviation zone
+    // (these will be skipped)
+    const skipWpIndices = new Set();
+    for(const bd of bestDeviations){
+      const dev = deviations[bd.devIdx];
+      for(let k = dev.entryWpIdx + 1; k < dev.exitWpIdx; k++){
+        skipWpIndices.add(k);
+      }
+    }
+
+    // Walk through wpCoords, inserting deviation paths where they apply
+    const finalCoords = [];
+    const deviationInserted = new Set();
+
+    for(let k = 0; k < wpCoords.length; k++){
+      if(skipWpIndices.has(k)) continue; // skip original WPs inside deviation
+
+      // Check if this is an entry point for an improved deviation
+      const matchingDev = bestDeviations.find(bd => {
+        const dev = deviations[bd.devIdx];
+        return dev.entryWpIdx === k && !deviationInserted.has(bd.devIdx);
+      });
+
+      finalCoords.push([wpCoords[k][0], wpCoords[k][1]]);
+
+      if(matchingDev){
+        deviationInserted.add(matchingDev.devIdx);
+        // Insert the nudged waypoints between entry and exit
+        // These are the tapered samples (excluding endpoints)
+        for(const pt of matchingDev.samples){
+          finalCoords.push([pt.lon, pt.lat]);
+        }
+        // Note: exitWpIdx will be added naturally in the main loop
+      }
+    }
+
+    optWpCoords = finalCoords;
+    drawOptRoute(finalCoords);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Compute comparison metrics
+    // ─────────────────────────────────────────────────────────────────────
+    const origMetrics = computeRouteMetrics(
+      wpCoords,
+      wxr.map(r => ({ effectiveKn: r.effectiveKn, waveM: r.waveM, windKn: r.windKn })),
+      orderedKn
+    );
+
+    // For optimised route weather: use original wx outside deviations,
+    // candidate wx inside deviations
+    const optMetricsResult = computeRouteMetrics(finalCoords, null, orderedKn);
+    // Override delay with computed values for accuracy
+    const totalSavedH = bestDeviations.reduce((s, bd) => s + bd.savedH, 0);
+    optMetricsResult.wxDelayH = Math.max(0, origMetrics.wxDelayH - totalSavedH);
+    optMetricsResult.transitH = origMetrics.distNm / orderedKn + optMetricsResult.wxDelayH;
+    optMetrics = optMetricsResult;
+
+    hideOptOverlay();
+
+    if(!bestDeviations.length){
+      notify('Optimisation complete — no improvement found for current weather limits. \\n' +
+        'Try relaxing weather limits or the route is already optimal.', 'warn');
+    } else {
+      showComparisonCard(origMetrics, optMetricsResult);
+      const saved = totalSavedH.toFixed(1);
+      notify(`Optimisation complete ✓ — ${bestDeviations.length} deviation${bestDeviations.length>1?'s':''} applied, saves ${saved}h weather delay`, 'ok');
+    }
+
+  } catch(e){
+    hideOptOverlay();
+    notify('Optimisation failed: ' + e.message, 'err');
+    console.error('Optimisation error:', e);
+  } finally {
+    optRunning   = false;
+    optCancelled = false;
+  }
 }
 
 function showOptOverlay(){
@@ -17784,249 +18190,8 @@ function computeRouteMetrics(coords, wxResultsForCoords, orderedKn){
   return { distNm, transitH, wxDelayH, maxWave: maxWave || null, maxWind: maxWind || null, ecaMiles };
 }
 
-// ── MAIN OPTIMISATION FUNCTION ────────────────────────────────────────────
-async function runOptimisation(){
-  if(!routeData || wpCoords.length < 2){
-    notify('Calculate a route first','err'); return;
-  }
-  if(optRunning){ notify('Optimisation already running','warn'); return; }
 
-  // Read limits
-  const optLimits = {
-    maxWind:  parseFloat(document.getElementById('opt-max-wind').value)  || 25,
-    maxWave:  parseFloat(document.getElementById('opt-max-wave').value)  || 3.0,
-    minSpeed: parseFloat(document.getElementById('opt-min-speed').value) || 8,
-    maxSpeed: parseFloat(document.getElementById('opt-max-speed').value) || 18,
-  };
-  const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
-  const depStr    = document.getElementById('dep-time').value;
-  const dep       = depStr ? new Date(depStr) : new Date();
 
-  optRunning   = true;
-  optCancelled = false;
-  document.getElementById('opt-settings').style.display = 'none';
-  showOptOverlay();
-
-  try {
-    // ── STEP 0: Build candidate grid ─────────────────────────────────────
-    setOptStep(0);
-    // Sample every Nth waypoint — for large routes, sample key waypoints
-    // to keep API calls manageable. Use every waypoint up to 60, then stride.
-    const stride   = Math.max(1, Math.floor(wpCoords.length / 60));
-    const keyWPs   = [];
-    for(let i = 0; i < wpCoords.length; i += stride) keyWPs.push(i);
-    if(keyWPs[keyWPs.length - 1] !== wpCoords.length - 1)
-      keyWPs.push(wpCoords.length - 1);
-
-    // For each consecutive pair of key WPs, generate 7 candidate midpoints
-    // at latitudes: original, ±1°, ±2°, ±3°
-    const LAT_OFFSETS = [-3, -2, -1, 0, 1, 2, 3];
-    const candidateGrid = []; // [{segIdx, offset, midLat, midLon, tArr, distNm, bearing}]
-
-    let accH = 0;
-    for(let s = 0; s < keyWPs.length - 1; s++){
-      const i1 = keyWPs[s], i2 = keyWPs[s + 1];
-      const [lo1, la1] = wpCoords[i1];
-      const [lo2, la2] = wpCoords[i2];
-      const distNm  = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
-      const bearing = GEO.initialBearing(la1, lo1, la2, lo2);
-      const midLon  = normLon((lo1 + lo2) / 2);
-      const midLat  = (la1 + la2) / 2;
-      const tArr    = new Date(dep.getTime() + accH * 3600000);
-      accH += distNm / orderedKn;
-
-      for(const offset of LAT_OFFSETS){
-        candidateGrid.push({
-          segIdx: s, offset,
-          midLat: midLat + offset, midLon,
-          tArr, distNm, bearing,
-          lo1, la1, lo2, la2
-        });
-      }
-    }
-    setOptSubText(0, `${keyWPs.length - 1} segments × ${LAT_OFFSETS.length} candidates = ${candidateGrid.length} grid points`);
-
-    if(optCancelled) return;
-
-    // ── STEP 1: Fetch wind direction for all candidates ───────────────────
-    setOptStep(1);
-    const windLegs = candidateGrid.map(c => ({
-      lat: c.midLat, lon: c.midLon, date: c.tArr
-    }));
-    const windDirResults = await fetchOpenMeteoWindDirBatch(windLegs);
-    if(optCancelled) return;
-
-    // ── STEP 2: Fetch marine data for all candidates ──────────────────────
-    setOptStep(2);
-    const marineResults = await fetchOpenMeteoMarineBatch(
-      candidateGrid.map(c => ({ midLat: c.midLat, midLon: c.midLon, tArr: c.tArr }))
-    );
-    if(optCancelled) return;
-
-    // Merge weather into candidates
-    candidateGrid.forEach((c, idx) => {
-      const wd = windDirResults[idx] || {};
-      const m  = marineResults[idx]  || {};
-      c.wx = {
-        windKn: wd.windKn, windDir: wd.windDir,
-        waveM: m.waveM, waveDir: m.waveDir,
-        currentKn: m.currentKn, currentDir: m.currentDir
-      };
-    });
-
-    // ── STEP 3: Land avoidance ────────────────────────────────────────────
-    setOptStep(3);
-    let landChecked = 0;
-    // Only check non-zero offsets (original path is always ocean)
-    const toCheck = candidateGrid.filter(c => c.offset !== 0);
-    for(const c of toCheck){
-      if(optCancelled) return;
-      c.isOcean = await isOceanCached(c.midLat, c.midLon);
-      landChecked++;
-      if(landChecked % 5 === 0)
-        setOptSubText(3, `Checked ${landChecked} / ${toCheck.length} candidate positions`);
-      await new Promise(r => setTimeout(r, 30)); // small delay between elevation calls
-    }
-    // Original-path candidates are always ocean
-    candidateGrid.filter(c => c.offset === 0).forEach(c => c.isOcean = true);
-    const landBlocked = candidateGrid.filter(c => !c.isOcean).length;
-    setOptSubText(3, `${landBlocked} positions blocked by land, ${candidateGrid.length - landBlocked} valid`);
-    if(optCancelled) return;
-
-    // ── STEP 4: Path optimisation (greedy best-per-segment) ───────────────
-    setOptStep(4);
-    // Group candidates by segment
-    const bySegment = new Map();
-    candidateGrid.forEach(c => {
-      if(!bySegment.has(c.segIdx)) bySegment.set(c.segIdx, []);
-      bySegment.get(c.segIdx).push(c);
-    });
-
-    const optSegments = []; // [{offset, lo1_adj, la1_adj, lo2_adj, la2_adj, wx, transitH}]
-    let prevOffset = 0;
-
-    for(let s = 0; s < keyWPs.length - 1; s++){
-      const candidates = (bySegment.get(s) || []).filter(c => c.isOcean);
-      if(!candidates.length){
-        // No valid candidates — use original
-        const i1 = keyWPs[s], i2 = keyWPs[s+1];
-        const d = GEO.kmToNm(GEO.gcDistKm(wpCoords[i1][1], wpCoords[i1][0], wpCoords[i2][1], wpCoords[i2][0]));
-        optSegments.push({ offset: 0, i1, i2, transitH: d / orderedKn, lo1: wpCoords[i1][0], la1: wpCoords[i1][1], lo2: wpCoords[i2][0], la2: wpCoords[i2][1] });
-        continue;
-      }
-
-      // Score each candidate: transit time on this segment
-      let best = null, bestTime = Infinity;
-      for(const c of candidates){
-        // Penalise large offset jumps from previous segment (route smoothness)
-        const jumpPenaltyH = Math.abs(c.offset - prevOffset) * 0.15;
-        const time = legTransitH(c.distNm, c.bearing, orderedKn, c.wx, optLimits) + jumpPenaltyH;
-        if(time < bestTime){ bestTime = time; best = c; }
-      }
-
-      const i1 = keyWPs[s], i2 = keyWPs[s+1];
-      // Apply offset to endpoint latitudes
-      optSegments.push({
-        offset: best.offset,
-        i1, i2,
-        lo1: wpCoords[i1][0], la1: wpCoords[i1][1] + best.offset * 0.5,
-        lo2: wpCoords[i2][0], la2: wpCoords[i2][1] + best.offset * 0.5,
-        wx: best.wx, transitH: bestTime
-      });
-      prevOffset = best.offset;
-      setOptSubText(4, `Optimised ${s + 1} / ${keyWPs.length - 1} segments`);
-    }
-    if(optCancelled) return;
-
-    // ── STEP 5: Speed scheduling ──────────────────────────────────────────
-    setOptStep(5);
-    // Total time budget: ordered time on original route
-    const origTotalH = wpCoords.reduce((acc, _, i) => {
-      if(i === wpCoords.length - 1) return acc;
-      return acc + GEO.kmToNm(GEO.gcDistKm(wpCoords[i][1], wpCoords[i][0], wpCoords[i+1][1], wpCoords[i+1][0])) / orderedKn;
-    }, 0);
-
-    // Identify good-weather segments (can speed up to recover time)
-    let optTotalH = optSegments.reduce((s, seg) => s + seg.transitH, 0);
-    const timeSaved = origTotalH - optTotalH;
-    setOptSubText(5, timeSaved > 0
-      ? `Time saved: ${timeSaved.toFixed(1)}h by routing around weather`
-      : `Optimised route adds ${Math.abs(timeSaved).toFixed(1)}h (unavoidable weather)`);
-
-    // ── STEP 6: Build final optimised wpCoords ────────────────────────────
-    setOptStep(6);
-    // Rebuild a smooth waypoint array from the optimised segments
-    const optCoords = [];
-    for(let s = 0; s < optSegments.length; s++){
-      const seg = optSegments[s];
-      if(s === 0) optCoords.push([seg.lo1, seg.la1]);
-      optCoords.push([seg.lo2, seg.la2]);
-    }
-    // Fill in all the intermediate MARNET waypoints between key waypoints
-    // (preserving the sea routing, just shifting latitude)
-    const fullOptCoords = [];
-    for(let s = 0; s < optSegments.length; s++){
-      const seg = optSegments[s];
-      const i1 = seg.i1, i2 = seg.i2;
-      const latOffset = seg.offset * 0.5; // apply half-offset to corridor WPs
-      for(let k = i1; k < i2; k++){
-        fullOptCoords.push([wpCoords[k][0], wpCoords[k][1] + latOffset]);
-      }
-    }
-    // Add final destination (no offset)
-    const lastIdx = keyWPs[keyWPs.length - 1];
-    fullOptCoords.push([wpCoords[lastIdx][0], wpCoords[lastIdx][1]]);
-
-    optWpCoords = fullOptCoords;
-    drawOptRoute(fullOptCoords);
-
-    // ── Comparison metrics ────────────────────────────────────────────────
-    const origMetrics = computeRouteMetrics(
-      wpCoords,
-      window._wxResults ? window._wxResults.map(r => ({
-        effectiveKn: r.effectiveKn, waveM: r.waveM, windKn: r.windKn
-      })) : null,
-      orderedKn
-    );
-
-    // Build wx array for optimised route segments
-    // optSegments covers key waypoints; expand to fullOptCoords length for metrics
-    const optWxArray = optSegments.map(seg => seg.wx ? {
-      effectiveKn: (seg.wx.windKn != null || seg.wx.waveM != null) ? computeWeatherAdjustedSpeed(
-        orderedKn,
-        GEO.initialBearing(seg.la1, seg.lo1, seg.la2, seg.lo2),
-        seg.wx.windKn != null ? parseFloat(seg.wx.windKn) : null, seg.wx.windDir,
-        seg.wx.waveM  != null ? parseFloat(seg.wx.waveM)  : null, seg.wx.waveDir,
-        seg.wx.currentKn != null ? parseFloat(seg.wx.currentKn) : null, seg.wx.currentDir
-      ).effectiveKn : orderedKn,
-      waveM: seg.wx.waveM, windKn: seg.wx.windKn
-    } : null);
-
-    const optMetricsResult = computeRouteMetrics(fullOptCoords, optWxArray, orderedKn);
-    optMetrics = optMetricsResult;
-
-    hideOptOverlay();
-    showComparisonCard(origMetrics, optMetricsResult);
-    document.getElementById('opt-settings').style.display = 'none';
-
-    const improvement = origMetrics.transitH - optMetricsResult.transitH;
-    if(improvement > 0.5){
-      notify(`Optimisation complete ✓ — saves ${improvement.toFixed(1)}h transit time`, 'ok');
-    } else if(improvement > -0.5){
-      notify('Optimisation complete — original route is near-optimal for current weather', 'ok');
-    } else {
-      notify('Optimisation complete — note: route is longer but avoids weather limits', 'warn');
-    }
-
-  } catch(e){
-    hideOptOverlay();
-    notify('Optimisation failed: ' + e.message, 'err');
-    console.error('Optimisation error:', e);
-  } finally {
-    optRunning   = false;
-    optCancelled = false;
-  }
-}
 
 /* ═══════════════════════════════════════════════════════════════
    CLEAR ALL
