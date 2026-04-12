@@ -173,6 +173,42 @@ input:focus, select:focus { border-color: var(--accent); }
 .wp-table td { padding: 4px 6px; border-bottom: 1px solid #1a2236; color: var(--text); }
 .wp-table tr:last-child td { border-bottom: none; }
 .wp-table td.eca { color: var(--warn); }
+.wp-table tbody tr { cursor: pointer; transition: background .15s; }
+.wp-table tbody tr:hover { background: rgba(255,255,255,.04); }
+.wp-table tbody tr.wp-selected { background: rgba(245,158,11,.15); outline: 1px solid rgba(245,158,11,.4); }
+.wp-table tbody tr.wp-selected td { color: #fcd34d; }
+
+/* Waypoint delete toolbar */
+#wp-delete-bar {
+  display: none; align-items: center; gap: 8px;
+  padding: 5px 6px; background: rgba(239,68,68,.12);
+  border: 1px solid rgba(239,68,68,.3); border-radius: 5px;
+  margin-top: 4px; font-size: 11px; color: var(--text);
+}
+#wp-delete-bar.visible { display: flex; }
+#wp-delete-bar span { flex: 1; color: var(--muted); }
+#wp-delete-btn {
+  padding: 3px 10px; background: #ef4444; color: #fff;
+  border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
+}
+#wp-delete-btn:hover { background: #dc2626; }
+#wp-deselect-btn {
+  padding: 3px 8px; background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;
+}
+
+/* Map highlight pulse for selected waypoint */
+@keyframes wp-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(245,158,11,.8), 0 1px 4px rgba(0,0,0,.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(245,158,11,0), 0 1px 4px rgba(0,0,0,.5); }
+  100% { box-shadow: 0 0 0 0 rgba(245,158,11,0), 0 1px 4px rgba(0,0,0,.5); }
+}
+.wp-marker.wp-highlight {
+  background: #fcd34d !important;
+  border-color: #f59e0b !important;
+  animation: wp-pulse 1s ease-out 3;
+  z-index: 10;
+}
 
 /* ═══════════ WEATHER SECTION ═══════════ */
 #wx-route-section { display: none; margin-top: 6px; }
@@ -889,6 +925,12 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
             <thead><tr><th>#</th><th>Position</th><th>Brg</th><th>nm</th><th>ECA</th></tr></thead>
             <tbody id="wp-tbody"></tbody>
           </table>
+        </div>
+        <!-- Waypoint selection / delete toolbar -->
+        <div id="wp-delete-bar">
+          <span id="wp-selected-label">No waypoint selected</span>
+          <button id="wp-deselect-btn" onclick="deselectWaypoint()">✕</button>
+          <button id="wp-delete-btn" onclick="deleteSelectedWaypoint()">🗑 Delete</button>
         </div>
         <!-- WEATHER ALONG ROUTE — hidden, used for PDF export -->
         <div id="wx-route-section" style="display:none">
@@ -15925,6 +15967,18 @@ function addWaypointMarker(lon, lat, idx){
   `;
   el.title = `WP${idx+1}: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
 
+  // Click on marker → select in table
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    selectWaypoint(idx);
+    // Scroll wp-table-wrap to show the row
+    const wrap = document.getElementById('wp-table-wrap');
+    const row  = document.querySelector(`#wp-tbody tr[data-idx="${idx}"]`);
+    if(wrap && row){
+      wrap.scrollTop = row.offsetTop - wrap.offsetTop - 30;
+    }
+  });
+
   const m = new maptilersdk.Marker({element:el, draggable:true, anchor:'center'})
     .setLngLat([lon,lat])
     .addTo(map);
@@ -16908,32 +16962,114 @@ function recalcMetrics(){
 }
 
 function buildWpTable(){
-  const tbody=document.getElementById('wp-tbody');
-  tbody.innerHTML='';
+  const tbody = document.getElementById('wp-tbody');
+  tbody.innerHTML = '';
   let prevEca = null;
-  wpCoords.forEach(([lo,la],i)=>{
-    const nextI=i<wpCoords.length-1?i+1:null;
-    const bearing=nextI!=null?GEO.initialBearing(la,lo,wpCoords[nextI][1],wpCoords[nextI][0]).toFixed(0)+'°':'—';
-    const dist=nextI!=null?GEO.kmToNm(GEO.gcDistKm(la,lo,wpCoords[nextI][1],wpCoords[nextI][0])).toFixed(0):'—';
-    const eca=getEcaType(lo,la);
-    // Detect ECA transitions for row highlighting
-    let rowClass='', ecaBadge='';
+  wpCoords.forEach(([lo, la], i) => {
+    const nextI   = i < wpCoords.length - 1 ? i + 1 : null;
+    const bearing = nextI != null ? GEO.initialBearing(la, lo, wpCoords[nextI][1], wpCoords[nextI][0]).toFixed(0) + '°' : '—';
+    const dist    = nextI != null ? GEO.kmToNm(GEO.gcDistKm(la, lo, wpCoords[nextI][1], wpCoords[nextI][0])).toFixed(0) : '—';
+    const eca     = getEcaType(lo, la);
+
+    let rowClass = '', ecaBadge = '';
     if(eca && !prevEca){
-      rowClass='eca-entry';
-      ecaBadge=`<span class="eca-badge entry">ENTRY</span>`;
+      rowClass = 'eca-entry';
+      ecaBadge = `<span class="eca-badge entry">ENTRY</span>`;
     } else if(!eca && prevEca){
-      rowClass='eca-exit';
-      ecaBadge=`<span class="eca-badge exit">EXIT</span>`;
+      rowClass = 'eca-exit';
+      ecaBadge = `<span class="eca-badge exit">EXIT</span>`;
     }
-    prevEca=eca;
-    tbody.innerHTML+=`<tr class="${rowClass}">
-      <td>${i+1}</td>
+    prevEca = eca;
+
+    const tr = document.createElement('tr');
+    tr.className    = rowClass;
+    tr.dataset.idx  = i;
+    tr.innerHTML = `
+      <td>${i + 1}</td>
       <td>${la.toFixed(3)},${lo.toFixed(3)}</td>
       <td>${bearing}</td>
       <td>${dist}</td>
-      <td class="${eca?'eca':''}">${eca||'—'}${ecaBadge}</td>
-    </tr>`;
+      <td class="${eca ? 'eca' : ''}">${eca || '—'}${ecaBadge}</td>`;
+    tr.addEventListener('click', () => selectWaypoint(i));
+    tbody.appendChild(tr);
   });
+}
+
+// ── Waypoint selection state ──────────────────────────────────────────────
+let _selectedWpIdx = null;
+
+function selectWaypoint(idx){
+  _selectedWpIdx = idx;
+
+  // Highlight table row
+  document.querySelectorAll('#wp-tbody tr').forEach(tr => {
+    tr.classList.toggle('wp-selected', parseInt(tr.dataset.idx) === idx);
+  });
+
+  // Scroll row into view
+  const selRow = document.querySelector(`#wp-tbody tr[data-idx="${idx}"]`);
+  if(selRow) selRow.scrollIntoView({ block: 'nearest' });
+
+  // Show delete bar — first and last WPs are origin/dest, can't be deleted as intermediate
+  const bar   = document.getElementById('wp-delete-bar');
+  const label = document.getElementById('wp-selected-label');
+  const [lo, la] = wpCoords[idx];
+  label.textContent = `WP${idx + 1}: ${la.toFixed(4)}, ${lo.toFixed(4)}`;
+  bar.classList.add('visible');
+
+  // Disable delete for origin (0) and destination (last)
+  const delBtn = document.getElementById('wp-delete-btn');
+  const isEndpoint = (idx === 0 || idx === wpCoords.length - 1);
+  delBtn.disabled = isEndpoint;
+  delBtn.title    = isEndpoint ? 'Cannot delete origin or destination' : 'Delete this waypoint';
+  delBtn.style.opacity = isEndpoint ? '0.4' : '1';
+
+  // Pulse the map marker
+  highlightWpMarker(idx);
+}
+
+function deselectWaypoint(){
+  _selectedWpIdx = null;
+  document.querySelectorAll('#wp-tbody tr').forEach(tr => tr.classList.remove('wp-selected'));
+  document.getElementById('wp-delete-bar').classList.remove('visible');
+  clearWpMarkerHighlight();
+}
+
+function deleteSelectedWaypoint(){
+  if(_selectedWpIdx == null) return;
+  const idx = _selectedWpIdx;
+  if(idx === 0 || idx === wpCoords.length - 1){
+    notify('Cannot delete origin or destination', 'err'); return;
+  }
+  wpCoords.splice(idx, 1);
+  deselectWaypoint();
+  rebuildWaypointMarkers();
+  buildWpTable();
+  recalcMetrics();
+  redrawRouteGeoJSON();
+  // Clear weather — route has changed
+  window._wxResults = null;
+  const exportBtn = document.getElementById('export-btn');
+  if(exportBtn){ exportBtn.disabled = true; }
+  const wxBtn = document.getElementById('load-wx-btn');
+  if(wxBtn){ wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false; wxBtn.style.background = ''; }
+  notify(`Waypoint ${idx + 1} deleted`, 'ok');
+}
+
+function highlightWpMarker(idx){
+  clearWpMarkerHighlight();
+  // Origin/dest use endpointMarkers, not wpMarkers
+  const entry = wpMarkers.find(w => w.idx === idx);
+  if(entry){
+    entry.marker.getElement().classList.add('wp-highlight');
+    // Also fly map to it
+    const lnglat = entry.marker.getLngLat();
+    map.easeTo({ center: [lnglat.lng, lnglat.lat], duration: 400 });
+  }
+}
+
+function clearWpMarkerHighlight(){
+  wpMarkers.forEach(({marker}) => marker.getElement().classList.remove('wp-highlight'));
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -18167,13 +18303,41 @@ async function runOptimisation(){
       orderedKn
     );
 
-    // For optimised route weather: use original wx outside deviations,
-    // candidate wx inside deviations
-    const optMetricsResult = computeRouteMetrics(finalCoords, null, orderedKn);
     // Override delay with computed values for accuracy
     const totalSavedH = bestDeviations.reduce((s, bd) => s + bd.savedH, 0);
+    const optMetricsResult = computeRouteMetrics(finalCoords, null, orderedKn);
     optMetricsResult.wxDelayH = Math.max(0, origMetrics.wxDelayH - totalSavedH);
     optMetricsResult.transitH = origMetrics.distNm / orderedKn + optMetricsResult.wxDelayH;
+
+    // ── Extract max wind/wave for opt route from candidate wx data ────────
+    // For legs inside deviation zones: use candidate wx (already fetched).
+    // For legs outside deviation zones: use original wxr.
+    // This gives an indicative max without requiring a full weather reload.
+    let optMaxWave = 0, optMaxWind = 0;
+
+    // Outside deviations — use original wxr
+    const deviationLegRanges = bestDeviations.map(bd => {
+      const dev = deviations[bd.devIdx];
+      return { start: dev.windowEntryWpIdx, end: dev.windowExitWpIdx };
+    });
+    wxr.forEach(r => {
+      // Skip wxr legs that fall inside a deviation zone
+      const inDev = deviationLegRanges.some(d => r.i >= d.start && r.i < d.end);
+      if(!inDev){
+        if(r.waveM  != null) optMaxWave = Math.max(optMaxWave, parseFloat(r.waveM));
+        if(r.windKn != null) optMaxWind = Math.max(optMaxWind, parseFloat(r.windKn));
+      }
+    });
+    // Inside deviations — use candidate wx
+    bestDeviations.forEach(bd => {
+      bd.samples.forEach(c => {
+        if(c.wx?.waveM  != null) optMaxWave = Math.max(optMaxWave, parseFloat(c.wx.waveM));
+        if(c.wx?.windKn != null) optMaxWind = Math.max(optMaxWind, parseFloat(c.wx.windKn));
+      });
+    });
+    optMetricsResult.maxWave = optMaxWave > 0 ? optMaxWave : null;
+    optMetricsResult.maxWind = optMaxWind > 0 ? optMaxWind : null;
+
     optMetrics = optMetricsResult;
 
     hideOptOverlay();
@@ -18384,27 +18548,50 @@ function applyOptimisedRoute(){
   if(!optWpCoords || optWpCoords.length < 2){
     notify('No optimised route available','err'); return;
   }
+
   // Replace current route with optimised waypoints
   wpCoords = optWpCoords.map(c => [c[0], c[1]]);
-  // Clear old weather & comparison UI
-  window._wxResults = null;
-  window._wxDelayH  = null;
   clearOptimisedRoute();
   rebuildWaypointMarkers();
+  buildWpTable();
   redrawRouteGeoJSON();
   recalcMetrics();
-  // Reset weather buttons
-  const exportBtn = document.getElementById('export-btn');
-  if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Click "Load Weather" first'; }
-  const simBtn = document.getElementById('sim-btn');
-  if(simBtn){ simBtn.disabled = true; simBtn.title = 'Load weather first to enable simulation'; }
-  const wxBtn = document.getElementById('load-wx-btn');
-  if(wxBtn){ wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false;
-             wxBtn.style.background = ''; }
+  deselectWaypoint();
+
+  // ── Background weather fetch for the optimised route ─────────────────
+  // Runs silently — user sees a status hint. Export unlocks when done.
+  // Results stored in window._optWxResults so PDF can use them immediately.
+  window._wxResults  = null;
+  window._optWxResults = null;
   document.getElementById('max-stat-section').style.display = 'none';
   document.getElementById('wx-delay-section').style.display = 'none';
-  document.getElementById('wx-status-hint').textContent = 'Optimised route applied — load weather to analyse';
-  notify('Optimised route applied ✓ — click Load Weather to refresh analysis','ok');
+
+  const exportBtn = document.getElementById('export-btn');
+  const simBtn    = document.getElementById('sim-btn');
+  const wxBtn     = document.getElementById('load-wx-btn');
+  const hintEl    = document.getElementById('wx-status-hint');
+
+  if(exportBtn){ exportBtn.disabled = true; exportBtn.title = 'Loading weather for optimised route…'; }
+  if(simBtn)   { simBtn.disabled = true; }
+  if(wxBtn)    { wxBtn.textContent = '⏳ Loading weather…'; wxBtn.disabled = true; wxBtn.style.background = 'rgba(99,102,241,.25)'; }
+  if(hintEl)   { hintEl.textContent = 'Loading weather for optimised route…'; }
+
+  notify('Optimised route applied ✓ — loading weather in background…', 'ok');
+
+  // fetchRouteWeather reads wpCoords and stores into window._wxResults
+  fetchRouteWeather().then(() => {
+    window._optWxResults = window._wxResults;  // keep a permanent copy
+    if(exportBtn){ exportBtn.disabled = false; exportBtn.title = 'Export voyage report'; }
+    if(simBtn)   { simBtn.disabled = false; simBtn.title = ''; }
+    if(wxBtn)    { wxBtn.textContent = '✅ Weather Loaded — Reload?'; wxBtn.disabled = false; wxBtn.style.background = 'rgba(34,197,94,.15)'; }
+    if(hintEl)   { hintEl.textContent = 'Wind data: ' + (window._wxResults?.filter(r=>r.windKn!=null).length || 0) + '/' + (window._wxResults?.length||0) + ' legs covered'; }
+    notify('Weather loaded for optimised route ✓ — report ready to export', 'ok');
+  }).catch(e => {
+    console.error('Background wx fetch failed:', e);
+    if(wxBtn)  { wxBtn.textContent = '🌊 Load Weather & Analyse Route'; wxBtn.disabled = false; wxBtn.style.background = ''; }
+    if(hintEl) { hintEl.textContent = 'Weather load failed — click to retry'; }
+    notify('Weather load failed — click Load Weather to retry', 'warn');
+  });
 }
 
 // ── Compute metrics for a route ──────────────────────────────────────────
