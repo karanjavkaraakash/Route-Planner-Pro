@@ -431,6 +431,17 @@ input:focus, select:focus { border-color: var(--accent); }
 #opt-compare-card td:first-child { text-align: left; color: var(--muted); font-size: 10px; }
 #opt-compare-card .cmp-better { color: #22c55e; font-weight: 700; }
 #opt-compare-card .cmp-worse  { color: #f59e0b; }
+#opt-compare-card .cmp-caution {
+  background: rgba(245,158,11,.1);
+  border: 1px solid rgba(245,158,11,.35);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: #fcd34d;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+#opt-compare-card .cmp-caution strong { color: #f59e0b; }
 #opt-compare-card .cmp-actions {
   display: flex; gap: 6px; margin-top: 10px;
 }
@@ -1054,6 +1065,7 @@ body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
         <span>⚡ Route Comparison</span>
         <button class="cmp-close" onclick="dismissComparison()">✕</button>
       </div>
+      <div class="cmp-caution" id="cmp-caution-row" style="display:none"></div>
       <table>
         <thead>
           <tr>
@@ -17903,7 +17915,55 @@ async function runOptimisation(){
 
     const deviations = []; // [{entryLegIdx, exitLegIdx, windowStart, windowEnd}]
 
+    // ── Helper: is a wxr leg in a coastal/constrained area? ──────────────
+    // Coastal legs are short (< 80nm original segment) AND in Gulf of Mexico
+    // or other enclosed/semi-enclosed seas where lateral deviation is impossible.
+    // We check the original wpCoords segment length for the window legs.
+    const COASTAL_NM_THRESHOLD = 150; // segments shorter than this are likely coastal
+    const OPEN_OCEAN_LAT_MIN   = 20;  // below this latitude, only truly open legs qualify
+
+    function isCoastalWindow(w){
+      // Get the original wpCoords segment indices for the window
+      const wEntryI = wxr[w.start]?.i ?? 0;
+      const wExitI  = wxr[Math.min(w.end, wxr.length - 1)]?.i ?? 0;
+
+      // Compute the total direct distance from windowEntry WP to windowExit WP
+      const entryPt = wpCoords[wEntryI];
+      const exitPt  = wpCoords[Math.min(wExitI + 1, wpCoords.length - 1)];
+      if(!entryPt || !exitPt) return false;
+      const windowSpanNm = GEO.kmToNm(GEO.gcDistKm(
+        entryPt[1], entryPt[0], exitPt[1], exitPt[0]
+      ));
+
+      // Short span — almost certainly a coastal segment
+      if(windowSpanNm < COASTAL_NM_THRESHOLD) return true;
+
+      // Check if all window legs have midpoints in known enclosed seas:
+      // Gulf of Mexico: lat<31, lon<-80
+      // North Sea: lat>50, lon<9, lon>-5
+      // Baltic: lat>53, lon>9, lon<31
+      // Red Sea / Persian Gulf: lat<30, lon>30, lon<60
+      const windowLegs = wxr.slice(w.start, w.end + 1);
+      const allEnclosed = windowLegs.every(r => {
+        const la = r.midLat, lo = normLon(r.midLon);
+        if(la < 31 && lo < -80 && lo > -100) return true; // Gulf of Mexico
+        if(la > 50 && lo > -5  && lo < 9)   return true; // North Sea
+        if(la > 53 && lo > 9   && lo < 31)  return true; // Baltic
+        if(la < 30 && lo > 30  && lo < 60)  return true; // Red Sea / Persian Gulf
+        return false;
+      });
+      return allEnclosed;
+    }
+
     for(const w of riskWindows){
+      // ── Ocean-only gate ──────────────────────────────────────────────────
+      // Don't attempt deviations in coastal or enclosed-sea windows — the
+      // MARNET route is already following the only safe passage there.
+      if(isCoastalWindow(w)){
+        setOptSubText(1, `Window ${riskWindows.indexOf(w)+1}: coastal/enclosed-sea segment — deviation skipped`);
+        continue;
+      }
+
       const windowStartNm = cumDistNm[w.start];
       const windowEndNm   = cumDistNm[w.end + 1] || totalRouteNm;
 
@@ -18141,12 +18201,15 @@ async function runOptimisation(){
     }
 
     // For each deviation, score each offset band
-    const bestDeviations = []; // [{devIdx, maxOffset, samples, delayH}]
+    const bestDeviations = [];       // accepted: net-positive, no ECA increase
+    const closestMatches = [];       // fallback: best available even if cost gate fails
 
     for(let di = 0; di < deviations.length; di++){
       const dev = deviations[di];
-      let bestOffsetResult = null;
-      let bestNetSaving = 0; // must be positive net saving to accept
+      let bestOffsetResult  = null;
+      let bestNetSaving     = 0;     // must be positive to accept
+      let closestResult     = null;  // best available regardless of cost gate
+      let closestDelayH     = dev.windowDelayH; // track least-bad option
 
       // Compute original path metrics (for ECA and distance baseline)
       const wEntryPt = wpCoords[dev.windowEntryWpIdx];
@@ -18218,6 +18281,19 @@ async function runOptimisation(){
             netSavingUSD: netSaving, extraNm
           };
         }
+
+        // Closest-match: track best delay reduction regardless of cost gate
+        // (used as fallback when no net-positive deviation exists)
+        // Still must not increase ECA miles (hard constraint always applies)
+        if(savedH > 0 && totalDelayH < closestDelayH){
+          closestDelayH = totalDelayH;
+          closestResult = {
+            maxOffset: maxOff, samples: pts, delayH: totalDelayH,
+            pathPts, ecaMiles: devEcaMiles, distNm: devDistNm,
+            netSavingUSD: netSaving, extraNm, savedH,
+            _isClosestMatch: true
+          };
+        }
       }
 
       if(bestOffsetResult){
@@ -18227,6 +18303,14 @@ async function runOptimisation(){
         const netK = Math.round(bestOffsetResult.netSavingUSD / 1000);
         setOptSubText(5, `Window ${di+1}: saves ${savedH.toFixed(1)}h · ~$${netK}k net · ` +
           `offset ${bestOffsetResult.maxOffset > 0 ? '+' : ''}${bestOffsetResult.maxOffset}°`);
+      } else if(closestResult){
+        // Net cost gate failed — but there IS a delay reduction available.
+        // Store as closest-match for the fallback card.
+        closestMatches.push({ devIdx: di, ...closestResult,
+          originalDelayH: dev.windowDelayH });
+        const extraNmRnd = Math.round(closestResult.extraNm);
+        setOptSubText(5, `Window ${di+1}: closest match saves ${closestResult.savedH.toFixed(1)}h ` +
+          `but adds ${extraNmRnd}nm (marginal economics — shown as caution)`);
       } else {
         setOptSubText(5, `Window ${di+1}: no beneficial deviation found (ECA constraint or no delay improvement)`);
       }
@@ -18342,16 +18426,83 @@ async function runOptimisation(){
 
     hideOptOverlay();
 
-    if(!bestDeviations.length){
-      notify('Optimisation complete — no economical deviation found.\n' +
-        'Either the route is already optimal, coastline constraints prevent deviation, ' +
-        'or available deviations would increase ECA miles.', 'warn');
-    } else {
+    if(bestDeviations.length){
+      // ── Standard result: net-positive deviations found ───────────────────
       showComparisonCard(origMetrics, optMetricsResult);
       const saved    = totalSavedH.toFixed(1);
       const totalNet = bestDeviations.reduce((s, bd) => s + (bd.netSavingUSD || 0), 0);
       const netK     = Math.round(totalNet / 1000);
       notify(`Optimisation complete ✓ — ${bestDeviations.length} deviation${bestDeviations.length>1?'s':''} · saves ${saved}h weather delay · ~$${netK}k net saving`, 'ok');
+
+    } else if(closestMatches.length){
+      // ── Fallback: no net-positive deviation, but closest-match exists ────
+      // Assemble the closest-match route and show with caution
+      const closestCoords = [...wpCoords.map(c => [c[0], c[1]])];
+      const closestInserted = new Set();
+      const closestSkipIdx  = new Set();
+      for(const cm of closestMatches){
+        const dev = deviations[cm.devIdx];
+        for(let k = dev.windowEntryWpIdx + 1; k < dev.windowExitWpIdx; k++) closestSkipIdx.add(k);
+      }
+      const closestFinal = [];
+      const cmInserted = new Set();
+      for(let k = 0; k < wpCoords.length; k++){
+        if(closestSkipIdx.has(k)) continue;
+        closestFinal.push([wpCoords[k][0], wpCoords[k][1]]);
+        const matchingCm = closestMatches.find(cm => {
+          const dev = deviations[cm.devIdx];
+          return dev.windowEntryWpIdx === k && !cmInserted.has(cm.devIdx);
+        });
+        if(matchingCm){
+          cmInserted.add(matchingCm.devIdx);
+          for(const pt of matchingCm.samples) closestFinal.push([pt.lon, pt.lat]);
+        }
+      }
+      optWpCoords = closestFinal;
+      drawOptRoute(closestFinal);
+
+      // Compute metrics for closest-match route
+      const cmMetrics = computeRouteMetrics(closestFinal, null, orderedKn);
+      const cmSavedH  = closestMatches.reduce((s, cm) => s + cm.savedH, 0);
+      cmMetrics.wxDelayH = Math.max(0, origMetrics.wxDelayH - cmSavedH);
+      cmMetrics.transitH = origMetrics.distNm / orderedKn + cmMetrics.wxDelayH;
+      // Extract max wind/wave from closest-match candidates
+      let cmMaxWave = 0, cmMaxWind = 0;
+      const cmDevRanges = closestMatches.map(cm => {
+        const dev = deviations[cm.devIdx];
+        return { start: dev.windowEntryWpIdx, end: dev.windowExitWpIdx };
+      });
+      wxr.forEach(r => {
+        if(!cmDevRanges.some(d => r.i >= d.start && r.i < d.end)){
+          if(r.waveM  != null) cmMaxWave = Math.max(cmMaxWave, parseFloat(r.waveM));
+          if(r.windKn != null) cmMaxWind = Math.max(cmMaxWind, parseFloat(r.windKn));
+        }
+      });
+      closestMatches.forEach(cm => {
+        cm.samples.forEach(c => {
+          if(c.wx?.waveM  != null) cmMaxWave = Math.max(cmMaxWave, parseFloat(c.wx.waveM));
+          if(c.wx?.windKn != null) cmMaxWind = Math.max(cmMaxWind, parseFloat(c.wx.windKn));
+        });
+      });
+      cmMetrics.maxWave = cmMaxWave > 0 ? cmMaxWave : null;
+      cmMetrics.maxWind = cmMaxWind > 0 ? cmMaxWind : null;
+      optMetrics = cmMetrics;
+
+      // Build caution message
+      const totalExtraNm  = closestMatches.reduce((s, cm) => s + (cm.extraNm || 0), 0);
+      const totalCostUSD  = Math.round(-closestMatches.reduce((s, cm) => s + (cm.netSavingUSD || 0), 0));
+      const cautionText   = `⚠️ <strong>Closest-match route</strong> — no deviation meets cost thresholds at current limits. ` +
+        `Best available option saves <strong>${cmSavedH.toFixed(1)}h</strong> delay but adds ` +
+        `<strong>~${Math.round(totalExtraNm)}nm</strong> (~$${totalCostUSD.toLocaleString()} net cost). ` +
+        `Accept only if weather avoidance outweighs the extra distance cost.`;
+
+      showComparisonCard(origMetrics, cmMetrics, cautionText);
+      notify(`Closest-match route shown ⚠️ — saves ${cmSavedH.toFixed(1)}h but adds ~${Math.round(totalExtraNm)}nm. Check comparison card.`, 'warn');
+
+    } else {
+      notify('Optimisation complete — no improvement found.\n' +
+        'Either the route is already optimal, all windows are in coastal/enclosed areas, ' +
+        'or available deviations would increase ECA miles.', 'warn');
     }
 
   } catch(e){
@@ -18487,11 +18638,20 @@ function drawOptRoute(coords){
 }
 
 // ── Build comparison table and show card ─────────────────────────────────
-function showComparisonCard(origMetrics, optM){
+function showComparisonCard(origMetrics, optM, cautionText){
   const fmt = (v, unit) => v != null ? v + unit : '—';
   const orderedKn = parseFloat(document.getElementById('speed').value) || 14;
   const depStr    = document.getElementById('dep-time').value;
   const dep       = depStr ? new Date(depStr) : new Date();
+
+  // Show/hide caution row
+  const cautionEl = document.getElementById('cmp-caution-row');
+  if(cautionText){
+    cautionEl.innerHTML  = cautionText;
+    cautionEl.style.display = 'block';
+  } else {
+    cautionEl.style.display = 'none';
+  }
 
   // Format ETA from transit hours
   const fmtETA = h => {
