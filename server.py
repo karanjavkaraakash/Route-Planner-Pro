@@ -119,250 +119,224 @@ def cmems_tile_proxy(path, params):
 TSS_ZONES = {
 
     # ── Dover Strait / English Channel ───────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section I — one of the busiest in the world
-    # Inbound (westbound, SW): NE lane → SW
-    # Outbound (eastbound, NE): SW lane → NE
+    # IMO Ships' Routeing Part B, Section I
+    # CRITICAL: waypoints must be in TRAVEL DIRECTION order
+    # NE-bound vessel travels SW→NE: starts near Atlantic, exits to North Sea
+    # SW-bound vessel travels NE→SW: starts near North Sea, exits to Atlantic
+    # Trigger box tightly around the strait only (not whole Channel)
     'dover': {
         'name': 'Dover Strait TSS',
-        'trigger_box': [-2.0, 50.5, 2.5, 51.5],
-        # NE-bound (heading toward North Sea): southern lane
+        'trigger_box': [-1.5, 50.8, 2.2, 51.5],
+        # NE-bound (Atlantic→North Sea, bearing ~045–090°): SW lane, WP order SW→NE
         'northeast': [
-            [1.55, 51.10],   # South Falls area entry
-            [1.25, 51.07],   # Lane centre
-            [0.90, 51.05],   # Mid-Channel
-            [0.50, 51.05],   # Varne area
-            [0.12, 51.08],   # Off Folkestone
-            [-0.05, 51.12],  # South Goodwin
-            [-0.30, 51.18],  # Off Dungeness
-            [-1.20, 50.85],  # Off Beachy Head
+            [-1.05, 50.88],  # Enter: off Beachy Head / Selsey Bill area
+            [-0.28, 51.00],  # Off Dungeness
+            [ 0.10, 51.05],  # Off Folkestone / South Foreland
+            [ 0.52, 51.05],  # Varne Bank area
+            [ 0.92, 51.05],  # Mid-strait centre
+            [ 1.28, 51.07],  # Off Cap Gris-Nez (NE lane centre)
+            [ 1.58, 51.10],  # South Falls / exit toward North Sea
         ],
-        # SW-bound (heading toward Atlantic): northern lane
+        # SW-bound (North Sea→Atlantic, bearing ~225–270°): NE lane, WP order NE→SW
         'southwest': [
-            [-1.10, 50.92],  # Off Beachy Head inbound
-            [-0.25, 51.25],  # North of TSS centre
-            [0.08, 51.20],   # Off South Foreland
-            [0.55, 51.18],   # Colbart area
-            [0.95, 51.18],   # Mid separation zone
-            [1.32, 51.20],   # Off Cap Gris-Nez
-            [1.62, 51.22],   # North Goodwin
-            [2.00, 51.25],   # West Hinder area
+            [ 2.05, 51.22],  # Enter: West Hinder area
+            [ 1.60, 51.20],  # North Goodwin area
+            [ 1.30, 51.18],  # Off Cap Gris-Nez (NE lane)
+            [ 0.92, 51.18],  # Mid-strait NE lane
+            [ 0.52, 51.15],  # Colbart / separation zone
+            [ 0.05, 51.18],  # Off South Foreland
+            [-0.28, 51.22],  # Off Dungeness
+            [-1.12, 50.92],  # Exit: off Beachy Head
         ],
     },
 
     # ── Strait of Gibraltar ───────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section II
     'gibraltar': {
         'name': 'Strait of Gibraltar TSS',
-        'trigger_box': [-6.5, 35.5, -4.5, 36.5],
-        # Eastbound (into Mediterranean): northern lane
+        'trigger_box': [-6.2, 35.7, -4.8, 36.3],
+        # Eastbound (Atlantic→Med, bearing ~060–120°): northern lane, W→E
         'east': [
-            [-6.00, 36.05],
-            [-5.80, 36.00],
-            [-5.50, 35.92],
-            [-5.25, 35.90],
-            [-5.00, 35.88],
-            [-4.80, 35.90],
+            [-6.05, 36.02],
+            [-5.82, 35.98],
+            [-5.52, 35.90],
+            [-5.28, 35.88],
+            [-5.02, 35.88],
+            [-4.85, 35.90],
         ],
-        # Westbound (into Atlantic): southern lane
+        # Westbound (Med→Atlantic, bearing ~240–300°): southern lane, E→W
         'west': [
-            [-4.85, 35.80],
-            [-5.10, 35.78],
-            [-5.40, 35.80],
-            [-5.65, 35.83],
-            [-5.88, 35.88],
-            [-6.10, 35.92],
+            [-4.88, 35.80],
+            [-5.12, 35.78],
+            [-5.42, 35.80],
+            [-5.68, 35.82],
+            [-5.90, 35.88],
+            [-6.08, 35.95],
         ],
     },
 
     # ── Singapore Strait ─────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section XIII
-    # Critical — compulsory reporting (STRAITREP) and pilotage applies
     'singapore': {
         'name': 'Singapore Strait TSS',
-        'trigger_box': [103.5, 1.0, 104.5, 1.5],
-        # Eastbound: main lane (deep water)
+        'trigger_box': [103.5, 1.05, 104.4, 1.45],
+        # Eastbound (bearing ~080–120°): main deep-water lane, W→E
         'east': [
-            [103.55, 1.18],
-            [103.70, 1.22],
-            [103.85, 1.25],
-            [103.98, 1.25],
-            [104.10, 1.22],
-            [104.25, 1.20],
+            [103.58, 1.20],
+            [103.72, 1.22],
+            [103.87, 1.25],
+            [104.00, 1.25],
+            [104.12, 1.22],
+            [104.28, 1.20],
         ],
-        # Westbound: main lane (slightly south)
+        # Westbound (bearing ~260–300°): main lane, E→W
         'west': [
-            [104.22, 1.15],
-            [104.08, 1.17],
-            [103.95, 1.18],
-            [103.82, 1.18],
-            [103.68, 1.15],
-            [103.55, 1.12],
+            [104.25, 1.15],
+            [104.10, 1.17],
+            [103.97, 1.18],
+            [103.83, 1.17],
+            [103.70, 1.15],
+            [103.57, 1.12],
         ],
     },
 
     # ── Strait of Malacca ────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section XIII
-    # Note: vessels > 250m LOA use VTIS West (Horsburgh to One Fathom Bank)
     'malacca': {
         'name': 'Strait of Malacca TSS',
-        'trigger_box': [98.5, 1.0, 104.0, 6.5],
-        # Northwestbound (toward Andaman Sea)
+        'trigger_box': [99.0, 1.2, 103.5, 6.5],
+        # NW-bound (Singapore→Andaman, bearing ~300–340°): SE lane, SE→NW
         'northwest': [
-            [103.48, 1.35],
-            [103.20, 1.65],
-            [102.85, 2.10],
-            [102.40, 2.58],
-            [101.90, 3.10],
-            [101.35, 3.80],
-            [100.80, 4.50],
-            [100.30, 5.15],
-            [99.80,  5.80],
-            [99.30,  6.20],
-            [98.85,  6.50],
+            [103.48, 1.38],
+            [103.18, 1.68],
+            [102.82, 2.12],
+            [102.38, 2.60],
+            [101.88, 3.12],
+            [101.32, 3.82],
+            [100.78, 4.52],
+            [100.28, 5.18],
+            [ 99.78, 5.82],
+            [ 99.28, 6.22],
+            [ 98.88, 6.52],
         ],
-        # Southeastbound (toward Singapore)
+        # SE-bound (Andaman→Singapore, bearing ~130–160°): NW lane, NW→SE
         'southeast': [
-            [98.90,  6.35],
-            [99.35,  6.05],
-            [99.85,  5.65],
-            [100.35, 5.00],
-            [100.88, 4.35],
-            [101.40, 3.65],
-            [101.95, 2.95],
-            [102.45, 2.45],
-            [102.92, 1.97],
-            [103.25, 1.55],
-            [103.52, 1.25],
+            [ 98.92, 6.38],
+            [ 99.32, 6.08],
+            [ 99.82, 5.68],
+            [100.32, 5.02],
+            [100.85, 4.38],
+            [101.38, 3.68],
+            [101.92, 2.98],
+            [102.42, 2.48],
+            [102.88, 2.00],
+            [103.22, 1.58],
+            [103.50, 1.28],
         ],
     },
 
     # ── Strait of Hormuz ─────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section IX
     'hormuz': {
         'name': 'Strait of Hormuz TSS',
-        'trigger_box': [56.0, 25.5, 57.5, 26.8],
-        # Inbound (NW, into Persian Gulf): northern lane
+        'trigger_box': [56.1, 25.6, 57.4, 26.7],
+        # NW-bound (into Persian Gulf, bearing ~300–340°): N lane, SE→NW
         'northwest': [
-            [57.30, 25.75],
-            [57.10, 25.90],
-            [56.85, 26.10],
-            [56.60, 26.28],
-            [56.40, 26.40],
+            [57.28, 25.72],
+            [57.08, 25.88],
+            [56.82, 26.08],
+            [56.58, 26.25],
+            [56.40, 26.38],
         ],
-        # Outbound (SE, into Gulf of Oman): southern lane
+        # SE-bound (into Gulf of Oman, bearing ~120–160°): S lane, NW→SE
         'southeast': [
-            [56.35, 26.28],
-            [56.58, 26.15],
-            [56.80, 25.98],
-            [57.05, 25.80],
-            [57.28, 25.65],
+            [56.38, 26.28],
+            [56.60, 26.12],
+            [56.82, 25.95],
+            [57.06, 25.78],
+            [57.26, 25.63],
         ],
     },
 
     # ── Bab-el-Mandeb ────────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section X
     'babelmandab': {
         'name': 'Bab-el-Mandeb TSS',
-        'trigger_box': [43.0, 11.5, 44.0, 13.0],
-        # Northbound (into Red Sea)
+        'trigger_box': [43.1, 11.6, 43.9, 12.9],
+        # N-bound (into Red Sea, bearing ~340–020°): E lane, S→N
         'north': [
-            [43.45, 11.75],
-            [43.40, 12.15],
-            [43.38, 12.50],
-            [43.42, 12.85],
+            [43.45, 11.78],
+            [43.42, 12.18],
+            [43.40, 12.52],
+            [43.43, 12.88],
         ],
-        # Southbound (into Gulf of Aden)
+        # S-bound (into Gulf of Aden, bearing ~160–200°): W lane, N→S
         'south': [
-            [43.55, 12.80],
-            [43.52, 12.45],
-            [43.55, 12.10],
-            [43.58, 11.80],
+            [43.57, 12.82],
+            [43.54, 12.48],
+            [43.55, 12.12],
+            [43.58, 11.82],
         ],
     },
 
     # ── Cape Finisterre / Off Finisterre ──────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section VI
     'finisterre': {
         'name': 'Off Finisterre TSS',
-        'trigger_box': [-10.5, 42.0, -8.5, 44.5],
-        # Northbound: offshore lane
+        'trigger_box': [-10.2, 42.2, -8.8, 44.2],
+        # N-bound (bearing ~340–020°): offshore lane, S→N
         'north': [
-            [-9.50, 42.20],
-            [-9.65, 42.80],
-            [-9.70, 43.30],
-            [-9.60, 43.80],
-            [-9.40, 44.20],
+            [-9.48, 42.22],
+            [-9.63, 42.82],
+            [-9.68, 43.32],
+            [-9.58, 43.82],
+            [-9.38, 44.18],
         ],
-        # Southbound: offshore lane
+        # S-bound (bearing ~160–200°): offshore lane, N→S
         'south': [
-            [-9.35, 44.15],
-            [-9.55, 43.75],
-            [-9.65, 43.25],
-            [-9.60, 42.75],
-            [-9.45, 42.15],
+            [-9.33, 44.12],
+            [-9.53, 43.78],
+            [-9.63, 43.28],
+            [-9.58, 42.78],
+            [-9.43, 42.18],
         ],
     },
 
     # ── Off Ushant (Ouessant) ─────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section IV — major Atlantic/Channel junction
     'ushant': {
         'name': 'Off Ushant (Ouessant) TSS',
-        'trigger_box': [-6.0, 47.5, -4.5, 49.0],
-        # Northeastbound (toward Channel)
+        'trigger_box': [-5.8, 47.6, -4.6, 48.9],
+        # NE-bound (toward Channel, bearing ~040–080°): S lane, SW→NE
         'northeast': [
-            [-5.80, 47.80],
-            [-5.50, 48.15],
-            [-5.20, 48.40],
-            [-5.00, 48.65],
-            [-4.85, 48.85],
+            [-5.78, 47.82],
+            [-5.48, 48.17],
+            [-5.18, 48.42],
+            [-4.98, 48.67],
+            [-4.87, 48.87],
         ],
-        # Southwestbound (toward Atlantic)
+        # SW-bound (toward Atlantic, bearing ~220–260°): N lane, NE→SW
         'southwest': [
-            [-4.90, 48.75],
-            [-5.10, 48.55],
-            [-5.35, 48.30],
-            [-5.60, 48.00],
-            [-5.85, 47.70],
+            [-4.92, 48.77],
+            [-5.12, 48.57],
+            [-5.37, 48.32],
+            [-5.62, 48.02],
+            [-5.87, 47.72],
         ],
     },
 
-    # ── Off Île d'Ouessant (Deep Water Route) ────────────────────────────────
-    # For VLCC/large vessels using the deep water route west of Ushant
-    'ushant_dw': {
-        'name': 'Ushant Deep Water Route',
-        'trigger_box': [-7.5, 47.5, -5.5, 48.5],
-        'northeast': [
-            [-7.20, 47.65],
-            [-6.80, 47.95],
-            [-6.40, 48.20],
-            [-6.00, 48.40],
-        ],
-        'southwest': [
-            [-6.05, 48.35],
-            [-6.45, 48.12],
-            [-6.85, 47.88],
-            [-7.25, 47.58],
-        ],
-    },
-
-    # ── North Sea — German Bight / Elbe approaches ───────────────────────────
-    # For vessels routing to Hamburg/Bremen/Dutch ports
+    # ── North Sea — German Bight approaches ──────────────────────────────────
     'german_bight': {
-        'name': 'German Bight / Elbe TSS',
-        'trigger_box': [7.0, 53.5, 9.5, 55.5],
+        'name': 'German Bight TSS',
+        'trigger_box': [7.2, 53.6, 9.3, 55.3],
+        # NE-bound (bearing ~040–080°): S→N
         'northeast': [
-            [7.50, 53.80],
-            [7.80, 54.20],
-            [8.10, 54.55],
-            [8.35, 54.90],
-            [8.45, 55.20],
+            [7.52, 53.82],
+            [7.82, 54.22],
+            [8.12, 54.57],
+            [8.37, 54.92],
+            [8.47, 55.22],
         ],
+        # SW-bound (bearing ~220–260°): N→S
         'southwest': [
-            [8.40, 55.15],
-            [8.25, 54.82],
-            [8.00, 54.48],
-            [7.72, 54.12],
-            [7.45, 53.75],
+            [8.42, 55.17],
+            [8.27, 54.85],
+            [8.02, 54.50],
+            [7.75, 54.15],
+            [7.48, 53.78],
         ],
     },
 }
@@ -623,45 +597,56 @@ def route_searoute(olon,olat,dlon,dlat,restrictions):
 # Returns PNG as base64 for embedding in PDF.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def rdp_simplify(points, epsilon=0.15):
+def rdp_simplify(points, epsilon=0.3):
     """
-    Ramer-Douglas-Peucker polyline simplification.
-    Reduces waypoint count for map rendering without visible quality loss.
-    epsilon in degrees (~15nm at mid-latitudes).
+    Ramer-Douglas-Peucker polyline simplification — antimeridian-safe.
+    Normalises longitudes before simplification so Pacific routes work correctly.
     """
     if len(points) <= 2:
         return points
 
+    # Normalise to 0-360 if route crosses antimeridian
+    lons = [p[0] for p in points]
+    crosses = any(lo > 90 for lo in lons) and any(lo < -90 for lo in lons)
+    if crosses:
+        pts = [[lo + 360 if lo < 0 else lo, la] for lo, la in points]
+    else:
+        pts = [list(p) for p in points]
+
     def point_line_dist(p, a, b):
-        """Perpendicular distance from point p to line a–b."""
-        if a == b:
+        if a[0] == b[0] and a[1] == b[1]:
             return math.hypot(p[0]-a[0], p[1]-a[1])
         dx, dy = b[0]-a[0], b[1]-a[1]
         t = ((p[0]-a[0])*dx + (p[1]-a[1])*dy) / (dx*dx + dy*dy)
         t = max(0, min(1, t))
         return math.hypot(p[0]-(a[0]+t*dx), p[1]-(a[1]+t*dy))
 
-    dmax, idx = 0, 0
-    for i in range(1, len(points)-1):
-        d = point_line_dist(points[i], points[0], points[-1])
-        if d > dmax:
-            dmax, idx = d, i
+    def _rdp(pts, eps):
+        if len(pts) <= 2:
+            return pts
+        dmax, idx = 0, 0
+        for i in range(1, len(pts)-1):
+            d = point_line_dist(pts[i], pts[0], pts[-1])
+            if d > dmax:
+                dmax, idx = d, i
+        if dmax > eps:
+            left  = _rdp(pts[:idx+1], eps)
+            right = _rdp(pts[idx:],   eps)
+            return left[:-1] + right
+        return [pts[0], pts[-1]]
 
-    if dmax > epsilon:
-        left  = rdp_simplify(points[:idx+1], epsilon)
-        right = rdp_simplify(points[idx:],   epsilon)
-        return left[:-1] + right
-    return [points[0], points[-1]]
+    simplified_norm = _rdp(pts, epsilon)
+
+    # Convert back to original longitude range
+    if crosses:
+        return [[lo - 360 if lo > 180 else lo, la] for lo, la in simplified_norm]
+    return simplified_norm
 
 
 def generate_route_map(waypoints, width=1200, height=600):
     """
     Generate a PNG map image of the route using staticmap + CARTO Dark tiles.
-    waypoints: [[lon, lat], ...]
-    Returns PNG bytes, or None on failure.
-
-    Tile source: CARTO Dark Matter (free, no API key needed)
-    Fallback: OpenStreetMap tiles
+    Handles antimeridian (Pacific) crossings by normalising to 0-360 lon range.
     """
     try:
         from staticmap import StaticMap, Line, CircleMarker
@@ -672,48 +657,29 @@ def generate_route_map(waypoints, width=1200, height=600):
     if len(waypoints) < 2:
         return None
 
-    # Simplify long routes — reduces tile requests, speeds render
+    # Simplify — antimeridian-aware RDP
     simplified = rdp_simplify(waypoints, epsilon=0.3)
     if len(simplified) < 2:
         simplified = [waypoints[0], waypoints[-1]]
 
-    # ── Antimeridian fix ─────────────────────────────────────────────────────
-    # staticmap renders on a single Mercator projection [-180, 180].
-    # Routes crossing the antimeridian (Pacific crossings etc.) produce
-    # coordinates that jump from e.g. +170 to -170, which staticmap renders
-    # as a straight line across the entire map.
-    #
-    # Fix: detect if the route crosses the antimeridian by checking if total
-    # longitude span > 180°. If so, shift all longitudes to a consistent
-    # positive range (0–360) by adding 360 to any negative longitude.
-    # staticmap accepts longitudes > 180 correctly for Pacific-centred views.
-
+    # ── Antimeridian normalisation ───────────────────────────────────────────
+    # staticmap works correctly with lons in 0-360 range for Pacific routes.
+    # Without this, Tokyo→LA draws as a line across Russia on the map.
     lons = [p[0] for p in simplified]
-    lon_min, lon_max = min(lons), max(lons)
-
-    # Detect antimeridian crossing: if we have both large positive and large
-    # negative longitudes, the route wraps around the antimeridian
-    has_positive = any(lo > 90  for lo in lons)
-    has_negative = any(lo < -90 for lo in lons)
-    crosses_antimeridian = has_positive and has_negative
+    crosses_antimeridian = (any(lo > 90  for lo in lons) and
+                            any(lo < -90 for lo in lons))
 
     if crosses_antimeridian:
-        # Normalise: shift negative longitudes to 180–360 range
-        # This gives a Pacific-centred view e.g. 140E to 240 (= 120W)
-        normalized = [[lo + 360 if lo < 0 else lo, la] for lo, la in simplified]
-        log.info('Antimeridian crossing detected — normalising longitudes to 0-360 range')
+        render_pts = [[lo + 360 if lo < 0 else lo, la] for lo, la in simplified]
+        log.info('Pacific route: normalised %d points to 0-360 lon range', len(render_pts))
     else:
-        normalized = simplified
+        render_pts = [[p[0], p[1]] for p in simplified]
 
-    # Build continuous segments (no antimeridian splits needed after normalisation)
-    # For non-antimeridian routes, also check for any remaining large jumps
-    segments = []
-    seg = [normalized[0]]
-    for pt in normalized[1:]:
-        if abs(pt[0] - seg[-1][0]) > 300:
-            # Still a large jump after normalisation — force segment break
-            segments.append(seg)
-            seg = [pt]
+    # Build segments — split only if there's an unexplained large jump
+    segments, seg = [], [render_pts[0]]
+    for pt in render_pts[1:]:
+        if abs(pt[0] - seg[-1][0]) > 200:
+            segments.append(seg); seg = [pt]
         else:
             seg.append(pt)
     segments.append(seg)
@@ -722,13 +688,13 @@ def generate_route_map(waypoints, width=1200, height=600):
 
     def render_map(url_template):
         m = StaticMap(width, height, url_template=url_template,
-                      tile_request_timeout=8,
-                      headers={'User-Agent': 'RoutePlannerPro/2.5 (voyage planning)'})
+                      tile_request_timeout=10,
+                      headers={'User-Agent': 'RoutePlannerPro/2.5'})
         for seg in segments:
             if len(seg) >= 2:
                 m.add_line(Line([(p[0], p[1]) for p in seg], '#3b82f6', 3))
-        m.add_marker(CircleMarker((normalized[0][0],  normalized[0][1]),  '#22c55e', 10))
-        m.add_marker(CircleMarker((normalized[-1][0], normalized[-1][1]), '#ef4444', 10))
+        m.add_marker(CircleMarker((render_pts[0][0],  render_pts[0][1]),  '#22c55e', 10))
+        m.add_marker(CircleMarker((render_pts[-1][0], render_pts[-1][1]), '#ef4444', 10))
         img = m.render(zoom=None)
         buf = io.BytesIO()
         img.save(buf, format='PNG', optimize=True)
@@ -737,7 +703,7 @@ def generate_route_map(waypoints, width=1200, height=600):
     try:
         return render_map(tile_url)
     except Exception as e:
-        log.warning('CARTO tiles failed (%s), trying OpenStreetMap fallback', e)
+        log.warning('CARTO tiles failed (%s), trying OSM fallback', e)
         try:
             return render_map('https://tile.openstreetmap.org/{z}/{x}/{y}.png')
         except Exception as e2:
