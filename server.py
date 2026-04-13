@@ -386,8 +386,11 @@ def bearing_deg(lon1, lat1, lon2, lat2):
 def inject_tss_waypoints(coords):
     """
     Check each route segment against TSS trigger boxes.
-    If a segment passes through a TSS zone, inject the appropriate
-    inbound/outbound TSS lane waypoints at that point in the route.
+    When a TSS zone is detected, REPLACE all original waypoints inside that
+    zone's trigger box with the TSS lane waypoints.
+
+    This prevents the zigzag caused by keeping both the original MARNET
+    waypoints AND the TSS lane waypoints simultaneously.
 
     Returns (new_coords, tss_applied: list of TSS names applied)
     """
@@ -398,41 +401,60 @@ def inject_tss_waypoints(coords):
     overall_bearing = bearing_deg(coords[0][0], coords[0][1],
                                   coords[-1][0], coords[-1][1])
 
-    result = [coords[0]]
     tss_applied = []
-    inserted_tss = set()  # prevent double-insertion
+    inserted_tss = set()
 
-    for i in range(len(coords) - 1):
-        lon1, lat1 = coords[i]
-        lon2, lat2 = coords[i+1]
-        mid_lon = (lon1 + lon2) / 2
-        mid_lat = (lat1 + lat2) / 2
+    # Build result by walking the coordinate list.
+    # When we enter a TSS trigger box, collect ALL original points in that box,
+    # then replace them with the TSS lane waypoints in one shot.
+    result = []
+    i = 0
 
-        seg_bearing = bearing_deg(lon1, lat1, lon2, lat2)
+    while i < len(coords):
+        lon, lat = coords[i]
 
+        # Check if this point is inside any unprocessed TSS trigger box
+        matched_tss = None
         for tss_key, tss in TSS_ZONES.items():
             if tss_key in inserted_tss:
                 continue
+            if point_in_box(lon, lat, tss['trigger_box']):
+                matched_tss = (tss_key, tss)
+                break
+
+        if matched_tss:
+            tss_key, tss = matched_tss
             box = tss['trigger_box']
 
-            # Check if midpoint OR either endpoint falls in the trigger box
-            if (point_in_box(mid_lon, mid_lat, box) or
-                point_in_box(lon1, lat1, box) or
-                point_in_box(lon2, lat2, box)):
+            # Use bearing of the segment entering the TSS zone
+            seg_bearing = bearing_deg(
+                coords[i-1][0], coords[i-1][1], lon, lat
+            ) if i > 0 else overall_bearing
 
-                # Determine which lane to use based on segment bearing
-                lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
+            lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
 
-                if lane_wps:
-                    # Insert TSS waypoints before the current endpoint
-                    for wp in lane_wps:
-                        result.append(wp)
-                    inserted_tss.add(tss_key)
-                    tss_applied.append(tss['name'])
-                    log.info('TSS applied: %s (bearing %.0f°)', tss['name'], seg_bearing)
-                    break
+            if lane_wps:
+                # Skip ALL original waypoints inside this trigger box
+                # (they are replaced by the TSS lane waypoints)
+                j = i
+                while j < len(coords) and point_in_box(coords[j][0], coords[j][1], box):
+                    j += 1
 
-        result.append(coords[i+1])
+                # Insert TSS lane waypoints instead
+                for wp in lane_wps:
+                    result.append(wp)
+
+                inserted_tss.add(tss_key)
+                tss_applied.append(tss['name'])
+                log.info('TSS applied: %s (bearing %.0f°, replaced %d pts)',
+                         tss['name'], seg_bearing, j - i)
+
+                # Continue from first point after the trigger box
+                i = j
+                continue
+
+        result.append(coords[i])
+        i += 1
 
     # Deduplicate consecutive near-identical points (< 0.5nm apart)
     deduped = [result[0]]
@@ -638,7 +660,8 @@ def generate_route_map(waypoints, width=1200, height=600):
     waypoints: [[lon, lat], ...]
     Returns PNG bytes, or None on failure.
 
-    Tile source: CARTO Dark Matter (free, no API key needed, ~5nm resolution at z=4)
+    Tile source: CARTO Dark Matter (free, no API key needed)
+    Fallback: OpenStreetMap tiles
     """
     try:
         from staticmap import StaticMap, Line, CircleMarker
@@ -650,83 +673,73 @@ def generate_route_map(waypoints, width=1200, height=600):
         return None
 
     # Simplify long routes — reduces tile requests, speeds render
-    # Keep first/last always; simplify intermediates
     simplified = rdp_simplify(waypoints, epsilon=0.3)
     if len(simplified) < 2:
         simplified = [waypoints[0], waypoints[-1]]
 
-    # Handle antimeridian crossing — split into segments if needed
-    # (staticmap doesn't handle 180° wrapping natively)
+    # ── Antimeridian fix ─────────────────────────────────────────────────────
+    # staticmap renders on a single Mercator projection [-180, 180].
+    # Routes crossing the antimeridian (Pacific crossings etc.) produce
+    # coordinates that jump from e.g. +170 to -170, which staticmap renders
+    # as a straight line across the entire map.
+    #
+    # Fix: detect if the route crosses the antimeridian by checking if total
+    # longitude span > 180°. If so, shift all longitudes to a consistent
+    # positive range (0–360) by adding 360 to any negative longitude.
+    # staticmap accepts longitudes > 180 correctly for Pacific-centred views.
+
+    lons = [p[0] for p in simplified]
+    lon_min, lon_max = min(lons), max(lons)
+
+    # Detect antimeridian crossing: if we have both large positive and large
+    # negative longitudes, the route wraps around the antimeridian
+    has_positive = any(lo > 90  for lo in lons)
+    has_negative = any(lo < -90 for lo in lons)
+    crosses_antimeridian = has_positive and has_negative
+
+    if crosses_antimeridian:
+        # Normalise: shift negative longitudes to 180–360 range
+        # This gives a Pacific-centred view e.g. 140E to 240 (= 120W)
+        normalized = [[lo + 360 if lo < 0 else lo, la] for lo, la in simplified]
+        log.info('Antimeridian crossing detected — normalising longitudes to 0-360 range')
+    else:
+        normalized = simplified
+
+    # Build continuous segments (no antimeridian splits needed after normalisation)
+    # For non-antimeridian routes, also check for any remaining large jumps
     segments = []
-    seg = [simplified[0]]
-    for pt in simplified[1:]:
-        if abs(pt[0] - seg[-1][0]) > 180:
-            # Antimeridian crossing detected — start new segment
+    seg = [normalized[0]]
+    for pt in normalized[1:]:
+        if abs(pt[0] - seg[-1][0]) > 300:
+            # Still a large jump after normalisation — force segment break
             segments.append(seg)
             seg = [pt]
         else:
             seg.append(pt)
     segments.append(seg)
 
-    # Compute bounding box with 8% padding
-    all_lons = [p[0] for p in simplified]
-    all_lats = [p[1] for p in simplified]
-    lon_span = max(all_lons) - min(all_lons)
-    lat_span = max(all_lats) - min(all_lats)
-    pad_lon  = max(lon_span * 0.12, 3.0)  # at least 3° padding
-    pad_lat  = max(lat_span * 0.12, 2.0)
-
-    # CARTO Dark Matter — elegant dark basemap, no API key, reliable CDN
-    # Fallback: OpenStreetMap (lighter)
     tile_url = 'https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_matter_all/{z}/{x}/{y}.png'
 
-    m = StaticMap(width, height, url_template=tile_url,
-                  tile_request_timeout=8,
-                  headers={'User-Agent': 'RoutePlannerPro/2.5 (voyage planning tool)'})
-
-    # Add route line segments
-    ROUTE_COLOR  = '#3b82f6'   # blue route line
-    ROUTE_WIDTH  = 3
-    for seg in segments:
-        if len(seg) >= 2:
-            # staticmap expects [(lon,lat), ...] as (x,y)
-            line_coords = [(p[0], p[1]) for p in seg]
-            m.add_line(Line(line_coords, ROUTE_COLOR, ROUTE_WIDTH))
-
-    # Origin marker (green)
-    m.add_marker(CircleMarker(
-        (simplified[0][0], simplified[0][1]),
-        '#22c55e', 10
-    ))
-    # Destination marker (red)
-    m.add_marker(CircleMarker(
-        (simplified[-1][0], simplified[-1][1]),
-        '#ef4444', 10
-    ))
-
-    # Render — may take 3–8s depending on tile server latency
-    try:
-        img = m.render(zoom=None)  # auto-zoom to fit all points
+    def render_map(url_template):
+        m = StaticMap(width, height, url_template=url_template,
+                      tile_request_timeout=8,
+                      headers={'User-Agent': 'RoutePlannerPro/2.5 (voyage planning)'})
+        for seg in segments:
+            if len(seg) >= 2:
+                m.add_line(Line([(p[0], p[1]) for p in seg], '#3b82f6', 3))
+        m.add_marker(CircleMarker((normalized[0][0],  normalized[0][1]),  '#22c55e', 10))
+        m.add_marker(CircleMarker((normalized[-1][0], normalized[-1][1]), '#ef4444', 10))
+        img = m.render(zoom=None)
         buf = io.BytesIO()
         img.save(buf, format='PNG', optimize=True)
         return buf.getvalue()
+
+    try:
+        return render_map(tile_url)
     except Exception as e:
-        log.warning('staticmap render failed, trying fallback tile server: %s', e)
-        # Fallback to OpenStreetMap
+        log.warning('CARTO tiles failed (%s), trying OpenStreetMap fallback', e)
         try:
-            m2 = StaticMap(width, height,
-                           url_template='https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                           tile_request_timeout=8,
-                           headers={'User-Agent': 'RoutePlannerPro/2.5'})
-            for seg in segments:
-                if len(seg) >= 2:
-                    m2.add_line(Line([(p[0],p[1]) for p in seg], '#2563eb', ROUTE_WIDTH))
-            m2.add_marker(CircleMarker((simplified[0][0],  simplified[0][1]),  '#16a34a', 10))
-            m2.add_marker(CircleMarker((simplified[-1][0], simplified[-1][1]), '#dc2626', 10))
-            img2 = m2.render(zoom=None)
-            buf2 = io.BytesIO()
-            img2.save(buf2, format='PNG', optimize=True)
-            return buf2.getvalue()
+            return render_map('https://tile.openstreetmap.org/{z}/{x}/{y}.png')
         except Exception as e2:
             log.error('Both tile sources failed: %s', e2)
             return None
