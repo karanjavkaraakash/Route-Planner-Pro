@@ -126,7 +126,7 @@ TSS_ZONES = {
     # Trigger box tightly around the strait only (not whole Channel)
     'dover': {
         'name': 'Dover Strait TSS',
-        'trigger_box': [-1.5, 50.8, 2.2, 51.5],
+        'trigger_box': [-1.5, 50.2, 2.2, 51.5],
         # NE-bound (Atlantic→North Sea, bearing ~045–090°): SW lane, WP order SW→NE
         'northeast': [
             [-1.05, 50.88],  # Enter: off Beachy Head / Selsey Bill area
@@ -910,11 +910,12 @@ def inject_tss_waypoints(coords):
         # Find entry: interpolate where segment first touches the box
         entry_info = interpolate_box_entry(lon1, lat1, lon2, lat2, box)
         if entry_info is None:
+            # segment_crosses_box said yes but interpolation failed — skip safely
             result.append([lon1, lat1])
             i += 1
             continue
 
-        entry_lon, entry_lat, _ = entry_info
+        entry_lon, entry_lat, entry_t = entry_info
 
         # Determine lane based on bearing at entry
         seg_bearing = bearing_deg(lon1, lat1, lon2, lat2)
@@ -924,10 +925,11 @@ def inject_tss_waypoints(coords):
             i += 1
             continue
 
-        # Keep everything up to (but not including) the entry crossing
+        # Add the point before the TSS zone (the segment start, if not already at entry)
         result.append([lon1, lat1])
-        # Add exact entry point on box boundary
-        result.append([entry_lon, entry_lat])
+        # Add entry point only if it differs from the segment start
+        if entry_t > 0.001:
+            result.append([entry_lon, entry_lat])
 
         # Skip forward through all original waypoints inside the box
         j = i + 1
@@ -940,17 +942,18 @@ def inject_tss_waypoints(coords):
             else:
                 break
 
-        # Find exit: if the last segment exits the box, interpolate exit point
+        # Find exit point — walk backwards from first point outside the box
         exit_lon, exit_lat = None, None
-        if last_in_box is not None and last_in_box + 1 < len(coords):
-            elo1, ela1 = coords[last_in_box]
-            elo2, ela2 = coords[last_in_box + 1]
-            ex_info = interpolate_box_entry(elo2, ela2, elo1, ela1, box)
-            if ex_info:
-                exit_lon, exit_lat, _ = ex_info
-        elif j < len(coords):
-            # Segment i+1 exits the box
-            ex_info = interpolate_box_entry(lon2, lat2, lon1, lat1, box)
+        if j < len(coords):
+            # coords[j] is the first point outside the box
+            # coords[j-1] is the last point inside (or the crossing segment start)
+            inside_pt = coords[j - 1]
+            outside_pt = coords[j]
+            ex_info = interpolate_box_entry(
+                outside_pt[0], outside_pt[1],
+                inside_pt[0],  inside_pt[1],
+                box
+            )
             if ex_info:
                 exit_lon, exit_lat, _ = ex_info
 
@@ -958,16 +961,17 @@ def inject_tss_waypoints(coords):
         for wp in lane_wps:
             result.append([wp[0], wp[1]])
 
-        # Add exact exit point
+        # Add exit point — where route rejoins original path
         if exit_lon is not None:
             result.append([exit_lon, exit_lat])
 
         done_tss.add(tss_key)
         tss_applied.append(tss['name'])
-        log.info('TSS spliced: %s (bearing %.0f°, entry %.4f,%.4f exit %.4f,%.4f)',
+        log.info('TSS spliced: %s (bearing %.0f°, entry=%.4f,%.4f t=%.2f, exit=%.4f,%.4f, skipped %d pts)',
                  tss['name'], seg_bearing,
-                 entry_lon, entry_lat,
-                 exit_lon or 0, exit_lat or 0)
+                 entry_lon, entry_lat, entry_t,
+                 exit_lon or 0, exit_lat or 0,
+                 j - (i + 1))
 
         # Continue from the first waypoint after the box
         i = j
