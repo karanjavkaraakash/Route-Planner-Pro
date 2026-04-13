@@ -16576,7 +16576,9 @@ async function calculateRoute(){
 
     hideProgress();
     const viaNote = hasVia ? ` · via ${viaKeys.map(k=>FORCE_VIA_WAYPOINTS[k]?.name||k).join(', ')}` : '';
-    notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm'+viaNote+' — click Load Weather to analyse','ok');
+    const tssNote = routeData.tss_applied?.length
+      ? ` · TSS: ${routeData.tss_applied.join(', ')}` : '';
+    notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm'+viaNote+tssNote+' — click Load Weather to analyse','ok');
 
     // ── Background route map generation ─────────────────────────────────────
     // Fetches a server-rendered SVG of the route for PDF embedding.
@@ -19502,6 +19504,7 @@ async function generateVoyageReport(){
     <tr><td>ECA Miles</td><td>${Math.round(ecaMiles).toLocaleString()} nm (${ecaPct}% of voyage)</td></tr>
     <tr><td>Total Waypoints</td><td>${wpCoords.length}</td></tr>
     <tr><td>Route Type</td><td>Great Circle (sea routing via MARNET)</td></tr>
+    ${routeData?.tss_applied?.length ? `<tr><td style="color:#16a34a;font-weight:600">TSS Compliance</td><td style="color:#16a34a;font-weight:600">✓ ${routeData.tss_applied.join(' · ')}</td></tr>` : ''}
   </table>
   <div class="stat-row">
     <div class="stat-box ${maxWind>=35?'danger':maxWind>=20?'warn':maxWind>0?'success':'neutral'}">
