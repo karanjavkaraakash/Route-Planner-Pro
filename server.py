@@ -424,18 +424,23 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
 
 def inject_tss_waypoints(coords):
     """
-    Proximity-based TSS injection — no trigger boxes.
+    Proximity-based TSS injection.
 
     For each TSS zone:
       1. Find the route segment of closest approach to the TSS reference point
-      2. If that distance < trigger_nm → this TSS applies to the route
-      3. Determine the correct lane (NE/SW/E/W etc.) from the bearing at closest approach
-      4. Find where the lane entry waypoint is closest to the route (entry segment)
-      5. Find where the lane exit waypoint is closest to the route (exit segment)
-      6. Splice: keep route up to entry_seg, insert lane WPs, resume from exit_seg+1
+      2. If distance < trigger_nm → this TSS applies
+      3. Determine correct lane from bearing at closest segment
+      4. Find the range of original segments to REPLACE:
+           - Scan backwards from closest_seg to find where the lane entry WP
+             is "behind" us (i.e. where the route first comes within 2× the
+             lane span of the entry point) — this is entry_seg
+           - Scan forwards to find where the route passes the lane exit WP —
+             this is exit_seg
+      5. Replace coords[entry_seg : exit_seg+2] with lane waypoints
 
-    This approach is self-calibrating — no box dimensions to tune.
-    Works regardless of MARNET waypoint density or approach angle.
+    KEY INSIGHT: entry_seg and exit_seg are found by scanning outward from
+    closest_seg, not by independent proximity searches. This guarantees
+    entry_seg < closest_seg <= exit_seg and prevents out-of-order splices.
     """
     if len(coords) < 2:
         return coords, []
@@ -443,9 +448,7 @@ def inject_tss_waypoints(coords):
     overall_bearing = bearing_deg(coords[0][0], coords[0][1],
                                   coords[-1][0], coords[-1][1])
     tss_applied = []
-    # We'll build the result by marking splice points, then assembling
-    # Process each TSS independently; collect all splices then apply in order
-    splices = []  # list of (entry_idx, exit_idx, lane_wps)
+    splices = []
 
     for tss_key, tss in TSS_ZONES.items():
         ref_lon, ref_lat = tss['reference']
@@ -463,65 +466,73 @@ def inject_tss_waypoints(coords):
                 closest_seg = i
 
         if min_dist_nm > trigger_nm:
-            continue  # route doesn't pass through this TSS
+            continue
 
-        # Step 2: select lane based on bearing at closest segment
+        # Step 2: select lane from bearing at closest segment
         seg_bearing = bearing_deg(coords[closest_seg][0], coords[closest_seg][1],
                                   coords[closest_seg+1][0], coords[closest_seg+1][1])
         lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
         if not lane_wps or len(lane_wps) < 2:
             continue
 
-        # Step 3: find entry segment — route segment closest to lane[0]
+        # Step 3: find entry_seg — scan BACKWARDS from closest_seg
+        # Stop when the route point is further from lane[0] than the closest point
+        # is, i.e. we've gone back past where the approach to the lane starts.
         entry_lon, entry_lat = lane_wps[0]
-        min_entry_dist = float('inf')
+        exit_lon,  exit_lat  = lane_wps[-1]
+
+        # Distance from each coord to the lane entry/exit points
+        # entry_seg = last coord index where dist_to_entry is still decreasing
+        #             scanning backwards from closest_seg
         entry_seg = closest_seg
-        # Search around closest_seg ± generous window
-        search_start = max(0, closest_seg - 30)
-        search_end   = min(len(coords) - 1, closest_seg + 30)
-        for i in range(search_start, search_end):
-            d = _pt_to_seg_nm(entry_lon, entry_lat,
-                              coords[i][0], coords[i][1],
-                              coords[i+1][0], coords[i+1][1])
-            if d < min_entry_dist:
-                min_entry_dist = d
+        prev_d = _pt_to_seg_nm(entry_lon, entry_lat,
+                                coords[closest_seg][0], coords[closest_seg][1],
+                                coords[closest_seg][0], coords[closest_seg][1])
+        for i in range(closest_seg - 1, max(-1, closest_seg - 40), -1):
+            d = haversine_km(coords[i][0], coords[i][1], entry_lon, entry_lat) / 1.852
+            if d < prev_d:
+                prev_d    = d
                 entry_seg = i
+            else:
+                break  # distance is increasing — we've passed the approach point
 
-        # Step 4: find exit segment — route segment closest to lane[-1]
-        exit_lon, exit_lat = lane_wps[-1]
-        min_exit_dist = float('inf')
+        # exit_seg = first coord index where dist_to_exit is still decreasing
+        #            scanning forwards from closest_seg
         exit_seg = closest_seg
-        for i in range(search_start, search_end):
-            d = _pt_to_seg_nm(exit_lon, exit_lat,
-                              coords[i][0], coords[i][1],
-                              coords[i+1][0], coords[i+1][1])
-            if d < min_exit_dist:
-                min_exit_dist = d
+        prev_d = _pt_to_seg_nm(exit_lon, exit_lat,
+                                coords[closest_seg][0], coords[closest_seg][1],
+                                coords[closest_seg][0], coords[closest_seg][1])
+        for i in range(closest_seg + 1, min(len(coords), closest_seg + 40)):
+            d = haversine_km(coords[i][0], coords[i][1], exit_lon, exit_lat) / 1.852
+            if d < prev_d:
+                prev_d   = d
                 exit_seg = i
+            else:
+                break
 
-        # Ensure entry comes before exit
-        if entry_seg >= exit_seg:
-            # Fallback: use a window around closest_seg
-            entry_seg = max(0, closest_seg - 5)
-            exit_seg  = min(len(coords) - 2, closest_seg + 5)
+        # Safety: ensure entry < exit, both within route bounds
+        entry_seg = max(0, min(entry_seg, closest_seg))
+        exit_seg  = max(closest_seg, min(exit_seg, len(coords) - 1))
 
-        splices.append((entry_seg, exit_seg, lane_wps, tss['name'], tss_key,
+        splices.append((entry_seg, exit_seg, lane_wps, tss['name'],
                         min_dist_nm, seg_bearing))
-        log.info('TSS proximity match: %s dist=%.1fnm bearing=%.0f° entry_seg=%d exit_seg=%d',
-                 tss['name'], min_dist_nm, seg_bearing, entry_seg, exit_seg)
+        log.info('TSS: %s dist=%.1fnm brg=%.0f° splice [%d:%d] (closest=%d)',
+                 tss['name'], min_dist_nm, seg_bearing, entry_seg, exit_seg, closest_seg)
 
     if not splices:
         return coords, []
 
-    # Sort splices by entry index — process in route order
+    # Sort by entry index — process in route order, handle overlaps
     splices.sort(key=lambda s: s[0])
 
-    # Assemble result: original route with TSS lane sections spliced in
-    result = []
-    prev_idx = 0  # next original coord index to emit
+    result   = []
+    prev_idx = 0
 
-    for entry_seg, exit_seg, lane_wps, tss_name, tss_key, dist_nm, bearing in splices:
-        # Emit original route up to and including the entry segment start
+    for entry_seg, exit_seg, lane_wps, tss_name, dist_nm, bearing in splices:
+        if entry_seg < prev_idx:
+            entry_seg = prev_idx  # don't go backwards if splices overlap
+
+        # Emit original route up to entry point
         for k in range(prev_idx, entry_seg + 1):
             result.append([coords[k][0], coords[k][1]])
 
@@ -530,10 +541,9 @@ def inject_tss_waypoints(coords):
             result.append([wp[0], wp[1]])
 
         tss_applied.append(tss_name)
-        # Resume from after the exit segment
         prev_idx = exit_seg + 1
 
-    # Emit remaining original route
+    # Emit remainder of original route
     for k in range(prev_idx, len(coords)):
         result.append([coords[k][0], coords[k][1]])
 
