@@ -614,17 +614,18 @@ def route_scgraph(olon,olat,dlon,dlat,restrictions):
         if not result or 'coordinate_path' not in result:
             return {"error":"No route found"}
         coords=[[c['longitude'],c['latitude']] for c in result['coordinate_path']]
-        total_km=result.get('length',0)
         passages=detect_passages(coords)
 
-        # TSS injection is NOT applied here — Calculate Route returns pure MARNET path.
-        # TSS compliance is handled separately via /api/tss-apply or the Optimise Route step.
+        # Apply TSS compliance — proximity-based, no trigger boxes
+        coords, tss_applied = inject_tss_waypoints(coords)
+        total_km = sum(haversine_km(coords[i][0],coords[i][1],coords[i+1][0],coords[i+1][1])
+                       for i in range(len(coords)-1))
 
         return {"coordinates":coords,"distance_km":round(total_km,1),
                 "distance_nm":round(total_km/1.852,1),
                 "route_name":name_from_passages(passages),
                 "passages":passages,"node_count":len(coords),
-                "tss_applied":[],"warning":None}
+                "tss_applied":tss_applied,"warning":None}
     except Exception as e:
         return {"error":str(e)}
 
@@ -644,14 +645,16 @@ def route_searoute(olon,olat,dlon,dlat,restrictions):
     passages=props.get("passages",[])
     if isinstance(passages,str): passages=[passages] if passages else []
 
-    # TSS injection is NOT applied here — Calculate Route returns pure MARNET path.
-    # TSS compliance is handled separately via /api/tss-apply or the Optimise Route step.
+    # Apply TSS compliance — proximity-based, no trigger boxes
+    coords, tss_applied = inject_tss_waypoints(coords)
+    total_km = sum(haversine_km(coords[i][0],coords[i][1],coords[i+1][0],coords[i+1][1])
+                   for i in range(len(coords)-1))
 
     return {"coordinates":coords,"distance_km":round(total_km,1),
             "distance_nm":round(total_km/1.852,1),
             "route_name":name_from_passages(passages),
             "passages":passages,"node_count":len(coords),
-            "tss_applied":[],"warning":None}
+            "tss_applied":tss_applied,"warning":None}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
