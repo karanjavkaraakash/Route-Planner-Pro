@@ -16581,16 +16581,16 @@ async function calculateRoute(){
     notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm'+viaNote+tssNote+' — click Load Weather to analyse','ok');
 
     // ── Background route map generation ─────────────────────────────────────
-    // Fetches a server-rendered PNG of the route for PDF embedding.
+    // Fetches a server-rendered SVG of the route for PDF embedding.
     // Runs silently in background — doesn't block the UI.
-    window._routeMapB64 = null;
+    window._routeMapSVG = null;
     fetch('/api/route-map', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ waypoints: wpCoords, width: 1200, height: 520 })
     }).then(r => r.ok ? r.json() : null)
-      .then(d => { if(d?.image_b64) window._routeMapB64 = d.image_b64; })
-      .catch(() => {}); // silent — map image is optional, PDF still generates without it
+      .then(d => { if(d?.svg) window._routeMapSVG = d.svg; })
+      .catch(() => {}); // silent — map is optional, PDF generates fine without it
   } catch(e){
     hideProgress();
     notify('Route error: '+e.message,'err');
@@ -19290,42 +19290,18 @@ async function generateVoyageReport(){
   showProgress({
     icon: '📄',
     title: 'Generating Voyage Report',
-    steps: ['Fetching route map image', 'Building waypoint table', 'Building weather table', 'Assembling PDF']
+    steps: ['Building waypoint table', 'Building weather table', 'Assembling PDF']
   });
-  setProgressStep(0, 'Rendering route map from server…');
+  setProgressStep(0, 'Building waypoint and weather tables…');
 
-  // ── Fetch route map from backend ────────────────────────────────────────────
-  let routeMapDataUrl = null;
-  try {
-    const mapPayload = {
-      waypoints:    wpCoords.map(c => [normLon(c[0]), c[1]]),
-      origin_name:  originName,
-      dest_name:    destName,
-      route_name:   routeData?.route_name || '',
-      format:       'base64',
-      width:        1100,
-      height:       440
-    };
-    // Include optimised route overlay if available
-    if(optWpCoords && optWpCoords.length > 1){
-      mapPayload.opt_waypoints = optWpCoords.map(c => [normLon(c[0]), c[1]]);
-    }
-    const mapResp = await fetch('/api/route-map', {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify(mapPayload),
-      signal:  AbortSignal.timeout(15000)
-    });
-    if(mapResp.ok){
-      const mapData = await mapResp.json();
-      routeMapDataUrl = mapData.image;
-    }
-  } catch(e){
-    console.warn('Route map fetch failed (non-fatal):', e.message);
-  }
+  // ── Use cached route map SVG (fetched in background after calculateRoute) ──
+  // If the background fetch completed, _routeMapSVG is ready.
+  // If route was just calculated, it may still be loading — we use whatever is cached.
+  // No extra API call here — report generation is not blocked by map availability.
+  const routeMapSVG = window._routeMapSVG || null;
 
   // ── Build data ───────────────────────────────────────────────────────────────
-  setProgressStep(1, 'Building waypoint and weather tables…');
+  setProgressStep(0, 'Building waypoint and weather tables…');
 
   const maxWindLeg = wxResults.reduce((b,r)=>r.windKn!=null&&parseFloat(r.windKn)>(b?.v??0)?{v:parseFloat(r.windKn),r}:b, null);
   const maxWaveLeg = wxResults.reduce((b,r)=>r.waveM !=null&&parseFloat(r.waveM) >(b?.v??0)?{v:parseFloat(r.waveM), r}:b, null);
@@ -19553,15 +19529,13 @@ async function generateVoyageReport(){
   </div>
   ${hasWeatherData ? buildHeavyWeatherRiskBlock(wxResults, orderedKn) : ''}
 
-  ${window._routeMapB64 ? `
-  <div style="margin-top:14px;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;page-break-inside:avoid">
-    <div style="background:#0f172a;padding:7px 12px;display:flex;align-items:center;justify-content:space-between">
-      <span style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:.8px;text-transform:uppercase">🗺 Route Chart</span>
-      <span style="font-size:9px;color:#475569">${originName} → ${destName} · ${Math.round(dist)} nm</span>
+  ${routeMapSVG ? `
+  <div style="margin-top:14px;border-radius:10px;overflow:hidden;border:1px solid #1e3a5f;page-break-inside:avoid">
+    <div style="background:#0c1829;padding:7px 12px;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:10px;font-weight:700;color:#60a5fa;letter-spacing:.8px;text-transform:uppercase">🗺 Route Chart</span>
+      <span style="font-size:9px;color:#475569">${originName} → ${destName} · ${Math.round(dist).toLocaleString()} nm</span>
     </div>
-    <img src="data:image/png;base64,${window._routeMapB64}"
-         style="width:100%;display:block;max-height:300px;object-fit:cover"
-         alt="Route chart"/>
+    <div style="line-height:0;background:#0c1829">${routeMapSVG}</div>
   </div>` : ''}
 </div>
 
