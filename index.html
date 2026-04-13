@@ -18200,120 +18200,138 @@ async function runOptimisation(){
       byDevAndOffset.get(key).push(c);
     }
 
-    // For each deviation, score each offset band
-    const bestDeviations = [];       // accepted: net-positive, no ECA increase
-    const closestMatches = [];       // fallback: best available even if cost gate fails
+    // ── scoreDeviations(limits) ───────────────────────────────────────────
+    // Pure in-memory scoring pass — no API calls.
+    // Returns array of accepted deviations (net-positive, ECA-neutral).
+    // Called first with user limits, then with auto-relaxed limits if empty.
+    function scoreDeviations(limits){
+      const accepted = [];
+      for(let di = 0; di < deviations.length; di++){
+        const dev = deviations[di];
+        let bestOffsetResult = null;
+        let bestNetSaving    = 0;
 
-    for(let di = 0; di < deviations.length; di++){
-      const dev = deviations[di];
-      let bestOffsetResult  = null;
-      let bestNetSaving     = 0;     // must be positive to accept
-      let closestResult     = null;  // best available regardless of cost gate
-      let closestDelayH     = dev.windowDelayH; // track least-bad option
+        const wEntryPt = wpCoords[dev.windowEntryWpIdx];
+        const wExitPt  = wpCoords[dev.windowExitWpIdx];
+        const origPathPts = [];
+        for(let k = dev.windowEntryWpIdx; k <= dev.windowExitWpIdx; k++){
+          origPathPts.push({ lon: wpCoords[k][0], lat: wpCoords[k][1] });
+        }
+        const origEcaMiles = computePathEcaMiles(origPathPts);
+        const origDistNm   = computePathDistNm(origPathPts);
 
-      // Compute original path metrics (for ECA and distance baseline)
-      const wEntryPt = wpCoords[dev.windowEntryWpIdx];
-      const wExitPt  = wpCoords[dev.windowExitWpIdx];
-      const origPathPts = [];
-      for(let k = dev.windowEntryWpIdx; k <= dev.windowExitWpIdx; k++){
-        origPathPts.push({ lon: wpCoords[k][0], lat: wpCoords[k][1] });
-      }
-      const origEcaMiles  = computePathEcaMiles(origPathPts);
-      const origDistNm    = computePathDistNm(origPathPts);
+        for(const maxOff of LAT_OFFSETS_MAX){
+          const key = `${di}|${maxOff}`;
+          const pts = byDevAndOffset.get(key) || [];
+          if(pts.length < 3) continue;
+          pts.sort((a, b) => a.f - b.f);
 
-      for(const maxOff of LAT_OFFSETS_MAX){
-        const key   = `${di}|${maxOff}`;
-        const pts   = byDevAndOffset.get(key) || [];
-        if(pts.length < 3) continue; // too few valid points
+          const pathPts = [
+            { lon: wEntryPt[0], lat: wEntryPt[1] },
+            ...pts.map(c => ({ lon: c.lon, lat: c.lat, wx: c.wx })),
+            { lon: wExitPt[0], lat: wExitPt[1] }
+          ];
 
-        // Sort by fractional position along the arc
-        pts.sort((a, b) => a.f - b.f);
+          // ECA hard constraint — never relaxed
+          const devEcaMiles = computePathEcaMiles(pathPts);
+          if(devEcaMiles > origEcaMiles + 1) continue;
 
-        // Build path: window_entry → [tapered candidates] → window_exit
-        const pathPts = [
-          { lon: wEntryPt[0], lat: wEntryPt[1] },
-          ...pts.map(c => ({ lon: c.lon, lat: c.lat, wx: c.wx })),
-          { lon: wExitPt[0], lat: wExitPt[1] }
-        ];
+          // Delay scoring with given limits
+          let totalDelayH = 0;
+          for(let p = 0; p < pathPts.length - 1; p++){
+            const [lo1, la1] = [pathPts[p].lon, pathPts[p].lat];
+            const [lo2, la2] = [pathPts[p+1].lon, pathPts[p+1].lat];
+            const segNm    = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
+            const bearing  = GEO.initialBearing(la1, lo1, la2, lo2);
+            const wx       = pathPts[p+1].wx || null;
+            const transitH = legTransitH(segNm, bearing, orderedKn, wx, limits);
+            totalDelayH   += Math.max(0, transitH - segNm / orderedKn);
+          }
 
-        // ── ECA HARD CONSTRAINT ──────────────────────────────────────────
-        // Reject immediately if this deviation adds ECA miles
-        const devEcaMiles = computePathEcaMiles(pathPts);
-        if(devEcaMiles > origEcaMiles + 1){ // 1nm tolerance for rounding
-          continue; // ECA increase — reject this offset band
+          // Net cost gate — never relaxed
+          const savedH      = dev.windowDelayH - totalDelayH;
+          const devDistNm   = computePathDistNm(pathPts);
+          const extraNm     = devDistNm - origDistNm;
+          const netSaving   = savedH * HIRE_RATE_PER_H
+                            - extraNm * FUEL_COST_PER_NM
+                            - Math.max(0, devEcaMiles - origEcaMiles) * FUEL_COST_PER_NM * ECA_PREMIUM_FACTOR;
+
+          if(savedH > 0 && netSaving > bestNetSaving){
+            bestNetSaving = netSaving;
+
+            // Compute actual peak conditions along the deviation path
+            let peakWind = 0, peakWave = 0;
+            pts.forEach(c => {
+              if(c.wx?.windKn != null) peakWind = Math.max(peakWind, parseFloat(c.wx.windKn));
+              if(c.wx?.waveM  != null) peakWave = Math.max(peakWave, parseFloat(c.wx.waveM));
+            });
+
+            bestOffsetResult = {
+              maxOffset: maxOff, samples: pts, delayH: totalDelayH,
+              pathPts, ecaMiles: devEcaMiles, distNm: devDistNm,
+              netSavingUSD: netSaving, extraNm,
+              peakWind: peakWind || null, peakWave: peakWave || null
+            };
+          }
         }
 
-        // ── Compute delay through deviation path ─────────────────────────
-        let totalDelayH = 0;
-        let totalTransitH = 0;
-        for(let p = 0; p < pathPts.length - 1; p++){
-          const [lo1, la1] = [pathPts[p].lon, pathPts[p].lat];
-          const [lo2, la2] = [pathPts[p+1].lon, pathPts[p+1].lat];
-          const segNm    = GEO.kmToNm(GEO.gcDistKm(la1, lo1, la2, lo2));
-          const bearing  = GEO.initialBearing(la1, lo1, la2, lo2);
-          const wx       = pathPts[p+1].wx || null;
-          const transitH = legTransitH(segNm, bearing, orderedKn, wx, optLimits);
-          const orderedH = segNm / orderedKn;
-          totalDelayH   += Math.max(0, transitH - orderedH);
-          totalTransitH += transitH;
-        }
-
-        // ── Net cost saving ──────────────────────────────────────────────
-        // Benefit: delay saved × hire rate
-        const savedH        = dev.windowDelayH - totalDelayH;
-        const delaySaving   = savedH * HIRE_RATE_PER_H;
-
-        // Cost: extra distance × fuel rate + ECA delta (should be ≤0 after hard constraint)
-        const devDistNm     = computePathDistNm(pathPts);
-        const extraNm       = devDistNm - origDistNm;
-        const distCost      = extraNm * FUEL_COST_PER_NM;
-        const ecaDeltaNm    = devEcaMiles - origEcaMiles;
-        const ecaCost       = Math.max(0, ecaDeltaNm) * FUEL_COST_PER_NM * ECA_PREMIUM_FACTOR;
-
-        const netSaving = delaySaving - distCost - ecaCost;
-
-        // Accept only if: delay is reduced AND net saving is positive
-        if(savedH > 0 && netSaving > bestNetSaving){
-          bestNetSaving = netSaving;
-          bestOffsetResult = {
-            maxOffset: maxOff, samples: pts, delayH: totalDelayH,
-            pathPts, ecaMiles: devEcaMiles, distNm: devDistNm,
-            netSavingUSD: netSaving, extraNm
-          };
-        }
-
-        // Closest-match: track best delay reduction regardless of cost gate
-        // (used as fallback when no net-positive deviation exists)
-        // Still must not increase ECA miles (hard constraint always applies)
-        if(savedH > 0 && totalDelayH < closestDelayH){
-          closestDelayH = totalDelayH;
-          closestResult = {
-            maxOffset: maxOff, samples: pts, delayH: totalDelayH,
-            pathPts, ecaMiles: devEcaMiles, distNm: devDistNm,
-            netSavingUSD: netSaving, extraNm, savedH,
-            _isClosestMatch: true
-          };
+        if(bestOffsetResult){
+          accepted.push({ devIdx: di, ...bestOffsetResult,
+            originalDelayH: dev.windowDelayH,
+            savedH: dev.windowDelayH - bestOffsetResult.delayH });
         }
       }
+      return accepted;
+    }
 
-      if(bestOffsetResult){
-        const savedH = dev.windowDelayH - bestOffsetResult.delayH;
-        bestDeviations.push({ devIdx: di, ...bestOffsetResult,
-          originalDelayH: dev.windowDelayH, savedH });
-        const netK = Math.round(bestOffsetResult.netSavingUSD / 1000);
-        setOptSubText(5, `Window ${di+1}: saves ${savedH.toFixed(1)}h · ~$${netK}k net · ` +
-          `offset ${bestOffsetResult.maxOffset > 0 ? '+' : ''}${bestOffsetResult.maxOffset}°`);
-      } else if(closestResult){
-        // Net cost gate failed — but there IS a delay reduction available.
-        // Store as closest-match for the fallback card.
-        closestMatches.push({ devIdx: di, ...closestResult,
-          originalDelayH: dev.windowDelayH });
-        const extraNmRnd = Math.round(closestResult.extraNm);
-        setOptSubText(5, `Window ${di+1}: closest match saves ${closestResult.savedH.toFixed(1)}h ` +
-          `but adds ${extraNmRnd}nm (marginal economics — shown as caution)`);
+    // ── Auto-relaxation search ────────────────────────────────────────────
+    // Step 1: try user's limits exactly.
+    // Step 2–11: relax wind +2kt/step, wave +0.25m/step (up to 10 steps).
+    // Cost gate is never relaxed. ECA constraint is never relaxed.
+    // Relaxation is pure re-scoring on already-fetched wx data — no API calls.
+    const RELAX_STEPS    = 10;
+    const RELAX_WIND_KT  = 2.0;   // kt per step
+    const RELAX_WAVE_M   = 0.25;  // m per step
+
+    let bestDeviations   = [];
+    let relaxStepsUsed   = 0;
+    let effectiveLimits  = { ...optLimits };
+
+    for(let step = 0; step <= RELAX_STEPS; step++){
+      const limits = {
+        maxWind:  optLimits.maxWind  + step * RELAX_WIND_KT,
+        maxWave:  optLimits.maxWave  + step * RELAX_WAVE_M,
+        minSpeed: optLimits.minSpeed,
+        maxSpeed: optLimits.maxSpeed,
+      };
+
+      if(step === 0){
+        setOptSubText(5, 'Scoring deviations at user limits…');
       } else {
-        setOptSubText(5, `Window ${di+1}: no beneficial deviation found (ECA constraint or no delay improvement)`);
+        setOptSubText(5,
+          `Step ${step}/${RELAX_STEPS} — relaxing to ${limits.maxWind.toFixed(0)}kt / ${limits.maxWave.toFixed(2)}m…`);
       }
+
+      const result = scoreDeviations(limits);
+      if(result.length){
+        bestDeviations  = result;
+        relaxStepsUsed  = step;
+        effectiveLimits = limits;
+        break;
+      }
+    }
+
+    // Sub-text summary
+    if(bestDeviations.length){
+      bestDeviations.forEach((bd, i) => {
+        const netK = Math.round(bd.netSavingUSD / 1000);
+        setOptSubText(5,
+          `Window ${bd.devIdx+1}: saves ${bd.savedH.toFixed(1)}h · ~$${netK}k net · ` +
+          `offset ${bd.maxOffset > 0 ? '+' : ''}${bd.maxOffset}°` +
+          (bd.peakWind ? ` · peak ${bd.peakWind.toFixed(0)}kt/${bd.peakWave?.toFixed(1) ?? '—'}m` : ''));
+      });
+    } else {
+      setOptSubText(5, 'No beneficial deviation found after full relaxation search');
     }
 
     if(optCancelled) return;
@@ -18387,32 +18405,24 @@ async function runOptimisation(){
       orderedKn
     );
 
-    // Override delay with computed values for accuracy
     const totalSavedH = bestDeviations.reduce((s, bd) => s + bd.savedH, 0);
     const optMetricsResult = computeRouteMetrics(finalCoords, null, orderedKn);
     optMetricsResult.wxDelayH = Math.max(0, origMetrics.wxDelayH - totalSavedH);
     optMetricsResult.transitH = origMetrics.distNm / orderedKn + optMetricsResult.wxDelayH;
 
     // ── Extract max wind/wave for opt route from candidate wx data ────────
-    // For legs inside deviation zones: use candidate wx (already fetched).
-    // For legs outside deviation zones: use original wxr.
-    // This gives an indicative max without requiring a full weather reload.
     let optMaxWave = 0, optMaxWind = 0;
-
-    // Outside deviations — use original wxr
     const deviationLegRanges = bestDeviations.map(bd => {
       const dev = deviations[bd.devIdx];
       return { start: dev.windowEntryWpIdx, end: dev.windowExitWpIdx };
     });
     wxr.forEach(r => {
-      // Skip wxr legs that fall inside a deviation zone
       const inDev = deviationLegRanges.some(d => r.i >= d.start && r.i < d.end);
       if(!inDev){
         if(r.waveM  != null) optMaxWave = Math.max(optMaxWave, parseFloat(r.waveM));
         if(r.windKn != null) optMaxWind = Math.max(optMaxWind, parseFloat(r.windKn));
       }
     });
-    // Inside deviations — use candidate wx
     bestDeviations.forEach(bd => {
       bd.samples.forEach(c => {
         if(c.wx?.waveM  != null) optMaxWave = Math.max(optMaxWave, parseFloat(c.wx.waveM));
@@ -18421,88 +18431,40 @@ async function runOptimisation(){
     });
     optMetricsResult.maxWave = optMaxWave > 0 ? optMaxWave : null;
     optMetricsResult.maxWind = optMaxWind > 0 ? optMaxWind : null;
-
     optMetrics = optMetricsResult;
 
     hideOptOverlay();
 
     if(bestDeviations.length){
-      // ── Standard result: net-positive deviations found ───────────────────
-      showComparisonCard(origMetrics, optMetricsResult);
+      // ── Build caution if limits were relaxed ─────────────────────────
+      let cautionText = null;
+      if(relaxStepsUsed > 0){
+        // Show actual peak conditions on the deviation vs the user's original limits
+        const devPeakWind = bestDeviations.reduce((m, bd) => Math.max(m, bd.peakWind || 0), 0);
+        const devPeakWave = bestDeviations.reduce((m, bd) => Math.max(m, bd.peakWave || 0), 0);
+        cautionText = `⚠️ <strong>Limits auto-relaxed</strong> to find this route ` +
+          `(+${(relaxStepsUsed * RELAX_WIND_KT).toFixed(0)}kt / +${(relaxStepsUsed * RELAX_WAVE_M).toFixed(2)}m ` +
+          `above your input of ${optLimits.maxWind}kt / ${optLimits.maxWave}m). ` +
+          `Actual peak conditions on deviation: ` +
+          `<strong>${devPeakWind > 0 ? devPeakWind.toFixed(0)+'kt' : '—'} / ` +
+          `${devPeakWave > 0 ? devPeakWave.toFixed(1)+'m' : '—'}</strong>. ` +
+          `Review before accepting.`;
+      }
+
+      showComparisonCard(origMetrics, optMetricsResult, cautionText);
       const saved    = totalSavedH.toFixed(1);
       const totalNet = bestDeviations.reduce((s, bd) => s + (bd.netSavingUSD || 0), 0);
       const netK     = Math.round(totalNet / 1000);
-      notify(`Optimisation complete ✓ — ${bestDeviations.length} deviation${bestDeviations.length>1?'s':''} · saves ${saved}h weather delay · ~$${netK}k net saving`, 'ok');
-
-    } else if(closestMatches.length){
-      // ── Fallback: no net-positive deviation, but closest-match exists ────
-      // Assemble the closest-match route and show with caution
-      const closestCoords = [...wpCoords.map(c => [c[0], c[1]])];
-      const closestInserted = new Set();
-      const closestSkipIdx  = new Set();
-      for(const cm of closestMatches){
-        const dev = deviations[cm.devIdx];
-        for(let k = dev.windowEntryWpIdx + 1; k < dev.windowExitWpIdx; k++) closestSkipIdx.add(k);
+      if(relaxStepsUsed > 0){
+        notify(`Optimisation complete ⚠️ — found after ${relaxStepsUsed} relaxation step${relaxStepsUsed>1?'s':''} · saves ${saved}h · ~$${netK}k net`, 'warn');
+      } else {
+        notify(`Optimisation complete ✓ — ${bestDeviations.length} deviation${bestDeviations.length>1?'s':''} · saves ${saved}h weather delay · ~$${netK}k net saving`, 'ok');
       }
-      const closestFinal = [];
-      const cmInserted = new Set();
-      for(let k = 0; k < wpCoords.length; k++){
-        if(closestSkipIdx.has(k)) continue;
-        closestFinal.push([wpCoords[k][0], wpCoords[k][1]]);
-        const matchingCm = closestMatches.find(cm => {
-          const dev = deviations[cm.devIdx];
-          return dev.windowEntryWpIdx === k && !cmInserted.has(cm.devIdx);
-        });
-        if(matchingCm){
-          cmInserted.add(matchingCm.devIdx);
-          for(const pt of matchingCm.samples) closestFinal.push([pt.lon, pt.lat]);
-        }
-      }
-      optWpCoords = closestFinal;
-      drawOptRoute(closestFinal);
-
-      // Compute metrics for closest-match route
-      const cmMetrics = computeRouteMetrics(closestFinal, null, orderedKn);
-      const cmSavedH  = closestMatches.reduce((s, cm) => s + cm.savedH, 0);
-      cmMetrics.wxDelayH = Math.max(0, origMetrics.wxDelayH - cmSavedH);
-      cmMetrics.transitH = origMetrics.distNm / orderedKn + cmMetrics.wxDelayH;
-      // Extract max wind/wave from closest-match candidates
-      let cmMaxWave = 0, cmMaxWind = 0;
-      const cmDevRanges = closestMatches.map(cm => {
-        const dev = deviations[cm.devIdx];
-        return { start: dev.windowEntryWpIdx, end: dev.windowExitWpIdx };
-      });
-      wxr.forEach(r => {
-        if(!cmDevRanges.some(d => r.i >= d.start && r.i < d.end)){
-          if(r.waveM  != null) cmMaxWave = Math.max(cmMaxWave, parseFloat(r.waveM));
-          if(r.windKn != null) cmMaxWind = Math.max(cmMaxWind, parseFloat(r.windKn));
-        }
-      });
-      closestMatches.forEach(cm => {
-        cm.samples.forEach(c => {
-          if(c.wx?.waveM  != null) cmMaxWave = Math.max(cmMaxWave, parseFloat(c.wx.waveM));
-          if(c.wx?.windKn != null) cmMaxWind = Math.max(cmMaxWind, parseFloat(c.wx.windKn));
-        });
-      });
-      cmMetrics.maxWave = cmMaxWave > 0 ? cmMaxWave : null;
-      cmMetrics.maxWind = cmMaxWind > 0 ? cmMaxWind : null;
-      optMetrics = cmMetrics;
-
-      // Build caution message
-      const totalExtraNm  = closestMatches.reduce((s, cm) => s + (cm.extraNm || 0), 0);
-      const totalCostUSD  = Math.round(-closestMatches.reduce((s, cm) => s + (cm.netSavingUSD || 0), 0));
-      const cautionText   = `⚠️ <strong>Closest-match route</strong> — no deviation meets cost thresholds at current limits. ` +
-        `Best available option saves <strong>${cmSavedH.toFixed(1)}h</strong> delay but adds ` +
-        `<strong>~${Math.round(totalExtraNm)}nm</strong> (~$${totalCostUSD.toLocaleString()} net cost). ` +
-        `Accept only if weather avoidance outweighs the extra distance cost.`;
-
-      showComparisonCard(origMetrics, cmMetrics, cautionText);
-      notify(`Closest-match route shown ⚠️ — saves ${cmSavedH.toFixed(1)}h but adds ~${Math.round(totalExtraNm)}nm. Check comparison card.`, 'warn');
 
     } else {
-      notify('Optimisation complete — no improvement found.\n' +
-        'Either the route is already optimal, all windows are in coastal/enclosed areas, ' +
-        'or available deviations would increase ECA miles.', 'warn');
+      notify('Optimisation complete — no improvement found after full relaxation search.\n' +
+        'Either all windows are in coastal/enclosed areas, ECA constraints prevent deviation, ' +
+        'or no lateral offset reduces net cost.', 'warn');
     }
 
   } catch(e){
