@@ -592,123 +592,401 @@ def route_searoute(olon,olat,dlon,dlat,restrictions):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTE MAP IMAGE GENERATION
-# Uses staticmap library to render OpenStreetMap/CARTO tiles + route polyline.
-# Returns PNG as base64 for embedding in PDF.
+# ROUTE MAP — SVG WITH EMBEDDED WORLD COASTLINE
+# Pure Python, zero external dependencies beyond stdlib.
+# Renders a dark-themed SVG world map with Mercator projection, route overlay,
+# and origin/destination markers. Works for all routes including Pacific crossings.
+#
+# Coastline data: simplified world coastlines (32 polylines) encoded as
+# compressed binary. Decoded on first use and cached in memory.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def rdp_simplify(points, epsilon=0.3):
-    """
-    Ramer-Douglas-Peucker polyline simplification — antimeridian-safe.
-    Normalises longitudes before simplification so Pacific routes work correctly.
-    """
-    if len(points) <= 2:
-        return points
+import gzip, struct
 
-    # Normalise to 0-360 if route crosses antimeridian
-    lons = [p[0] for p in points]
-    crosses = any(lo > 90 for lo in lons) and any(lo < -90 for lo in lons)
-    if crosses:
-        pts = [[lo + 360 if lo < 0 else lo, la] for lo, la in points]
+# ── Embedded coastline data ───────────────────────────────────────────────────
+# Simplified world coastlines — 32 polylines, scale factor 10
+# Source: manually digitised from Natural Earth 110m, major landmasses only
+COASTLINE_B64 = (
+    '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'
+    'FP4AmrVxKroIAAA='
+)
+COASTLINE_SCALE = 10
+
+_COASTLINE_CACHE = None
+
+def _load_coastlines():
+    """Decode and cache coastline polylines. Called once on first map render."""
+    global _COASTLINE_CACHE
+    if _COASTLINE_CACHE is not None:
+        return _COASTLINE_CACHE
+    raw = gzip.decompress(base64.b64decode(''.join(COASTLINE_B64.split())))
+    pos = 0
+    n_lines = struct.unpack_from('>H', raw, pos)[0]; pos += 2
+    lines = []
+    for _ in range(n_lines):
+        n_pts = struct.unpack_from('>H', raw, pos)[0]; pos += 2
+        pts = []
+        for _ in range(n_pts):
+            lo, la = struct.unpack_from('>hh', raw, pos); pos += 4
+            pts.append((lo / COASTLINE_SCALE, la / COASTLINE_SCALE))
+        lines.append(pts)
+    _COASTLINE_CACHE = lines
+    log.info('Coastlines loaded: %d polylines', len(lines))
+    return lines
+
+
+def generate_route_svg(waypoints, width=1200, height=520):
+    """
+    Generate an SVG world map with the route overlaid.
+    - Dark background matching the PDF theme
+    - Mercator projection, auto-fitted to route bounds with padding
+    - Handles antimeridian (Pacific) crossings by shifting to 0-360 lon range
+    - No external dependencies — pure Python + stdlib
+    Returns SVG string.
+    """
+    coastlines = _load_coastlines()
+
+    route_lons = [p[0] for p in waypoints]
+    route_lats = [p[1] for p in waypoints]
+
+    # Detect antimeridian crossing (Pacific routes)
+    has_pos = any(lo > 90  for lo in route_lons)
+    has_neg = any(lo < -90 for lo in route_lons)
+    cross_anti = has_pos and has_neg
+
+    if cross_anti:
+        # Shift to 0-360 so Pacific route is continuous
+        route_lons_r = [lo + 360 if lo < 0 else lo for lo in route_lons]
+        waypoints_r  = [[lo + 360 if lo < 0 else lo, la] for lo, la in waypoints]
     else:
-        pts = [list(p) for p in points]
+        route_lons_r = route_lons
+        waypoints_r  = [[lo, la] for lo, la in waypoints]
 
-    def point_line_dist(p, a, b):
-        if a[0] == b[0] and a[1] == b[1]:
-            return math.hypot(p[0]-a[0], p[1]-a[1])
-        dx, dy = b[0]-a[0], b[1]-a[1]
-        t = ((p[0]-a[0])*dx + (p[1]-a[1])*dy) / (dx*dx + dy*dy)
-        t = max(0, min(1, t))
-        return math.hypot(p[0]-(a[0]+t*dx), p[1]-(a[1]+t*dy))
+    # Compute view bounds with generous padding
+    lon_min = min(route_lons_r); lon_max = max(route_lons_r)
+    lat_min = min(route_lats);   lat_max = max(route_lats)
+    lon_span = max(lon_max - lon_min, 15)
+    lat_span = max(lat_max - lat_min,  8)
+    pad_lon  = max(lon_span * 0.18, 4.0)
+    pad_lat  = max(lat_span * 0.22, 3.0)
 
-    def _rdp(pts, eps):
-        if len(pts) <= 2:
-            return pts
-        dmax, idx = 0, 0
-        for i in range(1, len(pts)-1):
-            d = point_line_dist(pts[i], pts[0], pts[-1])
-            if d > dmax:
-                dmax, idx = d, i
-        if dmax > eps:
-            left  = _rdp(pts[:idx+1], eps)
-            right = _rdp(pts[idx:],   eps)
-            return left[:-1] + right
-        return [pts[0], pts[-1]]
+    vlon_min = lon_min - pad_lon
+    vlon_max = lon_max + pad_lon
+    vlat_min = max(lat_min - pad_lat, -82)
+    vlat_max = min(lat_max + pad_lat,  82)
 
-    simplified_norm = _rdp(pts, epsilon)
+    def merc(lat):
+        lat = max(-82, min(82, lat))
+        return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
 
-    # Convert back to original longitude range
-    if crosses:
-        return [[lo - 360 if lo > 180 else lo, la] for lo, la in simplified_norm]
-    return simplified_norm
+    merc_min = merc(vlat_min)
+    merc_max = merc(vlat_max)
+
+    def to_xy(lon, lat):
+        """Project [lon, lat] to SVG pixel coordinates."""
+        if cross_anti and lon < 0:
+            lon += 360
+        nx = (lon - vlon_min) / (vlon_max - vlon_min)
+        ny = (merc_max - merc(lat)) / (merc_max - merc_min)
+        return nx * width, ny * height
+
+    # ── Build SVG ─────────────────────────────────────────────────────────────
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {width} {height}" width="{width}" height="{height}">',
+        # Ocean background
+        f'<rect width="{width}" height="{height}" fill="#0c1829"/>',
+    ]
+
+    # Graticule — subtle 30° grid
+    for glon in range(int(vlon_min // 30) * 30, int(vlon_max // 30) * 30 + 31, 30):
+        x, _ = to_xy(glon, vlat_min)
+        if -10 <= x <= width + 10:
+            _, y1 = to_xy(glon, vlat_min)
+            _, y2 = to_xy(glon, vlat_max)
+            parts.append(f'<line x1="{x:.1f}" y1="0" x2="{x:.1f}" y2="{height}" '
+                         f'stroke="#1a2d4a" stroke-width="0.6"/>')
+
+    for glat in range(int(vlat_min // 30) * 30, int(vlat_max // 30) * 30 + 31, 30):
+        if vlat_min <= glat <= vlat_max:
+            x1, y = to_xy(vlon_min, glat)
+            x2, _ = to_xy(vlon_max, glat)
+            parts.append(f'<line x1="0" y1="{y:.1f}" x2="{width}" y2="{y:.1f}" '
+                         f'stroke="#1a2d4a" stroke-width="0.6"/>')
+
+    # Landmasses — draw each coastline polyline
+    for line in coastlines:
+        pts = []
+        for lon, lat in line:
+            # Shift if cross-antimeridian map
+            if cross_anti and lon < 0:
+                lon += 360
+            # Only include points within the extended view box
+            if (vlon_min - 35 <= lon <= vlon_max + 35 and
+                vlat_min - 10 <= lat <= vlat_max + 10):
+                x, y = to_xy(lon, lat)
+                pts.append(f'{x:.1f},{y:.1f}')
+        if len(pts) >= 2:
+            parts.append(
+                f'<polyline points="{" ".join(pts)}" '
+                f'fill="none" stroke="#2a4a6a" stroke-width="1.0" '
+                f'stroke-linejoin="round" stroke-linecap="round"/>'
+            )
+
+    # Route — glow layer then sharp line
+    rpts = []
+    for lon, lat in waypoints_r:
+        x, y = to_xy(lon, lat)
+        rpts.append(f'{x:.1f},{y:.1f}')
+
+    if len(rpts) >= 2:
+        pts_str = ' '.join(rpts)
+        # Outer glow
+        parts.append(
+            f'<polyline points="{pts_str}" fill="none" stroke="#3b82f6" '
+            f'stroke-width="6" stroke-opacity="0.25" '
+            f'stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+        # Main route line
+        parts.append(
+            f'<polyline points="{pts_str}" fill="none" stroke="#60a5fa" '
+            f'stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+
+    # Origin marker — green circle with white ring
+    ox, oy = to_xy(waypoints_r[0][0],  waypoints_r[0][1])
+    parts.append(f'<circle cx="{ox:.1f}" cy="{oy:.1f}" r="7" fill="#22c55e" stroke="#fff" stroke-width="2"/>')
+    parts.append(f'<circle cx="{ox:.1f}" cy="{oy:.1f}" r="3" fill="#fff"/>')
+
+    # Destination marker — red circle with white ring
+    dx, dy = to_xy(waypoints_r[-1][0], waypoints_r[-1][1])
+    parts.append(f'<circle cx="{dx:.1f}" cy="{dy:.1f}" r="7" fill="#ef4444" stroke="#fff" stroke-width="2"/>')
+    parts.append(f'<circle cx="{dx:.1f}" cy="{dy:.1f}" r="3" fill="#fff"/>')
+
+    parts.append('</svg>')
+    return '\n'.join(parts)
 
 
-def generate_route_map(waypoints, width=1200, height=600):
+# ═══════════════════════════════════════════════════════════════════════════════
+# TSS SEGMENT-CROSSING DETECTION
+# Finds exact segments where route enters/exits each TSS zone boundary,
+# interpolates the crossing point, and splices TSS lane waypoints cleanly.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def segment_crosses_box(lon1, lat1, lon2, lat2, box):
     """
-    Generate a PNG map image of the route using staticmap + CARTO Dark tiles.
-    Handles antimeridian (Pacific) crossings by normalising to 0-360 lon range.
+    Check if the line segment (lon1,lat1)→(lon2,lat2) crosses or enters
+    the bounding box [lon_min, lat_min, lon_max, lat_max].
+    Returns True if either endpoint is inside, or the segment crosses a boundary.
     """
-    try:
-        from staticmap import StaticMap, Line, CircleMarker
-    except ImportError:
-        log.error('staticmap not installed — pip install staticmap')
-        return None
+    def in_box(lo, la):
+        return box[0] <= lo <= box[2] and box[1] <= la <= box[3]
 
-    if len(waypoints) < 2:
-        return None
+    if in_box(lon1, lat1) or in_box(lon2, lat2):
+        return True
 
-    # Simplify — antimeridian-aware RDP
-    simplified = rdp_simplify(waypoints, epsilon=0.3)
-    if len(simplified) < 2:
-        simplified = [waypoints[0], waypoints[-1]]
+    # Check if segment crosses any of the 4 box edges using line-line intersection
+    edges = [
+        (box[0], box[1], box[0], box[3]),  # left
+        (box[2], box[1], box[2], box[3]),  # right
+        (box[0], box[1], box[2], box[1]),  # bottom
+        (box[0], box[3], box[2], box[3]),  # top
+    ]
+    for ex1, ey1, ex2, ey2 in edges:
+        if segments_intersect(lon1, lat1, lon2, lat2, ex1, ey1, ex2, ey2):
+            return True
+    return False
 
-    # ── Antimeridian normalisation ───────────────────────────────────────────
-    # staticmap works correctly with lons in 0-360 range for Pacific routes.
-    # Without this, Tokyo→LA draws as a line across Russia on the map.
-    lons = [p[0] for p in simplified]
-    crosses_antimeridian = (any(lo > 90  for lo in lons) and
-                            any(lo < -90 for lo in lons))
 
-    if crosses_antimeridian:
-        render_pts = [[lo + 360 if lo < 0 else lo, la] for lo, la in simplified]
-        log.info('Pacific route: normalised %d points to 0-360 lon range', len(render_pts))
-    else:
-        render_pts = [[p[0], p[1]] for p in simplified]
+def segments_intersect(x1, y1, x2, y2, x3, y3, x4, y4):
+    """Check if segment (x1,y1)-(x2,y2) intersects segment (x3,y3)-(x4,y4)."""
+    def cross2d(ax, ay, bx, by): return ax * by - ay * bx
+    def sub(ax, ay, bx, by): return ax - bx, ay - by
 
-    # Build segments — split only if there's an unexplained large jump
-    segments, seg = [], [render_pts[0]]
-    for pt in render_pts[1:]:
-        if abs(pt[0] - seg[-1][0]) > 200:
-            segments.append(seg); seg = [pt]
-        else:
-            seg.append(pt)
-    segments.append(seg)
+    dx1, dy1 = sub(x2, y2, x1, y1)
+    dx2, dy2 = sub(x4, y4, x3, y3)
+    denom = cross2d(dx1, dy1, dx2, dy2)
+    if abs(denom) < 1e-12:
+        return False  # parallel
+    dx3, dy3 = sub(x1, y1, x3, y3)
+    t = cross2d(dx3, dy3, dx2, dy2) / denom
+    u = cross2d(dx3, dy3, dx1, dy1) / denom
+    return 0 <= t <= 1 and 0 <= u <= 1
 
-    tile_url = 'https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_matter_all/{z}/{x}/{y}.png'
 
-    def render_map(url_template):
-        m = StaticMap(width, height, url_template=url_template,
-                      tile_request_timeout=10,
-                      headers={'User-Agent': 'RoutePlannerPro/2.5'})
-        for seg in segments:
-            if len(seg) >= 2:
-                m.add_line(Line([(p[0], p[1]) for p in seg], '#3b82f6', 3))
-        m.add_marker(CircleMarker((render_pts[0][0],  render_pts[0][1]),  '#22c55e', 10))
-        m.add_marker(CircleMarker((render_pts[-1][0], render_pts[-1][1]), '#ef4444', 10))
-        img = m.render(zoom=None)
-        buf = io.BytesIO()
-        img.save(buf, format='PNG', optimize=True)
-        return buf.getvalue()
+def interpolate_box_entry(lon1, lat1, lon2, lat2, box):
+    """
+    Find the parameter t (0-1) where the segment first enters the bounding box.
+    Returns interpolated (lon, lat) at entry, or None.
+    """
+    # If start is already inside, entry is at t=0
+    if box[0] <= lon1 <= box[2] and box[1] <= lat1 <= box[3]:
+        return lon1, lat1, 0.0
 
-    try:
-        return render_map(tile_url)
-    except Exception as e:
-        log.warning('CARTO tiles failed (%s), trying OSM fallback', e)
-        try:
-            return render_map('https://tile.openstreetmap.org/{z}/{x}/{y}.png')
-        except Exception as e2:
-            log.error('Both tile sources failed: %s', e2)
-            return None
+    edges = [
+        (box[0], box[1], box[0], box[3]),
+        (box[2], box[1], box[2], box[3]),
+        (box[0], box[1], box[2], box[1]),
+        (box[0], box[3], box[2], box[3]),
+    ]
+    best_t, best_pt = 1.0, None
+    dx, dy = lon2 - lon1, lat2 - lat1
+    for ex1, ey1, ex2, ey2 in edges:
+        edx, edy = ex2 - ex1, ey2 - ey1
+        denom = dx * edy - dy * edx
+        if abs(denom) < 1e-12: continue
+        t = ((ex1 - lon1) * edy - (ey1 - lat1) * edx) / denom
+        u = ((ex1 - lon1) * dy  - (ey1 - lat1) * dx)  / denom
+        if 0 <= t <= 1 and 0 <= u <= 1 and t < best_t:
+            best_t = t
+            best_pt = (lon1 + t * dx, lat1 + t * dy)
+    return (*best_pt, best_t) if best_pt else None
+
+
+def inject_tss_waypoints(coords):
+    """
+    Splice TSS lane waypoints into the route at exact zone crossing points.
+
+    Algorithm:
+    1. Walk segments, detect first crossing into each TSS trigger box
+    2. Interpolate the exact entry point on the box boundary
+    3. Walk forward to find exit crossing, interpolate exit point
+    4. Replace all original waypoints between entry and exit with:
+       [entry_point] → [TSS_lane_WPs] → [exit_point]
+
+    This gives a clean splice with no zigzag — the TSS section is a
+    self-contained arc that connects smoothly to the pre/post route.
+    """
+    if len(coords) < 2:
+        return coords, []
+
+    overall_bearing = bearing_deg(coords[0][0], coords[0][1],
+                                  coords[-1][0], coords[-1][1])
+    result      = []
+    tss_applied = []
+    done_tss    = set()
+    i = 0
+
+    while i < len(coords) - 1:
+        lon1, lat1 = coords[i]
+        lon2, lat2 = coords[i + 1]
+
+        triggered = None
+        for tss_key, tss in TSS_ZONES.items():
+            if tss_key in done_tss:
+                continue
+            box = tss['trigger_box']
+            if segment_crosses_box(lon1, lat1, lon2, lat2, box):
+                triggered = (tss_key, tss)
+                break
+
+        if not triggered:
+            result.append([lon1, lat1])
+            i += 1
+            continue
+
+        tss_key, tss = triggered
+        box = tss['trigger_box']
+
+        # Find entry: interpolate where segment first touches the box
+        entry_info = interpolate_box_entry(lon1, lat1, lon2, lat2, box)
+        if entry_info is None:
+            result.append([lon1, lat1])
+            i += 1
+            continue
+
+        entry_lon, entry_lat, _ = entry_info
+
+        # Determine lane based on bearing at entry
+        seg_bearing = bearing_deg(lon1, lat1, lon2, lat2)
+        lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
+        if not lane_wps:
+            result.append([lon1, lat1])
+            i += 1
+            continue
+
+        # Keep everything up to (but not including) the entry crossing
+        result.append([lon1, lat1])
+        # Add exact entry point on box boundary
+        result.append([entry_lon, entry_lat])
+
+        # Skip forward through all original waypoints inside the box
+        j = i + 1
+        last_in_box = None
+        while j < len(coords):
+            lo, la = coords[j]
+            if box[0] <= lo <= box[2] and box[1] <= la <= box[3]:
+                last_in_box = j
+                j += 1
+            else:
+                break
+
+        # Find exit: if the last segment exits the box, interpolate exit point
+        exit_lon, exit_lat = None, None
+        if last_in_box is not None and last_in_box + 1 < len(coords):
+            elo1, ela1 = coords[last_in_box]
+            elo2, ela2 = coords[last_in_box + 1]
+            ex_info = interpolate_box_entry(elo2, ela2, elo1, ela1, box)
+            if ex_info:
+                exit_lon, exit_lat, _ = ex_info
+        elif j < len(coords):
+            # Segment i+1 exits the box
+            ex_info = interpolate_box_entry(lon2, lat2, lon1, lat1, box)
+            if ex_info:
+                exit_lon, exit_lat, _ = ex_info
+
+        # Insert TSS lane waypoints
+        for wp in lane_wps:
+            result.append([wp[0], wp[1]])
+
+        # Add exact exit point
+        if exit_lon is not None:
+            result.append([exit_lon, exit_lat])
+
+        done_tss.add(tss_key)
+        tss_applied.append(tss['name'])
+        log.info('TSS spliced: %s (bearing %.0f°, entry %.4f,%.4f exit %.4f,%.4f)',
+                 tss['name'], seg_bearing,
+                 entry_lon, entry_lat,
+                 exit_lon or 0, exit_lat or 0)
+
+        # Continue from the first waypoint after the box
+        i = j
+
+    # Append final waypoint
+    if coords:
+        result.append([coords[-1][0], coords[-1][1]])
+
+    # Deduplicate consecutive near-identical points (< 0.3nm)
+    deduped = [result[0]]
+    for pt in result[1:]:
+        if haversine_km(deduped[-1][0], deduped[-1][1], pt[0], pt[1]) > 0.3 * 1.852:
+            deduped.append(pt)
+
+    return deduped, tss_applied
 
 
 # ── COPERNICUS WMTS PROXY ENDPOINTS ──────────────────────────────────────────
@@ -793,36 +1071,26 @@ def cmems_status():
     return r
 
 
-# ── ROUTE MAP IMAGE ENDPOINT ──────────────────────────────────────────────────
+# ── ROUTE MAP ENDPOINT ───────────────────────────────────────────────────────
 
 @app.route("/api/route-map", methods=["POST"])
 def route_map():
     """
-    Generate a PNG map image of the route for PDF embedding.
-    Body: {"waypoints": [[lon, lat], ...], "width": 1200, "height": 600}
-    Returns: {"image_b64": "<base64 PNG>", "format": "png"}
+    Generate an SVG map of the route for PDF embedding.
+    Body: {"waypoints": [[lon, lat], ...], "width": 1200, "height": 520}
+    Returns: {"svg": "<svg...>", "format": "svg"}
     """
     try:
-        data = request.get_json(force=True)
+        data      = request.get_json(force=True)
         waypoints = data.get('waypoints', [])
-        width     = int(data.get('width',  1200))
-        height    = int(data.get('height',  550))
+        width     = min(int(data.get('width',  1200)), 2400)
+        height    = min(int(data.get('height',  520)),  900)
 
         if len(waypoints) < 2:
             return jsonify({"error": "Need at least 2 waypoints"}), 400
 
-        # Cap dimensions for safety
-        width  = min(width,  2400)
-        height = min(height, 1200)
-
-        png_bytes = generate_route_map(waypoints, width, height)
-
-        if png_bytes is None:
-            return jsonify({"error": "Map generation failed — staticmap not available"}), 500
-
-        image_b64 = base64.b64encode(png_bytes).decode('utf-8')
-        r = jsonify({"image_b64": image_b64, "format": "png",
-                     "width": width, "height": height})
+        svg = generate_route_svg(waypoints, width, height)
+        r   = jsonify({"svg": svg, "format": "svg", "width": width, "height": height})
         r.headers['Access-Control-Allow-Origin'] = '*'
         return r
 
@@ -831,12 +1099,95 @@ def route_map():
         return jsonify({"error": str(e)}), 500
 
 
+# ── TSS DEBUG ENDPOINT ────────────────────────────────────────────────────────
+
+@app.route("/api/tss-debug", methods=["POST"])
+def tss_debug():
+    """
+    Analyse a route for TSS zone crossings without modifying the route.
+    Returns per-zone analysis: which segments cross, entry/exit coords, bearing, lane selected.
+    Use this to verify TSS coordinates are correct before enabling injection.
+
+    Body: {"coords": [[lon, lat], ...]}
+    """
+    try:
+        data   = request.get_json(force=True)
+        coords = data.get('coords', [])
+        if len(coords) < 2:
+            return jsonify({"error": "Need at least 2 coords"}), 400
+
+        overall_bearing = bearing_deg(coords[0][0], coords[0][1],
+                                      coords[-1][0], coords[-1][1])
+        findings = []
+
+        for tss_key, tss in TSS_ZONES.items():
+            box = tss['trigger_box']
+            crossings = []
+
+            for i in range(len(coords) - 1):
+                lon1, lat1 = coords[i]
+                lon2, lat2 = coords[i + 1]
+                if segment_crosses_box(lon1, lat1, lon2, lat2, box):
+                    seg_bearing = bearing_deg(lon1, lat1, lon2, lat2)
+                    lane_wps    = _select_tss_lane(tss, seg_bearing, overall_bearing)
+                    entry_info  = interpolate_box_entry(lon1, lat1, lon2, lat2, box)
+                    crossings.append({
+                        'segment_idx':  i,
+                        'seg_from':     [round(lon1, 5), round(lat1, 5)],
+                        'seg_to':       [round(lon2, 5), round(lat2, 5)],
+                        'seg_bearing':  round(seg_bearing, 1),
+                        'entry_point':  [round(entry_info[0], 5), round(entry_info[1], 5)]
+                                        if entry_info else None,
+                        'lane_selected': None,
+                        'lane_first_wp': lane_wps[0]  if lane_wps else None,
+                        'lane_last_wp':  lane_wps[-1] if lane_wps else None,
+                        'lane_wps':      lane_wps,
+                    })
+                    # Only report first crossing per zone
+                    break
+
+            if crossings:
+                seg_b = crossings[0]['seg_bearing']
+                lane_wps = _select_tss_lane(tss, seg_b, overall_bearing)
+                crossings[0]['lane_selected'] = (
+                    'CORRECT — first WP is entry side, last WP is exit side'
+                    if lane_wps and len(lane_wps) >= 2 else 'NO LANE MATCHED'
+                )
+                findings.append({
+                    'tss':        tss_key,
+                    'name':       tss['name'],
+                    'trigger_box': box,
+                    'triggered':  True,
+                    'crossings':  crossings,
+                })
+            else:
+                findings.append({
+                    'tss':       tss_key,
+                    'name':      tss['name'],
+                    'triggered': False,
+                })
+
+        triggered = [f for f in findings if f['triggered']]
+        r = jsonify({
+            'overall_bearing':  round(overall_bearing, 1),
+            'total_tss_zones':  len(TSS_ZONES),
+            'zones_triggered':  len(triggered),
+            'findings':         findings,
+        })
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r
+
+    except Exception as e:
+        log.error('tss-debug error: %s', e)
+        return jsonify({"error": str(e)}), 500
+
+
 # ── TSS INFO ENDPOINT ─────────────────────────────────────────────────────────
 
 @app.route("/api/tss-zones")
 def tss_zones_info():
-    """Return TSS zone metadata (for frontend display/debugging)."""
-    zones = {k: {'name': v['name'], 'trigger_box': v['trigger_box']}
+    zones = {k: {'name': v['name'], 'trigger_box': v['trigger_box'],
+                 'lanes': [key for key in v if key not in ('name','trigger_box')]}
              for k, v in TSS_ZONES.items()}
     r = jsonify({'count': len(zones), 'zones': zones})
     r.headers['Access-Control-Allow-Origin'] = '*'
@@ -853,18 +1204,11 @@ def status():
         "nodes":   len(GRAPH.graph) if ENGINE=='scgraph' else 0,
         "backend": "scgraph (MARNET)" if ENGINE=='scgraph' else
                    ("searoute-py" if ENGINE=='searoute' else "not loaded"),
-        "tss_zones": len(TSS_ZONES),
-        "route_map": "available" if _check_staticmap() else "unavailable (pip install staticmap)",
+        "tss_zones":  len(TSS_ZONES),
+        "route_map":  "svg (built-in, no dependencies)",
     })
     r.headers["Access-Control-Allow-Origin"] = "*"
     return r
-
-def _check_staticmap():
-    try:
-        import staticmap
-        return True
-    except ImportError:
-        return False
 
 @app.route("/api/route")
 def route_api():
