@@ -106,55 +106,61 @@ def cmems_tile_proxy(path, params):
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRAFFIC SEPARATION SCHEMES (TSS)
 # Source: IMO Ships' Routeing, Edition 2023 + UKHO NP136
-# Each TSS entry defines:
-#   trigger_box : [lon_min, lat_min, lon_max, lat_max]
-#     — bounding box that, if the GC route passes through, triggers TSS injection
-#   inbound     : [[lon,lat], ...] waypoints for vessels heading roughly E/NE/N
-#   outbound    : [[lon,lat], ...] waypoints for vessels heading roughly W/SW/S
-#   name        : human-readable name for logging
-# The route API checks if any route segment midpoint falls within the trigger_box,
-# then determines inbound/outbound based on overall voyage direction.
+#
+# PROXIMITY-BASED DETECTION — no trigger boxes required.
+# Each TSS defines:
+#   reference  : [lon, lat] — midpoint of the strait (used for proximity check)
+#   trigger_nm : float — inject TSS if route passes within this many nm
+#   <direction>: [[lon,lat], ...] — lane waypoints in TRAVEL DIRECTION order
+#
+# Algorithm (see inject_tss_waypoints):
+#   1. For each TSS, find the route segment of closest approach to `reference`
+#   2. If closest distance < trigger_nm → inject this TSS
+#   3. Find the route segment closest to lane[0] (entry) and lane[-1] (exit)
+#   4. Replace route[entry_seg_idx : exit_seg_idx+1] with lane waypoints
+#
+# This is self-calibrating — no box dimensions to tune per zone.
+# Works regardless of the angle or density of MARNET waypoints.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TSS_ZONES = {
 
     # ── Dover Strait / English Channel ───────────────────────────────────────
     # IMO Ships' Routeing Part B, Section I
-    # CRITICAL: waypoints must be in TRAVEL DIRECTION order
-    # NE-bound vessel travels SW→NE: starts near Atlantic, exits to North Sea
-    # SW-bound vessel travels NE→SW: starts near North Sea, exits to Atlantic
-    # Trigger box tightly around the strait only (not whole Channel)
     'dover': {
         'name': 'Dover Strait TSS',
-        'trigger_box': [-1.5, 50.2, 2.2, 51.5],
-        # NE-bound (Atlantic→North Sea, bearing ~045–090°): SW lane, WP order SW→NE
+        'reference':   [0.52, 51.05],   # strait midpoint (Varne Bank)
+        'trigger_nm':  45,               # any route within 45nm of midpoint
+        # NE-bound (Atlantic→North Sea): SW lane, order SW→NE
         'northeast': [
-            [-1.05, 50.88],  # Enter: off Beachy Head / Selsey Bill area
-            [-0.28, 51.00],  # Off Dungeness
-            [ 0.10, 51.05],  # Off Folkestone / South Foreland
-            [ 0.52, 51.05],  # Varne Bank area
-            [ 0.92, 51.05],  # Mid-strait centre
-            [ 1.28, 51.07],  # Off Cap Gris-Nez (NE lane centre)
-            [ 1.58, 51.10],  # South Falls / exit toward North Sea
+            [-1.05, 50.88],  # off Beachy Head
+            [-0.28, 51.00],  # off Dungeness
+            [ 0.10, 51.05],  # off South Foreland
+            [ 0.52, 51.05],  # Varne Bank
+            [ 0.92, 51.05],  # mid-strait
+            [ 1.28, 51.07],  # off Cap Gris-Nez
+            [ 1.58, 51.10],  # South Falls / North Sea exit
         ],
-        # SW-bound (North Sea→Atlantic, bearing ~225–270°): NE lane, WP order NE→SW
+        # SW-bound (North Sea→Atlantic): NE lane, order NE→SW
         'southwest': [
-            [ 2.05, 51.22],  # Enter: West Hinder area
-            [ 1.60, 51.20],  # North Goodwin area
-            [ 1.30, 51.18],  # Off Cap Gris-Nez (NE lane)
-            [ 0.92, 51.18],  # Mid-strait NE lane
-            [ 0.52, 51.15],  # Colbart / separation zone
-            [ 0.05, 51.18],  # Off South Foreland
-            [-0.28, 51.22],  # Off Dungeness
-            [-1.12, 50.92],  # Exit: off Beachy Head
+            [ 2.05, 51.22],  # West Hinder
+            [ 1.60, 51.20],  # North Goodwin
+            [ 1.30, 51.18],  # off Cap Gris-Nez
+            [ 0.92, 51.18],  # mid-strait NE lane
+            [ 0.52, 51.15],  # Colbart
+            [ 0.05, 51.18],  # off South Foreland
+            [-0.28, 51.22],  # off Dungeness
+            [-1.12, 50.92],  # off Beachy Head exit
         ],
     },
 
     # ── Strait of Gibraltar ───────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section II
     'gibraltar': {
-        'name': 'Strait of Gibraltar TSS',
-        'trigger_box': [-6.2, 35.7, -4.8, 36.3],
-        # Eastbound (Atlantic→Med, bearing ~060–120°): northern lane, W→E
+        'name':       'Strait of Gibraltar TSS',
+        'reference':  [-5.45, 35.92],
+        'trigger_nm': 35,
+        # Eastbound (Atlantic→Med): northern lane, W→E
         'east': [
             [-6.05, 36.02],
             [-5.82, 35.98],
@@ -163,7 +169,7 @@ TSS_ZONES = {
             [-5.02, 35.88],
             [-4.85, 35.90],
         ],
-        # Westbound (Med→Atlantic, bearing ~240–300°): southern lane, E→W
+        # Westbound (Med→Atlantic): southern lane, E→W
         'west': [
             [-4.88, 35.80],
             [-5.12, 35.78],
@@ -175,10 +181,12 @@ TSS_ZONES = {
     },
 
     # ── Singapore Strait ─────────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section XIII
     'singapore': {
-        'name': 'Singapore Strait TSS',
-        'trigger_box': [103.5, 1.05, 104.4, 1.45],
-        # Eastbound (bearing ~080–120°): main deep-water lane, W→E
+        'name':       'Singapore Strait TSS',
+        'reference':  [103.87, 1.20],
+        'trigger_nm': 30,
+        # Eastbound: deep-water lane, W→E
         'east': [
             [103.58, 1.20],
             [103.72, 1.22],
@@ -187,7 +195,7 @@ TSS_ZONES = {
             [104.12, 1.22],
             [104.28, 1.20],
         ],
-        # Westbound (bearing ~260–300°): main lane, E→W
+        # Westbound: main lane, E→W
         'west': [
             [104.25, 1.15],
             [104.10, 1.17],
@@ -199,10 +207,12 @@ TSS_ZONES = {
     },
 
     # ── Strait of Malacca ────────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section XIII
     'malacca': {
-        'name': 'Strait of Malacca TSS',
-        'trigger_box': [99.0, 1.2, 103.5, 6.5],
-        # NW-bound (Singapore→Andaman, bearing ~300–340°): SE lane, SE→NW
+        'name':       'Strait of Malacca TSS',
+        'reference':  [101.35, 3.82],   # mid-strait
+        'trigger_nm': 60,
+        # NW-bound (Singapore→Andaman): SE lane, SE→NW
         'northwest': [
             [103.48, 1.38],
             [103.18, 1.68],
@@ -216,7 +226,7 @@ TSS_ZONES = {
             [ 99.28, 6.22],
             [ 98.88, 6.52],
         ],
-        # SE-bound (Andaman→Singapore, bearing ~130–160°): NW lane, NW→SE
+        # SE-bound (Andaman→Singapore): NW lane, NW→SE
         'southeast': [
             [ 98.92, 6.38],
             [ 99.32, 6.08],
@@ -233,10 +243,12 @@ TSS_ZONES = {
     },
 
     # ── Strait of Hormuz ─────────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section IX
     'hormuz': {
-        'name': 'Strait of Hormuz TSS',
-        'trigger_box': [56.1, 25.6, 57.4, 26.7],
-        # NW-bound (into Persian Gulf, bearing ~300–340°): N lane, SE→NW
+        'name':       'Strait of Hormuz TSS',
+        'reference':  [56.82, 26.05],
+        'trigger_nm': 30,
+        # NW-bound (into Persian Gulf): N lane, SE→NW
         'northwest': [
             [57.28, 25.72],
             [57.08, 25.88],
@@ -244,7 +256,7 @@ TSS_ZONES = {
             [56.58, 26.25],
             [56.40, 26.38],
         ],
-        # SE-bound (into Gulf of Oman, bearing ~120–160°): S lane, NW→SE
+        # SE-bound (into Gulf of Oman): S lane, NW→SE
         'southeast': [
             [56.38, 26.28],
             [56.60, 26.12],
@@ -255,17 +267,19 @@ TSS_ZONES = {
     },
 
     # ── Bab-el-Mandeb ────────────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section X
     'babelmandab': {
-        'name': 'Bab-el-Mandeb TSS',
-        'trigger_box': [43.1, 11.6, 43.9, 12.9],
-        # N-bound (into Red Sea, bearing ~340–020°): E lane, S→N
+        'name':       'Bab-el-Mandeb TSS',
+        'reference':  [43.48, 12.35],
+        'trigger_nm': 25,
+        # N-bound (into Red Sea): E lane, S→N
         'north': [
             [43.45, 11.78],
             [43.42, 12.18],
             [43.40, 12.52],
             [43.43, 12.88],
         ],
-        # S-bound (into Gulf of Aden, bearing ~160–200°): W lane, N→S
+        # S-bound (into Gulf of Aden): W lane, N→S
         'south': [
             [43.57, 12.82],
             [43.54, 12.48],
@@ -274,11 +288,13 @@ TSS_ZONES = {
         ],
     },
 
-    # ── Cape Finisterre / Off Finisterre ──────────────────────────────────────
+    # ── Off Cape Finisterre ──────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section VI
     'finisterre': {
-        'name': 'Off Finisterre TSS',
-        'trigger_box': [-10.2, 42.2, -8.8, 44.2],
-        # N-bound (bearing ~340–020°): offshore lane, S→N
+        'name':       'Off Finisterre TSS',
+        'reference':  [-9.58, 43.30],
+        'trigger_nm': 40,
+        # N-bound: offshore lane, S→N
         'north': [
             [-9.48, 42.22],
             [-9.63, 42.82],
@@ -286,7 +302,7 @@ TSS_ZONES = {
             [-9.58, 43.82],
             [-9.38, 44.18],
         ],
-        # S-bound (bearing ~160–200°): offshore lane, N→S
+        # S-bound: offshore lane, N→S
         'south': [
             [-9.33, 44.12],
             [-9.53, 43.78],
@@ -296,11 +312,13 @@ TSS_ZONES = {
         ],
     },
 
-    # ── Off Ushant (Ouessant) ─────────────────────────────────────────────────
+    # ── Off Ushant (Ouessant) ────────────────────────────────────────────────
+    # IMO Ships' Routeing Part B, Section IV
     'ushant': {
-        'name': 'Off Ushant (Ouessant) TSS',
-        'trigger_box': [-5.8, 47.6, -4.6, 48.9],
-        # NE-bound (toward Channel, bearing ~040–080°): S lane, SW→NE
+        'name':       'Off Ushant (Ouessant) TSS',
+        'reference':  [-5.35, 48.28],
+        'trigger_nm': 35,
+        # NE-bound (toward Channel): S lane, SW→NE
         'northeast': [
             [-5.78, 47.82],
             [-5.48, 48.17],
@@ -308,7 +326,7 @@ TSS_ZONES = {
             [-4.98, 48.67],
             [-4.87, 48.87],
         ],
-        # SW-bound (toward Atlantic, bearing ~220–260°): N lane, NE→SW
+        # SW-bound (toward Atlantic): N lane, NE→SW
         'southwest': [
             [-4.92, 48.77],
             [-5.12, 48.57],
@@ -318,11 +336,12 @@ TSS_ZONES = {
         ],
     },
 
-    # ── North Sea — German Bight approaches ──────────────────────────────────
+    # ── German Bight ─────────────────────────────────────────────────────────
     'german_bight': {
-        'name': 'German Bight TSS',
-        'trigger_box': [7.2, 53.6, 9.3, 55.3],
-        # NE-bound (bearing ~040–080°): S→N
+        'name':       'German Bight TSS',
+        'reference':  [8.12, 54.55],
+        'trigger_nm': 35,
+        # NE-bound: S→N
         'northeast': [
             [7.52, 53.82],
             [7.82, 54.22],
@@ -330,7 +349,7 @@ TSS_ZONES = {
             [8.37, 54.92],
             [8.47, 55.22],
         ],
-        # SW-bound (bearing ~220–260°): N→S
+        # SW-bound: N→S
         'southwest': [
             [8.42, 55.17],
             [8.27, 54.85],
@@ -342,9 +361,20 @@ TSS_ZONES = {
 }
 
 
-def point_in_box(lon, lat, box):
-    """Check if [lon, lat] is within bounding box [lon_min, lat_min, lon_max, lat_max]."""
-    return box[0] <= lon <= box[2] and box[1] <= lat <= box[3]
+# ── TSS helper: distance from point to segment (nautical miles) ───────────────
+def _pt_to_seg_nm(plon, plat, lon1, lat1, lon2, lat2):
+    """
+    Minimum distance (nm) from point (plon,plat) to segment (lon1,lat1)-(lon2,lat2).
+    Uses simple planar approximation — accurate enough for TSS detection (< 100nm).
+    """
+    dx = lon2 - lon1
+    dy = lat2 - lat1
+    if dx == 0 and dy == 0:
+        return haversine_km(plon, plat, lon1, lat1) / 1.852
+    t = max(0.0, min(1.0, ((plon - lon1) * dx + (plat - lat1) * dy) / (dx*dx + dy*dy)))
+    cx = lon1 + t * dx
+    cy = lat1 + t * dy
+    return haversine_km(plon, plat, cx, cy) / 1.852
 
 
 def bearing_deg(lon1, lat1, lon2, lat2):
@@ -357,126 +387,163 @@ def bearing_deg(lon1, lat1, lon2, lat2):
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 
-def inject_tss_waypoints(coords):
-    """
-    Check each route segment against TSS trigger boxes.
-    When a TSS zone is detected, REPLACE all original waypoints inside that
-    zone's trigger box with the TSS lane waypoints.
-
-    This prevents the zigzag caused by keeping both the original MARNET
-    waypoints AND the TSS lane waypoints simultaneously.
-
-    Returns (new_coords, tss_applied: list of TSS names applied)
-    """
-    if len(coords) < 2:
-        return coords, []
-
-    # Overall voyage bearing (origin → destination)
-    overall_bearing = bearing_deg(coords[0][0], coords[0][1],
-                                  coords[-1][0], coords[-1][1])
-
-    tss_applied = []
-    inserted_tss = set()
-
-    # Build result by walking the coordinate list.
-    # When we enter a TSS trigger box, collect ALL original points in that box,
-    # then replace them with the TSS lane waypoints in one shot.
-    result = []
-    i = 0
-
-    while i < len(coords):
-        lon, lat = coords[i]
-
-        # Check if this point is inside any unprocessed TSS trigger box
-        matched_tss = None
-        for tss_key, tss in TSS_ZONES.items():
-            if tss_key in inserted_tss:
-                continue
-            if point_in_box(lon, lat, tss['trigger_box']):
-                matched_tss = (tss_key, tss)
-                break
-
-        if matched_tss:
-            tss_key, tss = matched_tss
-            box = tss['trigger_box']
-
-            # Use bearing of the segment entering the TSS zone
-            seg_bearing = bearing_deg(
-                coords[i-1][0], coords[i-1][1], lon, lat
-            ) if i > 0 else overall_bearing
-
-            lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
-
-            if lane_wps:
-                # Skip ALL original waypoints inside this trigger box
-                # (they are replaced by the TSS lane waypoints)
-                j = i
-                while j < len(coords) and point_in_box(coords[j][0], coords[j][1], box):
-                    j += 1
-
-                # Insert TSS lane waypoints instead
-                for wp in lane_wps:
-                    result.append(wp)
-
-                inserted_tss.add(tss_key)
-                tss_applied.append(tss['name'])
-                log.info('TSS applied: %s (bearing %.0f°, replaced %d pts)',
-                         tss['name'], seg_bearing, j - i)
-
-                # Continue from first point after the trigger box
-                i = j
-                continue
-
-        result.append(coords[i])
-        i += 1
-
-    # Deduplicate consecutive near-identical points (< 0.5nm apart)
-    deduped = [result[0]]
-    for pt in result[1:]:
-        d = haversine_km(deduped[-1][0], deduped[-1][1], pt[0], pt[1])
-        if d > 0.5 * 1.852:  # 0.5nm in km
-            deduped.append(pt)
-
-    return deduped, tss_applied
-
-
 def _select_tss_lane(tss, seg_bearing, overall_bearing):
     """
     Select the correct TSS lane based on vessel bearing.
-    Returns list of [lon, lat] waypoints for the appropriate lane, or None.
+    Lane keys are cardinal/ordinal direction names matching the vessel's heading.
     """
-    keys = [k for k in tss.keys() if k not in ('name', 'trigger_box')]
+    keys = [k for k in tss.keys() if k not in ('name', 'reference', 'trigger_nm',
+                                                 'trigger_box')]  # trigger_box kept for compat
     if not keys:
         return None
 
-    # Map cardinal/ordinal direction keys to bearing ranges
     direction_map = {
-        'northeast':  (22.5,  112.5),
-        'east':       (67.5,  112.5),
-        'southeast':  (112.5, 202.5),
-        'south':      (157.5, 202.5),
-        'southwest':  (202.5, 292.5),
-        'west':       (247.5, 292.5),
-        'northwest':  (292.5, 382.5),  # wraps 360→22.5
-        'north':      (337.5, 382.5),  # wraps
+        'northeast': (22.5,  112.5),
+        'east':      (67.5,  112.5),
+        'southeast': (112.5, 202.5),
+        'south':     (157.5, 202.5),
+        'southwest': (202.5, 292.5),
+        'west':      (247.5, 292.5),
+        'northwest': (292.5, 382.5),
+        'north':     (337.5, 382.5),
     }
 
-    def bearing_matches(bearing, range_min, range_max):
+    def matches(bearing, rmin, rmax):
         b = bearing % 360
-        if range_max > 360:
-            return b >= range_min or b < (range_max - 360)
-        return range_min <= b < range_max
+        return b >= rmin or b < (rmax - 360) if rmax > 360 else rmin <= b < rmax
 
-    # Try segment bearing first, fall back to overall voyage bearing
     for use_bearing in [seg_bearing, overall_bearing]:
         for key in keys:
             if key in direction_map:
                 rmin, rmax = direction_map[key]
-                if bearing_matches(use_bearing, rmin, rmax):
+                if matches(use_bearing, rmin, rmax):
                     return tss[key]
 
-    # If no directional match, return the first available lane
-    return tss[keys[0]]
+    return tss[keys[0]]  # fallback: first lane
+
+
+def inject_tss_waypoints(coords):
+    """
+    Proximity-based TSS injection — no trigger boxes.
+
+    For each TSS zone:
+      1. Find the route segment of closest approach to the TSS reference point
+      2. If that distance < trigger_nm → this TSS applies to the route
+      3. Determine the correct lane (NE/SW/E/W etc.) from the bearing at closest approach
+      4. Find where the lane entry waypoint is closest to the route (entry segment)
+      5. Find where the lane exit waypoint is closest to the route (exit segment)
+      6. Splice: keep route up to entry_seg, insert lane WPs, resume from exit_seg+1
+
+    This approach is self-calibrating — no box dimensions to tune.
+    Works regardless of MARNET waypoint density or approach angle.
+    """
+    if len(coords) < 2:
+        return coords, []
+
+    overall_bearing = bearing_deg(coords[0][0], coords[0][1],
+                                  coords[-1][0], coords[-1][1])
+    tss_applied = []
+    # We'll build the result by marking splice points, then assembling
+    # Process each TSS independently; collect all splices then apply in order
+    splices = []  # list of (entry_idx, exit_idx, lane_wps)
+
+    for tss_key, tss in TSS_ZONES.items():
+        ref_lon, ref_lat = tss['reference']
+        trigger_nm       = tss['trigger_nm']
+
+        # Step 1: find segment of closest approach to reference point
+        min_dist_nm = float('inf')
+        closest_seg = -1
+        for i in range(len(coords) - 1):
+            d = _pt_to_seg_nm(ref_lon, ref_lat,
+                              coords[i][0], coords[i][1],
+                              coords[i+1][0], coords[i+1][1])
+            if d < min_dist_nm:
+                min_dist_nm = d
+                closest_seg = i
+
+        if min_dist_nm > trigger_nm:
+            continue  # route doesn't pass through this TSS
+
+        # Step 2: select lane based on bearing at closest segment
+        seg_bearing = bearing_deg(coords[closest_seg][0], coords[closest_seg][1],
+                                  coords[closest_seg+1][0], coords[closest_seg+1][1])
+        lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
+        if not lane_wps or len(lane_wps) < 2:
+            continue
+
+        # Step 3: find entry segment — route segment closest to lane[0]
+        entry_lon, entry_lat = lane_wps[0]
+        min_entry_dist = float('inf')
+        entry_seg = closest_seg
+        # Search around closest_seg ± generous window
+        search_start = max(0, closest_seg - 30)
+        search_end   = min(len(coords) - 1, closest_seg + 30)
+        for i in range(search_start, search_end):
+            d = _pt_to_seg_nm(entry_lon, entry_lat,
+                              coords[i][0], coords[i][1],
+                              coords[i+1][0], coords[i+1][1])
+            if d < min_entry_dist:
+                min_entry_dist = d
+                entry_seg = i
+
+        # Step 4: find exit segment — route segment closest to lane[-1]
+        exit_lon, exit_lat = lane_wps[-1]
+        min_exit_dist = float('inf')
+        exit_seg = closest_seg
+        for i in range(search_start, search_end):
+            d = _pt_to_seg_nm(exit_lon, exit_lat,
+                              coords[i][0], coords[i][1],
+                              coords[i+1][0], coords[i+1][1])
+            if d < min_exit_dist:
+                min_exit_dist = d
+                exit_seg = i
+
+        # Ensure entry comes before exit
+        if entry_seg >= exit_seg:
+            # Fallback: use a window around closest_seg
+            entry_seg = max(0, closest_seg - 5)
+            exit_seg  = min(len(coords) - 2, closest_seg + 5)
+
+        splices.append((entry_seg, exit_seg, lane_wps, tss['name'], tss_key,
+                        min_dist_nm, seg_bearing))
+        log.info('TSS proximity match: %s dist=%.1fnm bearing=%.0f° entry_seg=%d exit_seg=%d',
+                 tss['name'], min_dist_nm, seg_bearing, entry_seg, exit_seg)
+
+    if not splices:
+        return coords, []
+
+    # Sort splices by entry index — process in route order
+    splices.sort(key=lambda s: s[0])
+
+    # Assemble result: original route with TSS lane sections spliced in
+    result = []
+    prev_idx = 0  # next original coord index to emit
+
+    for entry_seg, exit_seg, lane_wps, tss_name, tss_key, dist_nm, bearing in splices:
+        # Emit original route up to and including the entry segment start
+        for k in range(prev_idx, entry_seg + 1):
+            result.append([coords[k][0], coords[k][1]])
+
+        # Insert TSS lane waypoints
+        for wp in lane_wps:
+            result.append([wp[0], wp[1]])
+
+        tss_applied.append(tss_name)
+        # Resume from after the exit segment
+        prev_idx = exit_seg + 1
+
+    # Emit remaining original route
+    for k in range(prev_idx, len(coords)):
+        result.append([coords[k][0], coords[k][1]])
+
+    # Deduplicate consecutive near-identical points (< 0.5nm)
+    deduped = [result[0]]
+    for pt in result[1:]:
+        if haversine_km(deduped[-1][0], deduped[-1][1], pt[0], pt[1]) > 0.5 * 1.852:
+            deduped.append(pt)
+
+    return deduped, tss_applied
 
 
 # ── ROUTING ENGINE ────────────────────────────────────────────────────────────
@@ -786,209 +853,6 @@ def generate_route_svg(waypoints, width=1200, height=520):
     return '\n'.join(parts)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TSS SEGMENT-CROSSING DETECTION
-# Finds exact segments where route enters/exits each TSS zone boundary,
-# interpolates the crossing point, and splices TSS lane waypoints cleanly.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def segment_crosses_box(lon1, lat1, lon2, lat2, box):
-    """
-    Check if the line segment (lon1,lat1)→(lon2,lat2) crosses or enters
-    the bounding box [lon_min, lat_min, lon_max, lat_max].
-    Returns True if either endpoint is inside, or the segment crosses a boundary.
-    """
-    def in_box(lo, la):
-        return box[0] <= lo <= box[2] and box[1] <= la <= box[3]
-
-    if in_box(lon1, lat1) or in_box(lon2, lat2):
-        return True
-
-    # Check if segment crosses any of the 4 box edges using line-line intersection
-    edges = [
-        (box[0], box[1], box[0], box[3]),  # left
-        (box[2], box[1], box[2], box[3]),  # right
-        (box[0], box[1], box[2], box[1]),  # bottom
-        (box[0], box[3], box[2], box[3]),  # top
-    ]
-    for ex1, ey1, ex2, ey2 in edges:
-        if segments_intersect(lon1, lat1, lon2, lat2, ex1, ey1, ex2, ey2):
-            return True
-    return False
-
-
-def segments_intersect(x1, y1, x2, y2, x3, y3, x4, y4):
-    """Check if segment (x1,y1)-(x2,y2) intersects segment (x3,y3)-(x4,y4)."""
-    def cross2d(ax, ay, bx, by): return ax * by - ay * bx
-    def sub(ax, ay, bx, by): return ax - bx, ay - by
-
-    dx1, dy1 = sub(x2, y2, x1, y1)
-    dx2, dy2 = sub(x4, y4, x3, y3)
-    denom = cross2d(dx1, dy1, dx2, dy2)
-    if abs(denom) < 1e-12:
-        return False  # parallel
-    dx3, dy3 = sub(x1, y1, x3, y3)
-    t = cross2d(dx3, dy3, dx2, dy2) / denom
-    u = cross2d(dx3, dy3, dx1, dy1) / denom
-    return 0 <= t <= 1 and 0 <= u <= 1
-
-
-def interpolate_box_entry(lon1, lat1, lon2, lat2, box):
-    """
-    Find the parameter t (0-1) where the segment first enters the bounding box.
-    Returns interpolated (lon, lat) at entry, or None.
-    """
-    # If start is already inside, entry is at t=0
-    if box[0] <= lon1 <= box[2] and box[1] <= lat1 <= box[3]:
-        return lon1, lat1, 0.0
-
-    edges = [
-        (box[0], box[1], box[0], box[3]),
-        (box[2], box[1], box[2], box[3]),
-        (box[0], box[1], box[2], box[1]),
-        (box[0], box[3], box[2], box[3]),
-    ]
-    best_t, best_pt = 1.0, None
-    dx, dy = lon2 - lon1, lat2 - lat1
-    for ex1, ey1, ex2, ey2 in edges:
-        edx, edy = ex2 - ex1, ey2 - ey1
-        denom = dx * edy - dy * edx
-        if abs(denom) < 1e-12: continue
-        t = ((ex1 - lon1) * edy - (ey1 - lat1) * edx) / denom
-        u = ((ex1 - lon1) * dy  - (ey1 - lat1) * dx)  / denom
-        if 0 <= t <= 1 and 0 <= u <= 1 and t < best_t:
-            best_t = t
-            best_pt = (lon1 + t * dx, lat1 + t * dy)
-    return (*best_pt, best_t) if best_pt else None
-
-
-def inject_tss_waypoints(coords):
-    """
-    Splice TSS lane waypoints into the route at exact zone crossing points.
-
-    Algorithm:
-    1. Walk segments, detect first crossing into each TSS trigger box
-    2. Interpolate the exact entry point on the box boundary
-    3. Walk forward to find exit crossing, interpolate exit point
-    4. Replace all original waypoints between entry and exit with:
-       [entry_point] → [TSS_lane_WPs] → [exit_point]
-
-    This gives a clean splice with no zigzag — the TSS section is a
-    self-contained arc that connects smoothly to the pre/post route.
-    """
-    if len(coords) < 2:
-        return coords, []
-
-    overall_bearing = bearing_deg(coords[0][0], coords[0][1],
-                                  coords[-1][0], coords[-1][1])
-    result      = []
-    tss_applied = []
-    done_tss    = set()
-    i = 0
-
-    while i < len(coords) - 1:
-        lon1, lat1 = coords[i]
-        lon2, lat2 = coords[i + 1]
-
-        triggered = None
-        for tss_key, tss in TSS_ZONES.items():
-            if tss_key in done_tss:
-                continue
-            box = tss['trigger_box']
-            if segment_crosses_box(lon1, lat1, lon2, lat2, box):
-                triggered = (tss_key, tss)
-                break
-
-        if not triggered:
-            result.append([lon1, lat1])
-            i += 1
-            continue
-
-        tss_key, tss = triggered
-        box = tss['trigger_box']
-
-        # Find entry: interpolate where segment first touches the box
-        entry_info = interpolate_box_entry(lon1, lat1, lon2, lat2, box)
-        if entry_info is None:
-            # segment_crosses_box said yes but interpolation failed — skip safely
-            result.append([lon1, lat1])
-            i += 1
-            continue
-
-        entry_lon, entry_lat, entry_t = entry_info
-
-        # Determine lane based on bearing at entry
-        seg_bearing = bearing_deg(lon1, lat1, lon2, lat2)
-        lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
-        if not lane_wps:
-            result.append([lon1, lat1])
-            i += 1
-            continue
-
-        # Add the point before the TSS zone (the segment start, if not already at entry)
-        result.append([lon1, lat1])
-        # Add entry point only if it differs from the segment start
-        if entry_t > 0.001:
-            result.append([entry_lon, entry_lat])
-
-        # Skip forward through all original waypoints inside the box
-        j = i + 1
-        last_in_box = None
-        while j < len(coords):
-            lo, la = coords[j]
-            if box[0] <= lo <= box[2] and box[1] <= la <= box[3]:
-                last_in_box = j
-                j += 1
-            else:
-                break
-
-        # Find exit point — walk backwards from first point outside the box
-        exit_lon, exit_lat = None, None
-        if j < len(coords):
-            # coords[j] is the first point outside the box
-            # coords[j-1] is the last point inside (or the crossing segment start)
-            inside_pt = coords[j - 1]
-            outside_pt = coords[j]
-            ex_info = interpolate_box_entry(
-                outside_pt[0], outside_pt[1],
-                inside_pt[0],  inside_pt[1],
-                box
-            )
-            if ex_info:
-                exit_lon, exit_lat, _ = ex_info
-
-        # Insert TSS lane waypoints
-        for wp in lane_wps:
-            result.append([wp[0], wp[1]])
-
-        # Add exit point — where route rejoins original path
-        if exit_lon is not None:
-            result.append([exit_lon, exit_lat])
-
-        done_tss.add(tss_key)
-        tss_applied.append(tss['name'])
-        log.info('TSS spliced: %s (bearing %.0f°, entry=%.4f,%.4f t=%.2f, exit=%.4f,%.4f, skipped %d pts)',
-                 tss['name'], seg_bearing,
-                 entry_lon, entry_lat, entry_t,
-                 exit_lon or 0, exit_lat or 0,
-                 j - (i + 1))
-
-        # Continue from the first waypoint after the box
-        i = j
-
-    # Append final waypoint
-    if coords:
-        result.append([coords[-1][0], coords[-1][1]])
-
-    # Deduplicate consecutive near-identical points (< 0.3nm)
-    deduped = [result[0]]
-    for pt in result[1:]:
-        if haversine_km(deduped[-1][0], deduped[-1][1], pt[0], pt[1]) > 0.3 * 1.852:
-            deduped.append(pt)
-
-    return deduped, tss_applied
-
-
 # ── COPERNICUS WMTS PROXY ENDPOINTS ──────────────────────────────────────────
 
 @app.route("/api/cmems/tile")
@@ -1104,10 +968,8 @@ def route_map():
 @app.route("/api/tss-debug", methods=["POST"])
 def tss_debug():
     """
-    Analyse a route for TSS zone crossings without modifying the route.
-    Returns per-zone analysis: which segments cross, entry/exit coords, bearing, lane selected.
-    Use this to verify TSS coordinates are correct before enabling injection.
-
+    Analyse a route for TSS proximity matches without modifying the route.
+    Shows closest approach distance, selected lane, and splice indices per zone.
     Body: {"coords": [[lon, lat], ...]}
     """
     try:
@@ -1121,58 +983,77 @@ def tss_debug():
         findings = []
 
         for tss_key, tss in TSS_ZONES.items():
-            box = tss['trigger_box']
-            crossings = []
+            ref_lon, ref_lat = tss['reference']
+            trigger_nm       = tss['trigger_nm']
 
+            # Find segment of closest approach
+            min_dist_nm = float('inf')
+            closest_seg = -1
             for i in range(len(coords) - 1):
-                lon1, lat1 = coords[i]
-                lon2, lat2 = coords[i + 1]
-                if segment_crosses_box(lon1, lat1, lon2, lat2, box):
-                    seg_bearing = bearing_deg(lon1, lat1, lon2, lat2)
-                    lane_wps    = _select_tss_lane(tss, seg_bearing, overall_bearing)
-                    entry_info  = interpolate_box_entry(lon1, lat1, lon2, lat2, box)
-                    crossings.append({
-                        'segment_idx':  i,
-                        'seg_from':     [round(lon1, 5), round(lat1, 5)],
-                        'seg_to':       [round(lon2, 5), round(lat2, 5)],
-                        'seg_bearing':  round(seg_bearing, 1),
-                        'entry_point':  [round(entry_info[0], 5), round(entry_info[1], 5)]
-                                        if entry_info else None,
-                        'lane_selected': None,
-                        'lane_first_wp': lane_wps[0]  if lane_wps else None,
-                        'lane_last_wp':  lane_wps[-1] if lane_wps else None,
-                        'lane_wps':      lane_wps,
-                    })
-                    # Only report first crossing per zone
-                    break
+                d = _pt_to_seg_nm(ref_lon, ref_lat,
+                                  coords[i][0], coords[i][1],
+                                  coords[i+1][0], coords[i+1][1])
+                if d < min_dist_nm:
+                    min_dist_nm = d
+                    closest_seg = i
 
-            if crossings:
-                seg_b = crossings[0]['seg_bearing']
-                lane_wps = _select_tss_lane(tss, seg_b, overall_bearing)
-                crossings[0]['lane_selected'] = (
-                    'CORRECT — first WP is entry side, last WP is exit side'
-                    if lane_wps and len(lane_wps) >= 2 else 'NO LANE MATCHED'
+            triggered = min_dist_nm <= trigger_nm
+
+            finding = {
+                'tss':           tss_key,
+                'name':          tss['name'],
+                'reference':     [ref_lon, ref_lat],
+                'trigger_nm':    trigger_nm,
+                'closest_nm':    round(min_dist_nm, 1),
+                'triggered':     triggered,
+            }
+
+            if triggered:
+                seg_bearing = bearing_deg(
+                    coords[closest_seg][0], coords[closest_seg][1],
+                    coords[closest_seg+1][0], coords[closest_seg+1][1]
                 )
-                findings.append({
-                    'tss':        tss_key,
-                    'name':       tss['name'],
-                    'trigger_box': box,
-                    'triggered':  True,
-                    'crossings':  crossings,
-                })
-            else:
-                findings.append({
-                    'tss':       tss_key,
-                    'name':      tss['name'],
-                    'triggered': False,
+                lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
+
+                # Find entry/exit segment indices
+                entry_seg, exit_seg = closest_seg, closest_seg
+                if lane_wps:
+                    search_start = max(0, closest_seg - 30)
+                    search_end   = min(len(coords) - 1, closest_seg + 30)
+                    min_e, min_x = float('inf'), float('inf')
+                    for i in range(search_start, search_end):
+                        de = _pt_to_seg_nm(lane_wps[0][0], lane_wps[0][1],
+                                           coords[i][0], coords[i][1],
+                                           coords[i+1][0], coords[i+1][1])
+                        dx = _pt_to_seg_nm(lane_wps[-1][0], lane_wps[-1][1],
+                                           coords[i][0], coords[i][1],
+                                           coords[i+1][0], coords[i+1][1])
+                        if de < min_e: min_e, entry_seg = de, i
+                        if dx < min_x: min_x, exit_seg  = dx, i
+
+                finding.update({
+                    'closest_seg':   closest_seg,
+                    'seg_bearing':   round(seg_bearing, 1),
+                    'lane_selected': list(tss.keys() - {'name','reference','trigger_nm'})[0]
+                                     if not lane_wps else 'matched',
+                    'lane_first_wp': lane_wps[0]  if lane_wps else None,
+                    'lane_last_wp':  lane_wps[-1] if lane_wps else None,
+                    'lane_wp_count': len(lane_wps) if lane_wps else 0,
+                    'entry_seg':     entry_seg,
+                    'exit_seg':      exit_seg,
+                    'entry_wp':      [round(coords[entry_seg][0],4), round(coords[entry_seg][1],4)],
+                    'exit_wp':       [round(coords[exit_seg+1][0],4), round(coords[exit_seg+1][1],4)]
+                                     if exit_seg + 1 < len(coords) else None,
                 })
 
-        triggered = [f for f in findings if f['triggered']]
+            findings.append(finding)
+
+        triggered_list = [f for f in findings if f['triggered']]
         r = jsonify({
-            'overall_bearing':  round(overall_bearing, 1),
-            'total_tss_zones':  len(TSS_ZONES),
-            'zones_triggered':  len(triggered),
-            'findings':         findings,
+            'overall_bearing': round(overall_bearing, 1),
+            'total_tss_zones': len(TSS_ZONES),
+            'zones_triggered': len(triggered_list),
+            'findings':        findings,
         })
         r.headers['Access-Control-Allow-Origin'] = '*'
         return r
@@ -1186,9 +1067,12 @@ def tss_debug():
 
 @app.route("/api/tss-zones")
 def tss_zones_info():
-    zones = {k: {'name': v['name'], 'trigger_box': v['trigger_box'],
-                 'lanes': [key for key in v if key not in ('name','trigger_box')]}
-             for k, v in TSS_ZONES.items()}
+    zones = {k: {
+        'name':       v['name'],
+        'reference':  v['reference'],
+        'trigger_nm': v['trigger_nm'],
+        'lanes':      [key for key in v if key not in ('name','reference','trigger_nm')],
+    } for k, v in TSS_ZONES.items()}
     r = jsonify({'count': len(zones), 'zones': zones})
     r.headers['Access-Control-Allow-Origin'] = '*'
     return r
