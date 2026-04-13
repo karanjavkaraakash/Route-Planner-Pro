@@ -104,244 +104,227 @@ def cmems_tile_proxy(path, params):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # TRAFFIC SEPARATION SCHEMES (TSS)
-# Source: IMO Ships' Routeing, Edition 2023 + UKHO NP136
+# Source: IMO Ships Routeing (official PDF, boundary coords converted to centrelines)
 #
-# PROXIMITY-BASED DETECTION — no trigger boxes required.
-# Each TSS defines:
-#   reference  : [lon, lat] — midpoint of the strait (used for proximity check)
-#   trigger_nm : float — inject TSS if route passes within this many nm
-#   <direction>: [[lon,lat], ...] — lane waypoints in TRAVEL DIRECTION order
+# Lane waypoints = centrelines computed as midpoints of IMO boundary pairs:
+#   - separation zone centreline (from IMO boundary coordinates)
+#   - outer lane boundary (from IMO boundary coordinates)
+# Coordinates: decimal degrees, converted from degrees-minutes in IMO document.
 #
-# Algorithm (see inject_tss_waypoints):
-#   1. For each TSS, find the route segment of closest approach to `reference`
-#   2. If closest distance < trigger_nm → inject this TSS
-#   3. Find the route segment closest to lane[0] (entry) and lane[-1] (exit)
-#   4. Replace route[entry_seg_idx : exit_seg_idx+1] with lane waypoints
-#
-# This is self-calibrating — no box dimensions to tune per zone.
-# Works regardless of the angle or density of MARNET waypoints.
+# PROXIMITY-BASED DETECTION:
+#   reference  : [lon, lat] strait midpoint
+#   trigger_nm : inject if route passes within this many nm of reference
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TSS_ZONES = {
 
-    # ── Dover Strait / English Channel ───────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section I
+    # ── Dover Strait ──────────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/11
+    # NE lane: midpoint(outer S boundary pts 33-48, sep zone N side pts 1-13)
+    # SW lane: midpoint(outer N boundary pts 22-26, sep zone S side pts 1-13)
     'dover': {
-        'name': 'Dover Strait TSS',
-        'reference':   [0.52, 51.05],   # strait midpoint (Varne Bank)
-        'trigger_nm':  45,               # any route within 45nm of midpoint
-        # NE-bound (Atlantic→North Sea): SW lane, order SW→NE
+        'name':       'Dover Strait TSS',
+        'reference':  [1.20, 51.00],
+        'trigger_nm': 40,
+        # NE-bound (Atlantic->North Sea, SW->NE)
         'northeast': [
-            [-1.05, 50.88],  # off Beachy Head
-            [-0.28, 51.00],  # off Dungeness
-            [ 0.10, 51.05],  # off South Foreland
-            [ 0.52, 51.05],  # Varne Bank
-            [ 0.92, 51.05],  # mid-strait
-            [ 1.28, 51.07],  # off Cap Gris-Nez
-            [ 1.58, 51.10],  # South Falls / North Sea exit
+            [ 0.725, 50.613],  # entry W of Dungeness
+            [ 1.199, 50.696],  # approaching mid-strait
+            [ 1.508, 50.878],  # Varne Bank area
+            [ 1.662, 51.008],  # mid-strait
+            [ 1.744, 51.130],  # NE section
+            [ 1.913, 51.249],  # approaching North Sea
+            [ 2.094, 51.327],  # exit toward North Sea
         ],
-        # SW-bound (North Sea→Atlantic): NE lane, order NE→SW
+        # SW-bound (North Sea->Atlantic, NE->SW)
         'southwest': [
-            [ 2.05, 51.22],  # West Hinder
-            [ 1.60, 51.20],  # North Goodwin
-            [ 1.30, 51.18],  # off Cap Gris-Nez
-            [ 0.92, 51.18],  # mid-strait NE lane
-            [ 0.52, 51.15],  # Colbart
-            [ 0.05, 51.18],  # off South Foreland
-            [-0.28, 51.22],  # off Dungeness
-            [-1.12, 50.92],  # off Beachy Head exit
+            [ 2.059, 51.487],  # entry from NE
+            [ 1.946, 51.405],
+            [ 1.861, 51.309],
+            [ 1.577, 51.108],
+            [ 1.220, 50.912],  # exit toward Atlantic
         ],
     },
 
     # ── Strait of Gibraltar ───────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section II
+    # IMO Ships Routeing Part B, Section III/1
+    # Sep zone centred pts 1-3; WB outer pts 4-6; EB outer pts 7-9
     'gibraltar': {
         'name':       'Strait of Gibraltar TSS',
-        'reference':  [-5.45, 35.92],
-        'trigger_nm': 35,
-        # Eastbound (Atlantic→Med): northern lane, W→E
-        'east': [
-            [-6.05, 36.02],
-            [-5.82, 35.98],
-            [-5.52, 35.90],
-            [-5.28, 35.88],
-            [-5.02, 35.88],
-            [-4.85, 35.90],
-        ],
-        # Westbound (Med→Atlantic): southern lane, E→W
-        'west': [
-            [-4.88, 35.80],
-            [-5.12, 35.78],
-            [-5.42, 35.80],
-            [-5.68, 35.82],
-            [-5.90, 35.88],
-            [-6.08, 35.95],
-        ],
-    },
-
-    # ── Singapore Strait ─────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section XIII
-    'singapore': {
-        'name':       'Singapore Strait TSS',
-        'reference':  [103.87, 1.20],
+        'reference':  [-5.59, 35.96],
         'trigger_nm': 30,
-        # Eastbound: deep-water lane, W→E
+        # Eastbound (Atlantic->Med, W->E): midpoint(sep_zone, EB outer S boundary)
         'east': [
-            [103.58, 1.20],
-            [103.72, 1.22],
-            [103.87, 1.25],
-            [104.00, 1.25],
-            [104.12, 1.22],
-            [104.28, 1.20],
+            [-5.748, 35.907],  # W entry
+            [-5.607, 35.918],  # mid
+            [-5.427, 35.967],  # E exit
         ],
-        # Westbound: main lane, E→W
+        # Westbound (Med->Atlantic, E->W): midpoint(sep_zone, WB outer N boundary)
         'west': [
-            [104.25, 1.15],
-            [104.10, 1.17],
-            [103.97, 1.18],
-            [103.83, 1.17],
-            [103.70, 1.15],
-            [103.57, 1.12],
+            [-5.427, 36.003],  # E entry
+            [-5.607, 35.957],  # mid
+            [-5.748, 35.957],  # W exit
         ],
     },
 
-    # ── Strait of Malacca ────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section XIII
-    'malacca': {
-        'name':       'Strait of Malacca TSS',
-        'reference':  [101.35, 3.82],   # mid-strait
-        'trigger_nm': 60,
-        # NW-bound (Singapore→Andaman): SE lane, SE→NW
-        'northwest': [
-            [103.48, 1.38],
-            [103.18, 1.68],
-            [102.82, 2.12],
-            [102.38, 2.60],
-            [101.88, 3.12],
-            [101.32, 3.82],
-            [100.78, 4.52],
-            [100.28, 5.18],
-            [ 99.78, 5.82],
-            [ 99.28, 6.22],
-            [ 98.88, 6.52],
-        ],
-        # SE-bound (Andaman→Singapore): NW lane, NW→SE
-        'southeast': [
-            [ 98.92, 6.38],
-            [ 99.32, 6.08],
-            [ 99.82, 5.68],
-            [100.32, 5.02],
-            [100.85, 4.38],
-            [101.38, 3.68],
-            [101.92, 2.98],
-            [102.42, 2.48],
-            [102.88, 2.00],
-            [103.22, 1.58],
-            [103.50, 1.28],
-        ],
-    },
-
-    # ── Strait of Hormuz ─────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section IX
-    'hormuz': {
-        'name':       'Strait of Hormuz TSS',
-        'reference':  [56.82, 26.05],
-        'trigger_nm': 30,
-        # NW-bound (into Persian Gulf): N lane, SE→NW
-        'northwest': [
-            [57.28, 25.72],
-            [57.08, 25.88],
-            [56.82, 26.08],
-            [56.58, 26.25],
-            [56.40, 26.38],
-        ],
-        # SE-bound (into Gulf of Oman): S lane, NW→SE
-        'southeast': [
-            [56.38, 26.28],
-            [56.60, 26.12],
-            [56.82, 25.95],
-            [57.06, 25.78],
-            [57.26, 25.63],
-        ],
-    },
-
-    # ── Bab-el-Mandeb ────────────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section X
+    # ── Bab el Mandeb ─────────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section IV/1
+    # Sep zone pts 1-6; SB outer pts 7-9; NB outer pts 10-12
     'babelmandab': {
         'name':       'Bab-el-Mandeb TSS',
-        'reference':  [43.48, 12.35],
+        'reference':  [43.35, 12.63],
         'trigger_nm': 25,
-        # N-bound (into Red Sea): E lane, S→N
+        # Northbound (Gulf of Aden->Red Sea, S->N)
+        # midpoint(sep_zone E side, NB outer E boundary)
         'north': [
-            [43.45, 11.78],
-            [43.42, 12.18],
-            [43.40, 12.52],
-            [43.43, 12.88],
+            [43.234, 12.933],  # S entry (narrow end)
+            [43.354, 12.628],  # mid
+            [43.474, 12.560],  # N exit
         ],
-        # S-bound (into Gulf of Aden): W lane, N→S
+        # Southbound (Red Sea->Gulf of Aden, N->S)
+        # midpoint(sep_zone W side, SB outer W boundary)
         'south': [
-            [43.57, 12.82],
-            [43.54, 12.48],
-            [43.55, 12.12],
-            [43.58, 11.82],
+            [43.202, 12.921],  # N entry
+            [43.327, 12.605],  # mid
+            [43.457, 12.532],  # S exit
         ],
     },
 
-    # ── Off Cape Finisterre ──────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section VI
-    'finisterre': {
-        'name':       'Off Finisterre TSS',
-        'reference':  [-9.58, 43.30],
-        'trigger_nm': 40,
-        # N-bound: offshore lane, S→N
-        'north': [
-            [-9.48, 42.22],
-            [-9.63, 42.82],
-            [-9.68, 43.32],
-            [-9.58, 43.82],
-            [-9.38, 44.18],
+    # ── Strait of Hormuz ──────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section IV/3
+    # Sep zone pts 1-8; EB outer pts 9-12; WB outer pts 13-16
+    'hormuz': {
+        'name':       'Strait of Hormuz TSS',
+        'reference':  [56.51, 26.56],
+        'trigger_nm': 30,
+        # Southeast-bound (out of Persian Gulf, NW->SE)
+        # midpoint(sep_zone S side, EB outer S boundary)
+        'southeast': [
+            [56.369, 26.542],  # NW entry
+            [56.428, 26.538],
+            [56.456, 26.538],
+            [56.626, 26.477],  # SE exit
         ],
-        # S-bound: offshore lane, N→S
-        'south': [
-            [-9.33, 44.12],
-            [-9.53, 43.78],
-            [-9.63, 43.28],
-            [-9.58, 42.78],
-            [-9.43, 42.18],
+        # Northwest-bound (into Persian Gulf, SE->NW)
+        # midpoint(sep_zone N side, WB outer N boundary)
+        'northwest': [
+            [56.673, 26.503],  # SE entry
+            [56.592, 26.625],
+            [56.465, 26.625],
+            [56.343, 26.596],  # NW exit
         ],
     },
 
-    # ── Off Ushant (Ouessant) ────────────────────────────────────────────────
-    # IMO Ships' Routeing Part B, Section IV
+    # ── Singapore Strait ──────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section V/3
+    # Sep zone pts 1-19; WB outer (N) pts 20-29; EB outer (S) pts 30-38
+    'singapore': {
+        'name':       'Singapore Strait TSS',
+        'reference':  [103.73, 1.20],
+        'trigger_nm': 30,
+        # Eastbound (W->E): midpoint(sep_zone S side, EB outer S boundary)
+        'east': [
+            [103.199, 1.381],  # W entry
+            [103.469, 1.184],
+            [103.727, 1.104],  # south of Singapore
+            [103.839, 1.179],
+            [104.058, 1.243],  # E exit
+        ],
+        # Westbound (E->W): midpoint(sep_zone N side, WB outer N boundary)
+        'west': [
+            [104.055, 1.265],  # E entry
+            [103.860, 1.200],
+            [103.733, 1.135],  # south of Singapore
+            [103.529, 1.206],
+            [103.232, 1.410],  # W exit
+        ],
+    },
+
+    # ── Strait of Malacca ─────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section V (series of sub-schemes)
+    # Centreline follows the deep-water route corridor
+    'malacca': {
+        'name':       'Strait of Malacca TSS',
+        'reference':  [101.35, 3.50],
+        'trigger_nm': 60,
+        # NW-bound (Singapore->Andaman Sea, SE->NW)
+        'northwest': [
+            [103.500, 1.350],
+            [103.000, 1.750],
+            [102.500, 2.300],
+            [102.000, 2.950],
+            [101.350, 3.500],
+            [100.750, 4.300],
+            [100.200, 5.100],
+            [ 99.750, 5.850],
+            [ 99.200, 6.300],
+            [ 98.900, 6.500],
+        ],
+        # SE-bound (Andaman Sea->Singapore, NW->SE)
+        'southeast': [
+            [ 98.900, 6.450],
+            [ 99.250, 6.150],
+            [ 99.800, 5.700],
+            [100.250, 5.050],
+            [100.800, 4.250],
+            [101.400, 3.450],
+            [102.050, 2.900],
+            [102.550, 2.250],
+            [103.050, 1.700],
+            [103.500, 1.300],
+        ],
+    },
+
+    # ── Off Ushant (Ouessant) ─────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/4
+    # Sep zone A (inshore) centred pts 1-3; Sep zone B (offshore) centred pts 4-6
     'ushant': {
         'name':       'Off Ushant (Ouessant) TSS',
-        'reference':  [-5.35, 48.28],
+        'reference':  [-5.42, 48.60],
         'trigger_nm': 35,
-        # NE-bound (toward Channel): S lane, SW→NE
+        # NE-bound (toward Channel, SW->NE): inshore lane, ~2nm SE of zone A
         'northeast': [
-            [-5.78, 47.82],
-            [-5.48, 48.17],
-            [-5.18, 48.42],
-            [-4.98, 48.67],
-            [-4.87, 48.87],
+            [-5.412, 48.476],
+            [-5.337, 48.570],
+            [-5.203, 48.642],
         ],
-        # SW-bound (toward Atlantic): N lane, NE→SW
+        # SW-bound (toward Atlantic, NE->SW): midpoint(zone A, zone B)
         'southwest': [
-            [-4.92, 48.77],
-            [-5.12, 48.57],
-            [-5.37, 48.32],
-            [-5.62, 48.02],
-            [-5.87, 47.72],
+            [-5.328, 48.739],
+            [-5.484, 48.655],
+            [-5.575, 48.542],
         ],
     },
 
-    # ── German Bight ─────────────────────────────────────────────────────────
+    # ── Off Cape Finisterre ───────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/7
+    # Sep zone A pts 1-6; Sep zone B pts 7-12; SB outer pts 13-15
+    'finisterre': {
+        'name':       'Off Finisterre TSS',
+        'reference':  [-9.81, 43.13],
+        'trigger_nm': 35,
+        # Northbound: midpoint(sep zone A, sep zone B), S->N
+        'north': [
+            [-9.806, 42.882],
+            [-9.806, 43.198],
+            [-9.679, 43.377],
+        ],
+        # Southbound: midpoint(sep zone B, outer), N->S
+        'south': [
+            [-9.795, 43.420],
+            [-9.926, 43.230],
+            [-9.926, 42.882],
+        ],
+    },
+
+    # ── German Bight ──────────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II (Terschelling-German Bight)
     'german_bight': {
         'name':       'German Bight TSS',
         'reference':  [8.12, 54.55],
         'trigger_nm': 35,
-        # NE-bound: S→N
         'northeast': [
             [7.52, 53.82],
             [7.82, 54.22],
@@ -349,7 +332,6 @@ TSS_ZONES = {
             [8.37, 54.92],
             [8.47, 55.22],
         ],
-        # SW-bound: N→S
         'southwest': [
             [8.42, 55.17],
             [8.27, 54.85],
@@ -359,6 +341,8 @@ TSS_ZONES = {
         ],
     },
 }
+
+
 
 
 # ── TSS helper: distance from point to segment (nautical miles) ───────────────
@@ -427,20 +411,16 @@ def inject_tss_waypoints(coords):
     Proximity-based TSS injection.
 
     For each TSS zone:
-      1. Find the route segment of closest approach to the TSS reference point
-      2. If distance < trigger_nm → this TSS applies
-      3. Determine correct lane from bearing at closest segment
-      4. Find the range of original segments to REPLACE:
-           - Scan backwards from closest_seg to find where the lane entry WP
-             is "behind" us (i.e. where the route first comes within 2× the
-             lane span of the entry point) — this is entry_seg
-           - Scan forwards to find where the route passes the lane exit WP —
-             this is exit_seg
-      5. Replace coords[entry_seg : exit_seg+2] with lane waypoints
+      1. Find closest approach to reference point. If > trigger_nm, skip.
+      2. Select lane from bearing at closest segment.
+      3. Remove all original coords within a removal_nm radius of the reference.
+         These are the coords "inside" the strait that the lane replaces.
+      4. Insert the lane waypoints at that position.
 
-    KEY INSIGHT: entry_seg and exit_seg are found by scanning outward from
-    closest_seg, not by independent proximity searches. This guarantees
-    entry_seg < closest_seg <= exit_seg and prevents out-of-order splices.
+    This is the simplest correct approach:
+    - No entry/exit segment hunting (which caused backward steps)
+    - No box intersections (which had null entry points)
+    - Just: find the strait coords, remove them, insert correct lane
     """
     if len(coords) < 2:
         return coords, []
@@ -448,13 +428,16 @@ def inject_tss_waypoints(coords):
     overall_bearing = bearing_deg(coords[0][0], coords[0][1],
                                   coords[-1][0], coords[-1][1])
     tss_applied = []
-    splices = []
+    splices = []  # (first_remove_idx, last_remove_idx, lane_wps, name)
 
     for tss_key, tss in TSS_ZONES.items():
         ref_lon, ref_lat = tss['reference']
         trigger_nm       = tss['trigger_nm']
+        # Removal radius: coords within this distance of reference get replaced
+        # Use 60% of trigger_nm so we don't remove too aggressively
+        removal_nm = trigger_nm * 0.6
 
-        # Step 1: find segment of closest approach to reference point
+        # Step 1: find segment of closest approach
         min_dist_nm = float('inf')
         closest_seg = -1
         for i in range(len(coords) - 1):
@@ -468,82 +451,58 @@ def inject_tss_waypoints(coords):
         if min_dist_nm > trigger_nm:
             continue
 
-        # Step 2: select lane from bearing at closest segment
+        # Step 2: lane selection
         seg_bearing = bearing_deg(coords[closest_seg][0], coords[closest_seg][1],
                                   coords[closest_seg+1][0], coords[closest_seg+1][1])
         lane_wps = _select_tss_lane(tss, seg_bearing, overall_bearing)
         if not lane_wps or len(lane_wps) < 2:
             continue
 
-        # Step 3: find entry_seg — scan BACKWARDS from closest_seg
-        # Stop when the route point is further from lane[0] than the closest point
-        # is, i.e. we've gone back past where the approach to the lane starts.
-        entry_lon, entry_lat = lane_wps[0]
-        exit_lon,  exit_lat  = lane_wps[-1]
+        # Step 3: find all coord indices within removal_nm of reference
+        # These are the original MARNET waypoints that sit inside the strait
+        in_zone = [i for i in range(len(coords))
+                   if haversine_km(coords[i][0], coords[i][1],
+                                   ref_lon, ref_lat) / 1.852 <= removal_nm]
 
-        # Distance from each coord to the lane entry/exit points
-        # entry_seg = last coord index where dist_to_entry is still decreasing
-        #             scanning backwards from closest_seg
-        entry_seg = closest_seg
-        prev_d = _pt_to_seg_nm(entry_lon, entry_lat,
-                                coords[closest_seg][0], coords[closest_seg][1],
-                                coords[closest_seg][0], coords[closest_seg][1])
-        for i in range(closest_seg - 1, max(-1, closest_seg - 40), -1):
-            d = haversine_km(coords[i][0], coords[i][1], entry_lon, entry_lat) / 1.852
-            if d < prev_d:
-                prev_d    = d
-                entry_seg = i
-            else:
-                break  # distance is increasing — we've passed the approach point
+        if not in_zone:
+            # No coords inside removal zone — use closest_seg as the insertion point
+            first_remove = closest_seg + 1
+            last_remove  = closest_seg
+        else:
+            first_remove = in_zone[0]
+            last_remove  = in_zone[-1]
 
-        # exit_seg = first coord index where dist_to_exit is still decreasing
-        #            scanning forwards from closest_seg
-        exit_seg = closest_seg
-        prev_d = _pt_to_seg_nm(exit_lon, exit_lat,
-                                coords[closest_seg][0], coords[closest_seg][1],
-                                coords[closest_seg][0], coords[closest_seg][1])
-        for i in range(closest_seg + 1, min(len(coords), closest_seg + 40)):
-            d = haversine_km(coords[i][0], coords[i][1], exit_lon, exit_lat) / 1.852
-            if d < prev_d:
-                prev_d   = d
-                exit_seg = i
-            else:
-                break
-
-        # Safety: ensure entry < exit, both within route bounds
-        entry_seg = max(0, min(entry_seg, closest_seg))
-        exit_seg  = max(closest_seg, min(exit_seg, len(coords) - 1))
-
-        splices.append((entry_seg, exit_seg, lane_wps, tss['name'],
+        splices.append((first_remove, last_remove, lane_wps, tss['name'],
                         min_dist_nm, seg_bearing))
-        log.info('TSS: %s dist=%.1fnm brg=%.0f° splice [%d:%d] (closest=%d)',
-                 tss['name'], min_dist_nm, seg_bearing, entry_seg, exit_seg, closest_seg)
+        log.info('TSS: %s dist=%.1fnm brg=%.0f° remove coords[%d:%d] (%d pts)',
+                 tss['name'], min_dist_nm, seg_bearing,
+                 first_remove, last_remove, last_remove - first_remove + 1)
 
     if not splices:
         return coords, []
 
-    # Sort by entry index — process in route order, handle overlaps
+    # Sort by first_remove index
     splices.sort(key=lambda s: s[0])
 
     result   = []
     prev_idx = 0
 
-    for entry_seg, exit_seg, lane_wps, tss_name, dist_nm, bearing in splices:
-        if entry_seg < prev_idx:
-            entry_seg = prev_idx  # don't go backwards if splices overlap
+    for first_remove, last_remove, lane_wps, tss_name, dist_nm, bearing in splices:
+        if first_remove < prev_idx:
+            first_remove = prev_idx
 
-        # Emit original route up to entry point
-        for k in range(prev_idx, entry_seg + 1):
+        # Keep original route up to (not including) the removal zone
+        for k in range(prev_idx, first_remove):
             result.append([coords[k][0], coords[k][1]])
 
-        # Insert TSS lane waypoints
+        # Insert TSS lane
         for wp in lane_wps:
             result.append([wp[0], wp[1]])
 
         tss_applied.append(tss_name)
-        prev_idx = exit_seg + 1
+        prev_idx = last_remove + 1
 
-    # Emit remainder of original route
+    # Remainder
     for k in range(prev_idx, len(coords)):
         result.append([coords[k][0], coords[k][1]])
 
