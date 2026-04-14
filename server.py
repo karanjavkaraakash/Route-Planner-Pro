@@ -633,22 +633,25 @@ def inject_tss_waypoints(coords):
             else:
                 break
 
-        # Step 5: smart exit clipping — stop at WP closest to destination
-        # if continuing the lane would take us away from destination
+        # Step 5: smart exit clipping — only applies when destination is
+        # within 50nm of the lane exit (i.e. vessel is arriving, not transiting).
+        # If destination is further than 50nm, use the full lane — the vessel
+        # is transiting the strait and will turn toward its destination after.
         dist_to_last = haversine_km(lane_wps[-1][0], lane_wps[-1][1],
                                     dest_lon, dest_lat) / 1.852
         exit_idx = len(lane_wps) - 1
-        for j in range(len(lane_wps) - 1):
-            d = haversine_km(lane_wps[j][0], lane_wps[j][1],
-                             dest_lon, dest_lat) / 1.852
-            if d < dist_to_last:
-                next_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
-                                       lane_wps[j+1][0], lane_wps[j+1][1])
-                dest_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
-                                       dest_lon, dest_lat)
-                if abs((dest_brg - next_brg + 180) % 360 - 180) > 60:
-                    exit_idx = j
-                    break
+        if dist_to_last <= 50:
+            for j in range(len(lane_wps) - 1):
+                d = haversine_km(lane_wps[j][0], lane_wps[j][1],
+                                 dest_lon, dest_lat) / 1.852
+                if d < dist_to_last:
+                    next_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
+                                           lane_wps[j+1][0], lane_wps[j+1][1])
+                    dest_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
+                                           dest_lon, dest_lat)
+                    if abs((dest_brg - next_brg + 180) % 360 - 180) > 60:
+                        exit_idx = j
+                        break
 
         lane_wps = lane_wps[:exit_idx + 1]
 
