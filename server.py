@@ -150,8 +150,8 @@ TSS_ZONES = {
     # ── Strait of Gibraltar ───────────────────────────────────────────────────
     'gibraltar': {
         'name':       'Strait of Gibraltar TSS',
-        'reference':  [-5.50, 36.00],
-        'trigger_nm': 35,
+        'reference':  [-5.00, 36.00],  # moved E to widen removal zone
+        'trigger_nm': 50,              # removal_nm = 30nm, catches [-4.700,36.000]
         # Eastbound (Atlantic->Med, W->E) — verified via OpenSeaMap
         'east': [
             [-6.9351, 35.8735],
