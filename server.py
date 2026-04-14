@@ -150,8 +150,8 @@ TSS_ZONES = {
     # ── Strait of Gibraltar ───────────────────────────────────────────────────
     'gibraltar': {
         'name':       'Strait of Gibraltar TSS',
-        'reference':  [-5.60, 35.95],
-        'trigger_nm': 30,
+        'reference':  [-5.50, 36.00],  # shifted N — MARNET routes at lat ~36.0
+        'trigger_nm': 35,              # widened to ensure capture
         # Eastbound (Atlantic->Med, W->E)
         'east': [
             [-6.2567, 35.8974],
@@ -349,6 +349,97 @@ TSS_ZONES = {
             [7.5092, 53.9968],
         ],
     },
+
+    # ── Red Sea N of Bab el Mandeb ────────────────────────────────────────────
+    # Verified via OpenSeaMap. TSS just north of Bab el Mandeb exit.
+    'bab_extension': {
+        'name':       'Red Sea N of Bab el Mandeb TSS',
+        'reference':  [42.630, 13.550],
+        'trigger_nm': 20,
+        # Northbound (S->N, into Red Sea)
+        'north': [
+            [42.7639, 13.4873],
+            [42.6637, 13.5544],
+            [42.5854, 13.7009],
+        ],
+        # Southbound (N->S, into Gulf of Aden)
+        'south': [
+            [42.4968, 13.6692],
+            [42.5799, 13.5104],
+            [42.7291, 13.4022],
+        ],
+    },
+
+    # ── Off Cape Roca (Portugal) ──────────────────────────────────────────────
+    # Verified via OpenSeaMap.
+    'cape_roca': {
+        'name':       'Off Cape Roca TSS',
+        'reference':  [-9.985, 38.747],
+        'trigger_nm': 25,
+        # Northbound (S->N)
+        'north': [
+            [-9.8142, 38.5958],
+            [-9.8643, 38.7164],
+            [-9.8568, 38.8977],
+        ],
+        # Southbound (N->S)
+        'south': [
+            [-10.1164, 38.8972],
+            [-10.1129, 38.7223],
+            [-10.0628, 38.5673],
+        ],
+    },
+
+    # ── Gulf of Suez ──────────────────────────────────────────────────────────
+    # Verified via OpenSeaMap. Decimated from 94/113 pts to 17/20 using RDP.
+    'gulf_of_suez': {
+        'name':       'Gulf of Suez TSS',
+        'reference':  [32.493, 30.315],
+        'trigger_nm': 45,
+        # Northbound (S->N, toward Suez Canal): E lane
+        'north': [
+            [34.1553, 27.5255],
+            [33.9280, 27.6788],
+            [33.3552, 28.1725],
+            [33.0513, 28.6094],
+            [32.5760, 29.5783],
+            [32.5453, 29.9044],
+            [32.5863, 29.9685],
+            [32.5663, 30.2006],
+            [32.3736, 30.3617],
+            [32.3042, 30.5659],
+            [32.3439, 30.7079],
+            [32.3091, 31.0964],
+            [32.4117, 31.4587],
+            [32.2293, 31.5402],
+            [31.9833, 31.7470],
+            [31.7958, 31.6425],
+            [31.6798, 31.7852],
+        ],
+        # Southbound (N->S, out of Suez): W lane
+        'south': [
+            [31.6633, 31.7728],
+            [31.7877, 31.6347],
+            [31.9714, 31.7340],
+            [32.2888, 31.4464],
+            [32.3571, 31.4180],
+            [32.3676, 31.3219],
+            [32.3050, 31.2440],
+            [32.3151, 30.7922],
+            [32.3436, 30.7078],
+            [32.3036, 30.5670],
+            [32.3749, 30.3518],
+            [32.5666, 30.1975],
+            [32.5861, 29.9764],
+            [32.5449, 29.9103],
+            [32.5175, 29.6251],
+            [32.7211, 29.1586],
+            [32.8749, 28.8175],
+            [33.3175, 28.1465],
+            [33.6786, 27.8653],
+            [34.0906, 27.4807],
+        ],
+    },
 }
 
 
@@ -419,36 +510,31 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
 
 def inject_tss_waypoints(coords):
     """
-    Proximity-based TSS injection with smart exit.
+    Proximity-based TSS injection with clean entry/exit.
 
-    For each TSS zone:
-      1. Find closest approach to reference. If > trigger_nm, skip.
-      2. Select correct lane from bearing.
-      3. Remove original coords within removal_nm of reference.
-      4. Clip the lane waypoints to only those needed:
-           - Entry side: include from start of lane
-           - Exit side: stop at the lane waypoint closest to the destination
-             (handles mid-lane exits like Rotterdam inside Dover TSS)
-      5. Insert clipped lane.
-
-    The exit clipping means vessels naturally exit the TSS at the waypoint
-    closest to their destination, rather than sailing to the end of the lane
-    and then backtracking.
+    Core algorithm:
+    1. Find closest approach to TSS reference. If > trigger_nm, skip.
+    2. Select correct lane from bearing.
+    3. Remove original coords within removal_nm of reference.
+    4. ALSO remove any remaining MARNET coords that would create a
+       backward step relative to the lane entry/exit direction.
+    5. Apply smart exit clipping (stop at WP closest to destination
+       if lane diverges >60° from destination bearing).
     """
     if len(coords) < 2:
         return coords, []
 
-    dest_lon, dest_lat = coords[-1]
-    overall_bearing = bearing_deg(coords[0][0], coords[0][1], dest_lon, dest_lat)
-    tss_applied = []
-    splices = []
+    dest_lon, dest_lat   = coords[-1]
+    overall_bearing      = bearing_deg(coords[0][0], coords[0][1], dest_lon, dest_lat)
+    tss_applied          = []
+    splices              = []
 
     for tss_key, tss in TSS_ZONES.items():
         ref_lon, ref_lat = tss['reference']
         trigger_nm       = tss['trigger_nm']
         removal_nm       = trigger_nm * 0.6
 
-        # Step 1: closest approach to reference
+        # Step 1: closest approach
         min_dist_nm = float('inf')
         closest_seg = -1
         for i in range(len(coords) - 1):
@@ -469,10 +555,11 @@ def inject_tss_waypoints(coords):
         if len(lane_wps) < 2:
             continue
 
-        # Step 3: find coords to remove
+        # Step 3: removal zone — all coords within removal_nm of reference
         in_zone = [i for i in range(len(coords))
                    if haversine_km(coords[i][0], coords[i][1],
                                    ref_lon, ref_lat) / 1.852 <= removal_nm]
+
         if not in_zone:
             first_remove = closest_seg + 1
             last_remove  = closest_seg
@@ -480,27 +567,49 @@ def inject_tss_waypoints(coords):
             first_remove = in_zone[0]
             last_remove  = in_zone[-1]
 
-        # Step 4: smart exit clipping
-        # Find the lane waypoint closest to the destination.
-        # If destination is closer to an intermediate WP than the last WP,
-        # clip the lane there — vessel exits TSS at that point.
+        # Step 4: extend removal to catch MARNET stragglers
+        # After the removal zone, check if the next MARNET coord would create
+        # a backward step relative to the lane exit bearing.
+        # "Backward" = bearing toward that coord differs from lane exit by >90°
+        lane_exit_brg = bearing_deg(lane_wps[-2][0], lane_wps[-2][1],
+                                    lane_wps[-1][0], lane_wps[-1][1])
+        while last_remove + 1 < len(coords) - 1:
+            nxt = coords[last_remove + 1]
+            brg_to_nxt = bearing_deg(lane_wps[-1][0], lane_wps[-1][1],
+                                     nxt[0], nxt[1])
+            angle_diff = abs((brg_to_nxt - lane_exit_brg + 180) % 360 - 180)
+            if angle_diff > 90:
+                last_remove += 1  # this coord is behind us — remove it
+            else:
+                break
+
+        # Similarly, extend first_remove backward to catch stragglers before entry
+        lane_entry_brg = bearing_deg(lane_wps[0][0], lane_wps[0][1],
+                                     lane_wps[1][0], lane_wps[1][1])
+        while first_remove > 0:
+            prev = coords[first_remove - 1]
+            brg_from_prev = bearing_deg(prev[0], prev[1],
+                                        lane_wps[0][0], lane_wps[0][1])
+            angle_diff = abs((brg_from_prev - lane_entry_brg + 180) % 360 - 180)
+            if angle_diff > 90:
+                first_remove -= 1  # this coord is behind the lane entry — remove it
+            else:
+                break
+
+        # Step 5: smart exit clipping — stop at WP closest to destination
+        # if continuing the lane would take us away from destination
         dist_to_last = haversine_km(lane_wps[-1][0], lane_wps[-1][1],
                                     dest_lon, dest_lat) / 1.852
-        exit_idx = len(lane_wps) - 1  # default: use all lane WPs
+        exit_idx = len(lane_wps) - 1
         for j in range(len(lane_wps) - 1):
             d = haversine_km(lane_wps[j][0], lane_wps[j][1],
                              dest_lon, dest_lat) / 1.852
             if d < dist_to_last:
-                # This waypoint is closer to destination than the last —
-                # but only exit early if destination is clearly "off to the side"
-                # i.e. the lane is taking us away from the destination
-                next_bearing = bearing_deg(lane_wps[j][0], lane_wps[j][1],
-                                           lane_wps[j+1][0], lane_wps[j+1][1])
-                dest_bearing = bearing_deg(lane_wps[j][0], lane_wps[j][1],
-                                           dest_lon, dest_lat)
-                angle_diff   = abs((dest_bearing - next_bearing + 180) % 360 - 180)
-                if angle_diff > 60:
-                    # Lane turns more than 60° away from destination — exit here
+                next_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
+                                       lane_wps[j+1][0], lane_wps[j+1][1])
+                dest_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
+                                       dest_lon, dest_lat)
+                if abs((dest_brg - next_brg + 180) % 360 - 180) > 60:
                     exit_idx = j
                     break
 
@@ -508,7 +617,7 @@ def inject_tss_waypoints(coords):
 
         splices.append((first_remove, last_remove, lane_wps, tss['name'],
                         min_dist_nm, seg_bearing))
-        log.info('TSS: %s dist=%.1fnm brg=%.0f° remove[%d:%d] lane_wps=%d exit_idx=%d',
+        log.info('TSS: %s dist=%.1fnm brg=%.0f° remove[%d:%d] lane=%d exit=%d',
                  tss['name'], min_dist_nm, seg_bearing,
                  first_remove, last_remove, len(lane_wps), exit_idx)
 
