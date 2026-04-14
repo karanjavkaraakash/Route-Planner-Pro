@@ -150,24 +150,64 @@ TSS_ZONES = {
     # ── Strait of Gibraltar ───────────────────────────────────────────────────
     'gibraltar': {
         'name':       'Strait of Gibraltar TSS',
-        'reference':  [-5.50, 36.00],  # shifted N — MARNET routes at lat ~36.0
-        'trigger_nm': 35,              # widened to ensure capture
-        # Eastbound (Atlantic->Med, W->E)
+        'reference':  [-5.50, 36.00],
+        'trigger_nm': 35,
+        # Eastbound (Atlantic->Med, W->E) — verified via OpenSeaMap
         'east': [
-            [-6.2567, 35.8974],
-            [-5.7623, 35.9019],
-            [-5.6250, 35.9108],
-            [-5.4547, 35.9575],
-            [-5.2597, 36.0020],
+            [-6.7291, 35.8890],
+            [-6.1510, 35.8890],
+            [-5.6126, 35.9146],
+            [-5.0414, 36.0535],
         ],
-        # Westbound (Med->Atlantic, E->W)
+        # Westbound (Med->Atlantic, E->W) — verified via OpenSeaMap
         'west': [
-            [-5.3098, 36.0362],
-            [-5.4739, 35.9912],
-            [-5.6058, 35.9595],
-            [-5.7472, 35.9579],
-            [-6.1009, 35.9523],
-            [-6.2320, 35.9556],
+            [-5.0400, 36.1290],
+            [-5.4382, 36.0036],
+            [-5.6058, 35.9591],
+            [-6.1496, 35.9547],
+            [-6.7209, 35.9558],
+        ],
+    },
+
+    # ── Off Casquets ──────────────────────────────────────────────────────────
+    # English Channel approaches W of Cherbourg — verified via OpenSeaMap
+    'casquets': {
+        'name':       'Off Casquets TSS',
+        'reference':  [-2.651, 49.950],
+        'trigger_nm': 25,
+        # NE-bound (toward Dover, W->E)
+        'northeast': [
+            [-3.1998, 49.7617],
+            [-2.6010, 49.8681],
+            [-1.9061, 49.9830],
+        ],
+        # SW-bound (toward Atlantic, E->W)
+        'southwest': [
+            [-1.9336, 50.1452],
+            [-2.6724, 50.0289],
+            [-3.3728, 49.9123],
+        ],
+    },
+
+    # ── Off Cape S. Vicente ───────────────────────────────────────────────────
+    # SW Portugal — verified via OpenSeaMap
+    'cape_st_vicente': {
+        'name':       'Off Cape S. Vicente TSS',
+        'reference':  [-9.073, 36.923],
+        'trigger_nm': 25,
+        # Northbound (S->N)
+        'north': [
+            [-8.7671, 36.5869],
+            [-9.2107, 36.6794],
+            [-9.3933, 36.8412],
+            [-9.4798, 37.1428],
+        ],
+        # Southbound (N->S)
+        'south': [
+            [-9.6735, 37.2281],
+            [-9.5499, 36.7807],
+            [-9.3041, 36.5736],
+            [-8.7753, 36.4533],
         ],
     },
 
