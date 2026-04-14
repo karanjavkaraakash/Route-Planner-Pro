@@ -370,6 +370,48 @@ TSS_ZONES = {
         ],
     },
 
+    # ── Off Cape S. Vicente (Portugal) ───────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/5
+    # Sep zone A (inner): pts 1-8; Sep zone B (outer): pts 9-16; SB outer: pts 17-20
+    # NB lane: midpoint(A,B); SB lane: midpoint(B, outer)
+    # Route passes ~9.0-9.2W, 36.8-37.0N — NE/SW heading
+    'cape_st_vicente': {
+        'name':       'Off Cape S. Vicente TSS',
+        'reference':  [-9.073, 36.923],
+        'trigger_nm': 25,
+        # Northbound (S->N): between sep zones A and B
+        'north': [
+            [-8.9246, 36.8513],
+            [-9.1221, 36.9963],
+        ],
+        # Southbound (N->S): between sep zone B and outer
+        'south': [
+            [-9.2317, 36.9908],
+            [-9.0129, 36.8533],
+        ],
+    },
+
+    # ── Off Casquets ──────────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/20
+    # Sep zone A (5nm wide): pts 1-2; Sep zone B (2nm, N): pts 3-4; Zone C (1nm, S): pts 5-6
+    # WB lane between A and B; EB lane between A and C
+    # Route passes ~2.4-2.9W, 49.8-50.1N — ENE heading
+    'casquets': {
+        'name':       'Off Casquets TSS',
+        'reference':  [-2.651, 49.950],
+        'trigger_nm': 25,
+        # NE-bound (toward Dover, W->E): S of sep zone A — EB lane
+        'northeast': [
+            [-2.8673, 49.8276],
+            [-2.3804, 49.9109],
+        ],
+        # SW-bound (toward Atlantic, E->W): N of sep zone A — WB lane
+        'southwest': [
+            [-2.4352, 50.0729],
+            [-2.9223, 49.9892],
+        ],
+    },
+
     # ── Off Cape Roca (Portugal) ──────────────────────────────────────────────
     # Verified via OpenSeaMap.
     'cape_roca': {
@@ -510,24 +552,22 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
 
 def inject_tss_waypoints(coords):
     """
-    Proximity-based TSS injection with clean entry/exit.
+    Proximity-based TSS injection.
 
-    Core algorithm:
-    1. Find closest approach to TSS reference. If > trigger_nm, skip.
-    2. Select correct lane from bearing.
-    3. Remove original coords within removal_nm of reference.
-    4. ALSO remove any remaining MARNET coords that would create a
-       backward step relative to the lane entry/exit direction.
-    5. Apply smart exit clipping (stop at WP closest to destination
-       if lane diverges >60° from destination bearing).
+    For each TSS zone:
+      1. Find closest approach to reference. If > trigger_nm, skip.
+      2. Select correct lane from bearing.
+      3. Remove original coords within removal_nm of reference.
+      4. Smart exit: stop at lane WP closest to destination if lane diverges >60°.
+      5. Insert lane waypoints.
     """
     if len(coords) < 2:
         return coords, []
 
-    dest_lon, dest_lat   = coords[-1]
-    overall_bearing      = bearing_deg(coords[0][0], coords[0][1], dest_lon, dest_lat)
-    tss_applied          = []
-    splices              = []
+    dest_lon, dest_lat = coords[-1]
+    overall_bearing    = bearing_deg(coords[0][0], coords[0][1], dest_lon, dest_lat)
+    tss_applied        = []
+    splices            = []
 
     for tss_key, tss in TSS_ZONES.items():
         ref_lon, ref_lat = tss['reference']
@@ -555,7 +595,7 @@ def inject_tss_waypoints(coords):
         if len(lane_wps) < 2:
             continue
 
-        # Step 3: removal zone — all coords within removal_nm of reference
+        # Step 3: removal zone — coords within removal_nm of reference
         in_zone = [i for i in range(len(coords))
                    if haversine_km(coords[i][0], coords[i][1],
                                    ref_lon, ref_lat) / 1.852 <= removal_nm]
@@ -567,37 +607,7 @@ def inject_tss_waypoints(coords):
             first_remove = in_zone[0]
             last_remove  = in_zone[-1]
 
-        # Step 4: extend removal to catch MARNET stragglers
-        # After the removal zone, check if the next MARNET coord would create
-        # a backward step relative to the lane exit bearing.
-        # "Backward" = bearing toward that coord differs from lane exit by >90°
-        lane_exit_brg = bearing_deg(lane_wps[-2][0], lane_wps[-2][1],
-                                    lane_wps[-1][0], lane_wps[-1][1])
-        while last_remove + 1 < len(coords) - 1:
-            nxt = coords[last_remove + 1]
-            brg_to_nxt = bearing_deg(lane_wps[-1][0], lane_wps[-1][1],
-                                     nxt[0], nxt[1])
-            angle_diff = abs((brg_to_nxt - lane_exit_brg + 180) % 360 - 180)
-            if angle_diff > 90:
-                last_remove += 1  # this coord is behind us — remove it
-            else:
-                break
-
-        # Similarly, extend first_remove backward to catch stragglers before entry
-        lane_entry_brg = bearing_deg(lane_wps[0][0], lane_wps[0][1],
-                                     lane_wps[1][0], lane_wps[1][1])
-        while first_remove > 0:
-            prev = coords[first_remove - 1]
-            brg_from_prev = bearing_deg(prev[0], prev[1],
-                                        lane_wps[0][0], lane_wps[0][1])
-            angle_diff = abs((brg_from_prev - lane_entry_brg + 180) % 360 - 180)
-            if angle_diff > 90:
-                first_remove -= 1  # this coord is behind the lane entry — remove it
-            else:
-                break
-
-        # Step 5: smart exit clipping — stop at WP closest to destination
-        # if continuing the lane would take us away from destination
+        # Step 4: smart exit clipping
         dist_to_last = haversine_km(lane_wps[-1][0], lane_wps[-1][1],
                                     dest_lon, dest_lat) / 1.852
         exit_idx = len(lane_wps) - 1
@@ -629,7 +639,7 @@ def inject_tss_waypoints(coords):
     result   = []
     prev_idx = 0
 
-    for first_remove, last_remove, lane_wps, tss_name, dist_nm, bearing in splices:
+    for first_remove, last_remove, lane_wps, tss_name, dist_nm, seg_brg in splices:
         if first_remove < prev_idx:
             first_remove = prev_idx
 
