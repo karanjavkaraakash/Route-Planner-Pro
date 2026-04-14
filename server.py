@@ -370,6 +370,48 @@ TSS_ZONES = {
         ],
     },
 
+    # ── Off Cape S. Vicente (Portugal) ───────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/5
+    # Sep zone A (inner): pts 1-8; Sep zone B (outer): pts 9-16; SB outer: pts 17-20
+    # NB lane: midpoint(A,B); SB lane: midpoint(B, outer)
+    # Route passes ~9.0-9.2W, 36.8-37.0N — NE/SW heading
+    'cape_st_vicente': {
+        'name':       'Off Cape S. Vicente TSS',
+        'reference':  [-9.073, 36.923],
+        'trigger_nm': 25,
+        # Northbound (S->N): between sep zones A and B
+        'north': [
+            [-8.9246, 36.8513],
+            [-9.1221, 36.9963],
+        ],
+        # Southbound (N->S): between sep zone B and outer
+        'south': [
+            [-9.2317, 36.9908],
+            [-9.0129, 36.8533],
+        ],
+    },
+
+    # ── Off Casquets ──────────────────────────────────────────────────────────
+    # IMO Ships Routeing Part B, Section II/20
+    # Sep zone A (5nm wide): pts 1-2; Sep zone B (2nm, N): pts 3-4; Zone C (1nm, S): pts 5-6
+    # WB lane between A and B; EB lane between A and C
+    # Route passes ~2.4-2.9W, 49.8-50.1N — ENE heading
+    'casquets': {
+        'name':       'Off Casquets TSS',
+        'reference':  [-2.651, 49.950],
+        'trigger_nm': 25,
+        # NE-bound (toward Dover, W->E): S of sep zone A — EB lane
+        'northeast': [
+            [-2.8673, 49.8276],
+            [-2.3804, 49.9109],
+        ],
+        # SW-bound (toward Atlantic, E->W): N of sep zone A — WB lane
+        'southwest': [
+            [-2.4352, 50.0729],
+            [-2.9223, 49.9892],
+        ],
+    },
+
     # ── Off Cape Roca (Portugal) ──────────────────────────────────────────────
     # Verified via OpenSeaMap.
     'cape_roca': {
@@ -567,34 +609,49 @@ def inject_tss_waypoints(coords):
             first_remove = in_zone[0]
             last_remove  = in_zone[-1]
 
-        # Step 4: extend removal to catch MARNET stragglers
-        # After the removal zone, check if the next MARNET coord would create
-        # a backward step relative to the lane exit bearing.
-        # "Backward" = bearing toward that coord differs from lane exit by >90°
+        # Step 4: extend removal forward to catch post-exit stragglers
+        # Remove coords after the removal zone that create bearing reversals >90°
         lane_exit_brg = bearing_deg(lane_wps[-2][0], lane_wps[-2][1],
                                     lane_wps[-1][0], lane_wps[-1][1])
         while last_remove + 1 < len(coords) - 1:
-            nxt = coords[last_remove + 1]
+            nxt_lon, nxt_lat = coords[last_remove + 1]
             brg_to_nxt = bearing_deg(lane_wps[-1][0], lane_wps[-1][1],
-                                     nxt[0], nxt[1])
+                                     nxt_lon, nxt_lat)
             angle_diff = abs((brg_to_nxt - lane_exit_brg + 180) % 360 - 180)
             if angle_diff > 90:
-                last_remove += 1  # this coord is behind us — remove it
+                last_remove += 1
             else:
                 break
 
-        # Similarly, extend first_remove backward to catch stragglers before entry
-        lane_entry_brg = bearing_deg(lane_wps[0][0], lane_wps[0][1],
-                                     lane_wps[1][0], lane_wps[1][1])
-        while first_remove > 0:
-            prev = coords[first_remove - 1]
-            brg_from_prev = bearing_deg(prev[0], prev[1],
-                                        lane_wps[0][0], lane_wps[0][1])
-            angle_diff = abs((brg_from_prev - lane_entry_brg + 180) % 360 - 180)
-            if angle_diff > 90:
-                first_remove -= 1  # this coord is behind the lane entry — remove it
-            else:
-                break
+        # Step 5: remove pre-entry detour nodes (local maxima of distance-to-entry)
+        # Any coord before first_remove that is a local maximum of distance to
+        # the lane entry is a detour node — the MARNET route went away from the
+        # lane before returning. These cause zigzags at the TSS entry point.
+        # Example: [..., A(79nm), B(96nm=LOCAL MAX), C(30nm), D(in_zone)] → remove B
+        if first_remove > 1:
+            entry_lon_e, entry_lat_e = lane_wps[0]
+            pre_dists = [
+                haversine_km(coords[i][0], coords[i][1],
+                             entry_lon_e, entry_lat_e) / 1.852
+                for i in range(first_remove)
+            ]
+            # Build cleaned list: remove any coord that is a local maximum
+            # i.e. pre_dists[i] > pre_dists[i-1] AND pre_dists[i] > pre_dists[i+1]
+            keep_pre = []
+            for i in range(len(pre_dists)):
+                d = pre_dists[i]
+                d_prev = pre_dists[i-1] if i > 0 else -1
+                d_next = pre_dists[i+1] if i < len(pre_dists)-1 else -1
+                is_local_max = (d_next >= 0 and d > d_prev and d > d_next)
+                if is_local_max:
+                    pass  # skip — detour node
+                else:
+                    keep_pre.append(i)
+
+            removed_pre = set(range(first_remove)) - set(keep_pre)
+            tss_keep_pre = keep_pre if removed_pre else None
+        else:
+            tss_keep_pre = None
 
         # Step 5: smart exit clipping — stop at WP closest to destination
         # if continuing the lane would take us away from destination
@@ -616,7 +673,7 @@ def inject_tss_waypoints(coords):
         lane_wps = lane_wps[:exit_idx + 1]
 
         splices.append((first_remove, last_remove, lane_wps, tss['name'],
-                        min_dist_nm, seg_bearing))
+                        min_dist_nm, seg_bearing, tss_keep_pre))
         log.info('TSS: %s dist=%.1fnm brg=%.0f° remove[%d:%d] lane=%d exit=%d',
                  tss['name'], min_dist_nm, seg_bearing,
                  first_remove, last_remove, len(lane_wps), exit_idx)
@@ -629,12 +686,19 @@ def inject_tss_waypoints(coords):
     result   = []
     prev_idx = 0
 
-    for first_remove, last_remove, lane_wps, tss_name, dist_nm, bearing in splices:
+    for first_remove, last_remove, lane_wps, tss_name, dist_nm, bearing, keep_pre in splices:
         if first_remove < prev_idx:
             first_remove = prev_idx
 
-        for k in range(prev_idx, first_remove):
-            result.append([coords[k][0], coords[k][1]])
+        if keep_pre is not None:
+            # Use the cleaned pre-entry coord list (detour nodes removed)
+            for k in keep_pre:
+                if k >= prev_idx:
+                    result.append([coords[k][0], coords[k][1]])
+        else:
+            # Normal: emit all coords up to first_remove
+            for k in range(prev_idx, first_remove):
+                result.append([coords[k][0], coords[k][1]])
 
         for wp in lane_wps:
             result.append([wp[0], wp[1]])
