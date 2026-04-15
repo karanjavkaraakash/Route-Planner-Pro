@@ -20724,6 +20724,259 @@ function showOptimisationPanel() {
 // Hook into importRTZ/importCSV to go to route view after import
 const _origImportRTZ = typeof importRTZ === 'function' ? importRTZ : null;
 
+
+
+// ═══════════════════════════════════════════════════════════════
+// RUNTIME PATCHES — applied after all declarations are hoisted
+// Using window property assignment so originals are captured correctly
+// ═══════════════════════════════════════════════════════════════
+
+window.addEventListener('DOMContentLoaded', function() {
+
+  // ── Undo/Restore/Edit undo stack ─────────────────────────────
+  let _editUndoStack = [];
+
+  window._saveEditUndo = function() {
+    _editUndoStack.push(wpCoords.map(c => [...c]));
+    if (_editUndoStack.length > 50) _editUndoStack.shift();
+  };
+
+  window.undoLastWpChange = function() {
+    if (_pushUndoStack && _pushUndoStack.length) { undoPush(); return; }
+    if (!_editUndoStack.length) { notify('Nothing to undo', 'err'); return; }
+    wpCoords.length = 0;
+    _editUndoStack.pop().forEach(c => wpCoords.push(c));
+    rebuildWaypointMarkers();
+    redrawRouteGeoJSON();
+    recalcMetrics();
+    buildWpTable();
+    notify('Undo', 'ok');
+  };
+
+  window.restoreOriginalRoute = function() {
+    if (!window._preEditCoords || !window._preEditCoords.length) {
+      notify('No original route saved', 'err'); return;
+    }
+    wpCoords.length = 0;
+    window._preEditCoords.forEach(c => wpCoords.push([...c]));
+    _editUndoStack = [];
+    rebuildWaypointMarkers();
+    redrawRouteGeoJSON();
+    recalcMetrics();
+    buildWpTable();
+    notify('Route restored to original', 'ok');
+  };
+
+  // ── simulateVoyage alias ──────────────────────────────────────
+  window.simulateVoyage = function() {
+    if (!window._wxResults) { notify('Load weather first to enable simulation', 'err'); return; }
+    startSimulation();
+  };
+
+  // ── Patch addWaypointMarker to respect edit/view mode ─────────
+  const _origAddWpMarker = window.addWaypointMarker;
+  window.addWaypointMarker = function(lon, lat, idx) {
+    const inEdit = (_currentScreen === 'edit');
+    const el = document.createElement('div');
+    el.className = 'wp-marker';
+    el.style.cssText = [
+      'width:' + (inEdit ? '10' : '8') + 'px',
+      'height:' + (inEdit ? '10' : '8') + 'px',
+      'border-radius:50%',
+      'background:' + (inEdit ? '#d4800a' : '#1d5fa6'),
+      'border:2px solid #fff',
+      'cursor:' + (inEdit ? 'grab' : 'default'),
+      'box-shadow:0 1px 4px rgba(0,0,0,.3)',
+      'transition:transform .15s',
+    ].join(';');
+    el.title = 'WP' + (idx+1) + ': ' + lat.toFixed(4) + ', ' + lon.toFixed(4);
+
+    el.addEventListener('click', function(e) {
+      e.stopPropagation();
+      selectWaypoint(idx);
+      // Scroll to row
+      const row = document.querySelector('#wp-tbody tr[data-idx="' + idx + '"]');
+      if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      // Delete tool
+      if (inEdit && _activeEditTool === 'delete') {
+        if (idx > 0 && idx < wpCoords.length - 1) {
+          window._saveEditUndo && window._saveEditUndo();
+          wpCoords.splice(idx, 1);
+          rebuildWaypointMarkers();
+          redrawRouteGeoJSON();
+          recalcMetrics();
+          buildWpTable();
+          notify('Waypoint deleted', 'ok');
+        } else {
+          notify('Cannot delete origin or destination', 'err');
+        }
+      }
+    });
+
+    const m = new maptilersdk.Marker({
+      element: el,
+      draggable: inEdit && (_activeEditTool !== 'delete'),
+      anchor: 'center'
+    }).setLngLat([lon, lat]).addTo(map);
+
+    if (inEdit) {
+      m.on('dragstart', function() {
+        el.style.cursor = 'grabbing';
+        window._saveEditUndo && window._saveEditUndo();
+      });
+      m.on('drag', function() {
+        const ll = m.getLngLat();
+        wpCoords[idx] = [ll.lng, ll.lat];
+        redrawRouteGeoJSON();
+      });
+      m.on('dragend', function() {
+        el.style.cursor = 'grab';
+        const ll = m.getLngLat();
+        wpCoords[idx] = [ll.lng, ll.lat];
+        recalcMetrics();
+        redrawRouteGeoJSON();
+        buildWpTable();
+      });
+    }
+
+    wpMarkers.push({ marker: m, idx });
+    return m;
+  };
+
+  // ── Patch onMapClick to block edit actions in route view ──────
+  const _origOnMapClick = window.onMapClick;
+  window.onMapClick = function(e) {
+    if (mapPickActive) { _origOnMapClick(e); return; }
+    if (pushWpMode)    { _origOnMapClick(e); return; }
+    // Only allow add-waypoint in edit canvas with add tool
+    if (_currentScreen !== 'edit' || _activeEditTool !== 'add') {
+      if (addWpMode) setAddWpMode(false);
+      return;
+    }
+    _origOnMapClick(e);
+  };
+
+  // ── Patch buildWpTable to add row click handlers ──────────────
+  const _origBuildWpTable = window.buildWpTable;
+  window.buildWpTable = function() {
+    _origBuildWpTable();
+    const tbody = document.getElementById('wp-tbody');
+    if (!tbody) return;
+    tbody.querySelectorAll('tr[data-idx]').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      // Remove old listener to avoid duplication
+      const newRow = row.cloneNode(true);
+      row.parentNode.replaceChild(newRow, row);
+      newRow.addEventListener('click', function() {
+        const idx = parseInt(newRow.dataset.idx);
+        if (!isNaN(idx)) selectWaypoint(idx);
+      });
+    });
+  };
+
+  // ── Patch loadWeatherAndAnalyse to show interval row ─────────
+  const _origLoadWx = window.loadWeatherAndAnalyse;
+  window.loadWeatherAndAnalyse = async function() {
+    if (!routeData) { notify('Calculate a route first', 'err'); return; }
+    const ixRow = document.getElementById('wx-interval-row');
+    if (ixRow) ixRow.style.display = 'block';
+    await _origLoadWx();
+  };
+
+  // ── Patch goToEditCanvas: save snapshot + sync tools ─────────
+  const _origGoToEdit = window.goToEditCanvas;
+  window.goToEditCanvas = function() {
+    // Save pre-edit snapshot
+    window._preEditCoords = wpCoords.map(c => [...c]);
+    _editUndoStack = [];
+    // Check wx warning
+    if (window._wxResults && window._wxResults.length) {
+      document.getElementById('wx-edit-warning').classList.add('open');
+    } else {
+      _enterEditCanvas();
+    }
+  };
+
+  window.proceedToEdit = function() {
+    document.getElementById('wx-edit-warning').classList.remove('open');
+    _enterEditCanvas();
+  };
+
+  function _enterEditCanvas() {
+    showScreen('edit');
+    setTimeout(function() {
+      // Move push SVG into edit map wrap
+      const svg = document.getElementById('push-circle-svg');
+      const wrap = document.getElementById('edit-map-wrap');
+      if (svg && wrap && svg.parentElement !== wrap) wrap.appendChild(svg);
+      // Move cursor tooltip too
+      const tip = document.getElementById('push-cursor-tooltip');
+      if (tip && wrap && tip.parentElement !== wrap) wrap.appendChild(tip);
+      // Rebuild markers as draggable
+      rebuildWaypointMarkers();
+      buildWpTable();
+    }, 120);
+  }
+
+  // ── Patch saveEditsAndReturn ───────────────────────────────────
+  window.saveEditsAndReturn = function() {
+    activateEditTool(null);
+    _editUndoStack = [];
+    // Clear weather since route was edited
+    window._wxResults   = null;
+    window._wxDelayH    = null;
+    window._wxAdjTotalH = null;
+    updateWxState(false);
+    showScreen('route');
+    setTimeout(function() {
+      rebuildWaypointMarkers(); // non-draggable
+      buildWpTable();
+      updateRouteTopbar();
+    }, 120);
+  };
+
+  // ── Patch discardEdits ─────────────────────────────────────────
+  window.discardEdits = function() {
+    if (window._preEditCoords && window._preEditCoords.length) {
+      wpCoords.length = 0;
+      window._preEditCoords.forEach(c => wpCoords.push([...c]));
+      window._preEditCoords = null;
+    }
+    activateEditTool(null);
+    _editUndoStack = [];
+    showScreen('route');
+    setTimeout(function() {
+      rebuildWaypointMarkers();
+      redrawRouteGeoJSON();
+      recalcMetrics();
+      buildWpTable();
+    }, 120);
+  };
+
+  // ── Patch goToRouteView to rebuild as non-draggable ───────────
+  const _origGoToRouteView = window.goToRouteView;
+  window.goToRouteView = function() {
+    showScreen('route');
+    setTimeout(function() {
+      rebuildWaypointMarkers(); // non-draggable in route view
+      buildWpTable();
+      updateRouteTopbar();
+      updatePassagesPane();
+    }, 150);
+  };
+
+  // ── Inject CSS fixes ──────────────────────────────────────────
+  const style = document.createElement('style');
+  style.textContent = [
+    '.wp-marker:hover { transform: scale(1.5) !important; z-index:10; }',
+    '#wp-tbody tr { transition: background .1s; }',
+    '#wp-tbody tr.wp-selected td { background:#dbeafe!important; color:#0c1628!important; font-weight:600; }',
+    '#wp-tbody tr:hover td { background:#f0f5fb!important; }',
+    '#push-circle-svg { display:none; position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:500; }',
+  ].join('\n');
+  document.head.appendChild(style);
+
+});
 </script>
 <!-- ═══ GHOST ELEMENTS — satisfy old JS getElementById refs, all display:none ═══ -->
 <div style="display:none" aria-hidden="true">
