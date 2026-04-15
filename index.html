@@ -15302,13 +15302,23 @@ function addBaseLayersSources(){
   // OpenSeaMap raster overlay (off by default)
   map.addSource('openseamap', {
     type:'raster',
-    tiles:['https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png'],
+    tiles:[
+      'https://t1.openseamap.org/seamark/{z}/{x}/{y}.png',
+      'https://t2.openseamap.org/seamark/{z}/{x}/{y}.png',
+      'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png'
+    ],
     tileSize:256,
+    maxzoom:18,
     attribution:'© OpenSeaMap'
   });
   map.addLayer({
     id:'openseamap-layer', type:'raster',
     source:'openseamap', layout:{visibility:'none'}, paint:{'raster-opacity':0.8}
+  });
+  // Suppress tile load errors from OpenSeaMap to avoid console noise
+  map.on('error', e => {
+    if (e.error && e.error.url && e.error.url.includes('openseamap.org')) return;
+    console.error('Map error:', e);
   });
 }
 
