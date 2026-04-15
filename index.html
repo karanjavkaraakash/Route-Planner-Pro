@@ -3,1757 +3,1159 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>RoutePlannerPro — Professional Voyage Planning</title>
+<title>RoutePlannerPro — Voyage Planner</title>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     MapTiler SDK v3.11.1  (replaces Leaflet 1.4.0 + Windy)
+     @maptiler/weather v3.1.1  (replaces Windy wind overlay)
+     All other libraries unchanged from v1.
+     ═══════════════════════════════════════════════════════════════ -->
 <link href="https://cdn.maptiler.com/maptiler-sdk-js/v3.11.1/maptiler-sdk.css" rel="stylesheet"/>
 <script src="https://cdn.maptiler.com/maptiler-sdk-js/v3.11.1/maptiler-sdk.umd.min.js"></script>
+<!-- Weather module from MapTiler CDN (UMD — global: maptilerWeather) -->
 <script src="https://cdn.maptiler.com/maptiler-weather/v3.1.1/maptiler-weather.umd.min.js"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+
 <style>
-/* ═══════════════════════════════════════════════════
-   DESIGN SYSTEM — Maritime Dark Precision
-   Fonts: Syne (headers), DM Sans (body), DM Mono (data)
-   Aesthetic: naval instruments, chart table, dark bridge
-   ═══════════════════════════════════════════════════ */
-:root {
-  /* Core palette */
-  --bg:        #080c14;
-  --surface:   #0d1220;
-  --surface2:  #111827;
-  --border:    #1e2d45;
-  --border2:   #243350;
-
-  /* Accents */
-  --accent:    #0ea5e9;
-  --accent2:   #38bdf8;
-  --accent-dim:#0369a1;
-  --gold:      #d4a947;
-  --gold-dim:  #92720f;
-
-  /* Text */
-  --text:      #e8edf5;
-  --text2:     #94a3b8;
-  --text3:     #4a607a;
-  --muted:     #4a607a;
-
-  /* Status */
-  --danger:    #ef4444;
-  --warn:      #f59e0b;
-  --success:   #10b981;
-
-  /* ECA colours (keep) */
-  --eca-seca:  rgba(255,200,0,0.18);
-  --eca-neca:  rgba(100,200,255,0.18);
-  --eca-comb:  rgba(200,100,255,0.18);
-
-  /* Sidebar */
-  --sb-w: 320px;
-
-  /* Fonts */
-  --f-head: 'Syne', sans-serif;
-  --f-body: 'DM Sans', sans-serif;
-  --f-mono: 'DM Mono', monospace;
-}
-
+/* ═══════════ RESET & ROOT ═══════════ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--f-body); font-size: 13px; overflow: hidden; }
-
-/* ── SCREEN SYSTEM ────────────────────────────────── */
-/* Three main screens: plan, route-view, edit-canvas */
-.screen { display: none; height: 100vh; }
-.screen.active { display: flex; }
-
-/* ══════════════════════════════════════════════════
-   SCREEN 1 — VOYAGE PLAN (Landing)
-   Full-page split: form left, animated ocean right
-   ══════════════════════════════════════════════════ */
-#screen-plan {
-  flex-direction: row;
-  background: var(--bg);
+:root {
+  --bg:       #0b0f1a;
+  --surface:  #141824;
+  --border:   #252d40;
+  --accent:   #3b82f6;
+  --accent2:  #60a5fa;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --danger:   #ef4444;
+  --warn:     #f59e0b;
+  --success:  #22c55e;
+  --eca-seca: rgba(255,200,0,0.18);
+  --eca-neca: rgba(100,200,255,0.18);
+  --eca-comb: rgba(200,100,255,0.18);
 }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 13px; overflow: hidden; }
 
-/* Left panel — the planning form */
-#plan-panel {
-  width: 480px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  overflow-y: auto;
-  position: relative;
+/* ═══════════ LAYOUT ═══════════ */
+#app { display: flex; height: 100vh; }
+#sidebar {
+  width: 330px; min-width: 260px; max-width: 380px;
+  background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; z-index: 10;
 }
-#plan-panel::-webkit-scrollbar { width: 4px; }
-#plan-panel::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
-
-/* Brand header */
-#plan-brand {
-  padding: 28px 32px 20px;
+#sidebar-header {
+  padding: 14px 16px 10px;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(14,165,233,.06) 0%, transparent 100%);
 }
-#plan-brand .brand-logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-#plan-brand .brand-icon {
-  width: 36px; height: 36px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
-  border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18px;
-}
-#plan-brand h1 {
-  font-family: var(--f-head);
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: -0.3px;
-  color: var(--text);
-}
-#plan-brand .brand-tagline {
-  font-size: 11px;
-  color: var(--text3);
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  font-family: var(--f-mono);
-}
-#plan-brand .version-badge {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 1px 6px;
-  background: rgba(14,165,233,.12);
-  border: 1px solid rgba(14,165,233,.25);
-  border-radius: 3px;
-  font-size: 9px;
-  color: var(--accent);
-  font-family: var(--f-mono);
-  vertical-align: middle;
-}
+#sidebar-header h1 { font-size: 16px; font-weight: 700; letter-spacing: .5px; color: var(--accent2); }
+#sidebar-header p  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+#sidebar-body { flex: 1; overflow-y: auto; padding: 12px; }
+#sidebar-body::-webkit-scrollbar { width: 5px; }
+#sidebar-body::-webkit-scrollbar-track { background: var(--surface); }
+#sidebar-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-/* Form body */
-#plan-form-body {
-  flex: 1;
-  padding: 24px 32px;
-}
+#map-wrap { flex: 1; position: relative; overflow: hidden; }
+#map { position: absolute; inset: 0; }
 
-/* Section blocks */
-.pf-section {
-  margin-bottom: 24px;
-}
-.pf-section-title {
-  font-family: var(--f-mono);
-  font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--text3);
-  margin-bottom: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.pf-section-title::before {
-  content: '';
-  display: block;
-  width: 16px; height: 1px;
-  background: var(--accent);
-  opacity: 0.6;
-}
-.pf-divider {
-  height: 1px;
-  background: var(--border);
-  margin: 20px 0;
-}
+/* ═══════════ SECTIONS ═══════════ */
+.section { background: #0f1623; border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+.section-title { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
 
-/* Form field */
-.pf-field { margin-bottom: 14px; }
-.pf-label {
-  display: block;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: var(--text2);
-  margin-bottom: 6px;
-  font-family: var(--f-mono);
+/* ═══════════ FORM ELEMENTS ═══════════ */
+label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+input[type=text], input[type=number], select, textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+  color: var(--text); padding: 7px 9px; font-size: 12px; outline: none;
+  transition: border-color .15s;
 }
+input:focus, select:focus { border-color: var(--accent); }
+.form-row { margin-bottom: 8px; }
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 
-/* Input base */
-.pf-input, .pf-select {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border2);
-  border-radius: 6px;
-  padding: 9px 12px;
-  color: var(--text);
-  font-family: var(--f-body);
-  font-size: 13px;
-  transition: border-color .15s, box-shadow .15s;
-  outline: none;
+/* ═══════════ BUTTONS ═══════════ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 8px 14px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 600; transition: opacity .15s, transform .05s;
 }
-.pf-input:focus, .pf-select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(14,165,233,.12);
-}
-.pf-input::placeholder { color: var(--text3); }
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn-primary   { background: var(--accent); color: #fff; }
+.btn-secondary { background: var(--border); color: var(--text); }
+.btn-danger    { background: var(--danger); color: #fff; }
+.btn-success   { background: var(--success); color: #000; }
+.btn-outline   { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn:hover:not(:disabled) { opacity: .85; }
+.btn-full { width: 100%; }
+.btn-group { display: flex; gap: 6px; }
 
-/* Port input with icon */
-.pf-port-wrap {
-  position: relative;
-}
-.pf-port-wrap .pf-input { padding-right: 36px; }
-.pf-port-mode {
-  display: flex;
-  gap: 2px;
-  margin-bottom: 6px;
-}
-.pf-mode-btn {
-  flex: 1;
-  padding: 5px 8px;
-  background: var(--bg);
-  border: 1px solid var(--border2);
-  border-radius: 5px;
-  color: var(--text3);
-  font-size: 10px;
-  font-family: var(--f-mono);
-  cursor: pointer;
-  text-align: center;
-  transition: all .15s;
-}
-.pf-mode-btn.active {
-  background: rgba(14,165,233,.12);
-  border-color: var(--accent);
-  color: var(--accent2);
-}
-.pf-pin-btn {
-  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-  background: none; border: none; color: var(--text3);
-  cursor: pointer; font-size: 14px; padding: 4px;
-  transition: color .15s;
-}
-.pf-pin-btn:hover { color: var(--accent2); }
+/* ═══════════ MODE TOGGLE (PORT / COORD) ═══════════ */
+.mode-toggle { display: flex; background: var(--bg); border-radius: 6px; overflow: hidden; border: 1px solid var(--border); margin-bottom: 6px; }
+.mode-toggle button { flex: 1; padding: 5px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 600; transition: background .15s, color .15s; }
+.mode-toggle button.active { background: var(--accent); color: #fff; }
 
-/* Two-column row */
-.pf-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.pf-row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-
-/* Passage chips */
-.pf-chips-group { margin-bottom: 10px; }
-.pf-chips-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
+/* ═══════════ PORT INPUT WITH AUTOCOMPLETE ═══════════ */
+.port-wrap { position: relative; }
+.port-wrap input { padding-right: 32px; }
+.pin-btn {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px;
 }
-.pf-chips-label span:first-child { font-size: 11px; color: var(--text2); }
-.pf-chips-label span:last-child { font-size: 9px; color: var(--text3); font-family: var(--f-mono); text-transform: uppercase; letter-spacing: .5px; }
-.pf-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.pf-chip {
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 11px;
-  border: 1px solid var(--border2);
-  background: transparent;
-  color: var(--text2);
-  cursor: pointer;
-  font-family: var(--f-body);
-  transition: all .15s;
-  user-select: none;
-}
-.pf-chip:hover { border-color: var(--border); color: var(--text); }
-.pf-chip.avoid-active {
-  background: rgba(239,68,68,.1);
-  border-color: rgba(239,68,68,.4);
-  color: #fca5a5;
-}
-.pf-chip.via-active {
-  background: rgba(14,165,233,.1);
-  border-color: rgba(14,165,233,.4);
-  color: var(--accent2);
-}
-
-/* Import row */
-.pf-import-row {
-  display: flex;
-  gap: 8px;
-  padding: 12px;
-  background: rgba(255,255,255,.02);
-  border: 1px dashed var(--border2);
-  border-radius: 8px;
-  align-items: center;
-}
-.pf-import-row span { font-size: 11px; color: var(--text3); flex: 1; }
-.pf-import-btn {
-  padding: 5px 12px;
-  background: transparent;
-  border: 1px solid var(--border2);
-  border-radius: 5px;
-  color: var(--text2);
-  font-size: 11px;
-  font-family: var(--f-body);
-  cursor: pointer;
-  transition: all .15s;
-}
-.pf-import-btn:hover { border-color: var(--accent); color: var(--accent2); }
-
-/* Calculate button */
-#btn-calculate {
-  width: 100%;
-  padding: 14px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
-  border: none;
-  border-radius: 8px;
-  color: #fff;
-  font-family: var(--f-head);
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  cursor: pointer;
-  transition: all .2s;
-  position: relative;
-  overflow: hidden;
-}
-#btn-calculate::before {
-  content: '';
-  position: absolute; inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,.1) 0%, transparent 60%);
-}
-#btn-calculate:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(14,165,233,.3); }
-#btn-calculate:active { transform: translateY(0); }
-
-/* Right panel — visual */
-#plan-visual {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-}
-#plan-visual-map {
-  position: absolute;
-  inset: 0;
-  opacity: 0.55;
-  pointer-events: none;
-}
-.plan-visual-overlay {
-  position: relative;
-  z-index: 1;
-  text-align: center;
-  pointer-events: none;
-}
-.plan-visual-overlay .pvo-title {
-  font-family: var(--f-head);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  color: rgba(255,255,255,.15);
-  margin-bottom: 8px;
-}
-/* Autocomplete */
+.pin-btn.active { color: var(--accent); }
 .autocomplete-list {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-top: none;
-  border-radius: 0 0 6px 6px;
-  z-index: 9999;
-  max-height: 200px;
-  overflow-y: auto;
+  position: absolute; top: 100%; left: 0; right: 0; background: var(--surface);
+  border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px;
+  max-height: 160px; overflow-y: auto; z-index: 2000; display: none;
 }
-.autocomplete-list div {
-  padding: 8px 12px;
-  font-size: 12px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  transition: background .1s;
-}
-.autocomplete-list div:hover { background: rgba(14,165,233,.1); color: var(--accent2); }
-.autocomplete-list::-webkit-scrollbar { width: 3px; }
-.autocomplete-list::-webkit-scrollbar-thumb { background: var(--border2); }
+.autocomplete-list.open { display: block; }
+.autocomplete-item { padding: 7px 10px; cursor: pointer; font-size: 12px; }
+.autocomplete-item:hover, .autocomplete-item.focused { background: var(--border); }
+.autocomplete-item small { color: var(--muted); font-size: 10px; margin-left: 4px; }
 
-/* ══════════════════════════════════════════════════
-   SCREEN 2 — ROUTE VIEW  (read-only)
-   ══════════════════════════════════════════════════ */
-#screen-route {
-  flex-direction: column;
+/* ═══════════ CHECKBOX TOGGLE ═══════════ */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.toggle-label { font-size: 12px; }
+.toggle { position: relative; width: 36px; height: 20px; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; inset: 0; background: var(--border); border-radius: 20px; cursor: pointer; transition: .2s;
 }
+.toggle-slider:before {
+  content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: .2s;
+}
+.toggle input:checked + .toggle-slider { background: var(--accent); }
+.toggle input:checked + .toggle-slider:before { transform: translateX(16px); }
 
-/* Top summary strip */
-#route-topbar {
-  height: 48px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  gap: 0;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 100;
-}
-.rtb-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-right: 20px;
-  padding-right: 20px;
-  border-right: 1px solid var(--border);
-}
-.rtb-brand span {
-  font-family: var(--f-head);
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-}
-.rtb-route {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.rtb-port {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 180px;
-}
-.rtb-arrow {
-  color: var(--text3);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-.rtb-sep { width: 1px; height: 24px; background: var(--border); margin: 0 12px; }
-.rtb-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 0 14px;
-  border-right: 1px solid var(--border);
-}
-.rtb-metric:last-of-type { border-right: none; }
-.rtb-metric-label {
-  font-size: 9px;
-  font-family: var(--f-mono);
-  color: var(--text3);
-  letter-spacing: .8px;
-  text-transform: uppercase;
-}
-.rtb-metric-val {
-  font-size: 12px;
-  font-family: var(--f-mono);
-  font-weight: 500;
-  color: var(--text);
-}
-.rtb-metric-val.accent { color: var(--accent2); }
-.rtb-metric-val.gold { color: var(--gold); }
-
-/* Screen 2 body */
-#route-body {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-}
-
-/* Sidebar */
-#route-sidebar {
-  width: var(--sb-w);
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-
-/* Sidebar tabs */
-#rs-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-}
-.rs-tab {
-  flex: 1;
-  padding: 10px 4px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text3);
-  font-size: 10px;
-  font-family: var(--f-mono);
-  letter-spacing: .8px;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: all .15s;
-}
-.rs-tab.active {
-  color: var(--accent2);
-  border-bottom-color: var(--accent);
-}
-.rs-tab:hover:not(.active) { color: var(--text2); }
-
-/* Tab panes */
-.rs-pane { display: none; flex: 1; overflow-y: auto; padding: 14px; }
-.rs-pane.active { display: block; }
-.rs-pane::-webkit-scrollbar { width: 4px; }
-.rs-pane::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
-
-/* Waypoint table */
-.wp-table { width: 100%; border-collapse: collapse; }
-.wp-table th {
-  font-size: 9px;
-  font-family: var(--f-mono);
-  letter-spacing: .8px;
-  text-transform: uppercase;
-  color: var(--text3);
-  padding: 0 6px 8px;
-  text-align: left;
-  border-bottom: 1px solid var(--border);
-}
-.wp-table td {
-  padding: 7px 6px;
-  font-size: 11px;
-  font-family: var(--f-mono);
-  color: var(--text2);
-  border-bottom: 1px solid rgba(255,255,255,.03);
-}
-.wp-table tr:hover td { background: rgba(14,165,233,.04); color: var(--text); }
-.wp-table td:first-child { color: var(--text3); }
-
-/* Passages info list */
-.passages-list { display: flex; flex-direction: column; gap: 8px; }
-.passage-item {
-  padding: 10px 12px;
-  background: rgba(14,165,233,.05);
-  border: 1px solid rgba(14,165,233,.15);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.passage-item-icon { font-size: 16px; }
-.passage-item-name { font-size: 12px; font-weight: 500; color: var(--text); }
-.passage-item-detail { font-size: 10px; color: var(--text3); font-family: var(--f-mono); margin-top: 1px; }
-
-/* Sidebar bottom actions */
-#rs-actions {
-  padding: 12px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-/* Action buttons */
-.act-btn {
-  width: 100%;
-  padding: 9px 14px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: var(--f-body);
-  font-weight: 500;
-  cursor: pointer;
-  transition: all .15s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid transparent;
-}
-.act-btn-primary {
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
-  color: #fff;
-  border-color: transparent;
-}
-.act-btn-primary:hover { box-shadow: 0 4px 16px rgba(14,165,233,.3); transform: translateY(-1px); }
-
-.act-btn-secondary {
-  background: rgba(255,255,255,.04);
-  color: var(--text2);
-  border-color: var(--border2);
-}
-.act-btn-secondary:hover { background: rgba(255,255,255,.07); color: var(--text); border-color: var(--border); }
-
-.act-btn-ghost {
-  background: transparent;
-  color: var(--text3);
-  border-color: var(--border);
-}
-.act-btn-ghost:hover { background: rgba(255,255,255,.03); color: var(--text2); }
-
-.act-btn-gold {
-  background: linear-gradient(135deg, var(--gold) 0%, var(--gold-dim) 100%);
-  color: #0a0a0a;
-  border-color: transparent;
-}
-.act-btn-gold:hover { box-shadow: 0 4px 16px rgba(212,169,71,.3); transform: translateY(-1px); }
-
-.act-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-  transform: none !important;
-  box-shadow: none !important;
-}
-
-.act-btn-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-}
-
-/* Edit mode button — prominent */
-#btn-edit-canvas {
-  background: rgba(245,158,11,.08);
-  border-color: rgba(245,158,11,.3);
-  color: var(--warn);
-}
-#btn-edit-canvas:hover {
-  background: rgba(245,158,11,.14);
-  border-color: rgba(245,158,11,.5);
-}
-
-/* Route map area (screen 2) */
-#route-map-wrap {
-  flex: 1;
-  position: relative;
-}
-#route-map-wrap #map {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-/* Floating toolbar (kept from original) */
+/* ═══════════ FLOATING TOOLBAR ═══════════ */
 #toolbar {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  z-index: 200;
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 6px; z-index: 500;
 }
 .tool-btn {
-  width: 36px; height: 36px;
-  background: var(--surface);
-  border: 1px solid var(--border2);
-  border-radius: 7px;
-  color: var(--text2);
-  cursor: pointer;
-  font-size: 16px;
-  display: flex; align-items: center; justify-content: center;
-  transition: all .15s;
-  position: relative;
+  width: 38px; height: 38px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 16px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background .15s, border-color .15s; box-shadow: 0 2px 8px rgba(0,0,0,.4);
 }
-.tool-btn:hover { background: var(--surface2); border-color: var(--accent); color: var(--accent2); }
-.tool-btn.active { background: rgba(14,165,233,.15); border-color: var(--accent); color: var(--accent2); }
+.tool-btn:hover { background: var(--border); }
+.tool-btn.active { background: var(--accent); border-color: var(--accent2); color: #fff; }
+.tool-btn[title]::after {
+  content: attr(title); position: absolute; left: 48px; background: rgba(0,0,0,.85);
+  color: #fff; padding: 3px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;
+  pointer-events: none; opacity: 0; transition: opacity .15s;
+}
+.tool-btn:hover[title]::after { opacity: 1; }
 
-/* ══════════════════════════════════════════════════
-   SCREEN 3 — EDIT CANVAS
-   ══════════════════════════════════════════════════ */
-#screen-edit {
-  flex-direction: column;
+/* ═══════════ TIME SLIDER ═══════════ */
+#wx-slider-wrap {
+  position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+  background: rgba(11,15,26,.9); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 16px; min-width: 340px; max-width: 560px; width: 45vw;
+  display: none; z-index: 600; backdrop-filter: blur(6px);
 }
+#wx-slider-wrap.visible { display: block; }
+#wx-slider-label { text-align: center; font-size: 11px; color: var(--accent2); margin-bottom: 6px; }
+#wx-slider { width: 100%; accent-color: var(--accent); }
+#wx-time-display { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
 
-#edit-topbar {
-  height: 48px;
-  background: rgba(245,158,11,.08);
-  border-bottom: 1px solid rgba(245,158,11,.25);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  gap: 12px;
-  flex-shrink: 0;
-  z-index: 100;
-}
-#edit-topbar .et-warning {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--warn);
-  font-family: var(--f-mono);
-  letter-spacing: .3px;
-}
-#edit-topbar .et-warning::before {
-  content: '✎';
-  font-size: 14px;
-}
-.et-spacer { flex: 1; }
-.et-save-btn {
-  padding: 7px 18px;
-  background: var(--success);
-  border: none;
-  border-radius: 6px;
-  color: #fff;
-  font-size: 12px;
-  font-family: var(--f-head);
-  font-weight: 700;
-  cursor: pointer;
-  letter-spacing: .3px;
-  transition: all .15s;
-}
-.et-save-btn:hover { background: #059669; box-shadow: 0 4px 12px rgba(16,185,129,.3); }
-.et-discard-btn {
-  padding: 7px 14px;
-  background: transparent;
-  border: 1px solid var(--border2);
-  border-radius: 6px;
-  color: var(--text3);
-  font-size: 12px;
-  font-family: var(--f-body);
-  cursor: pointer;
-  transition: all .15s;
-}
-.et-discard-btn:hover { border-color: var(--danger); color: #fca5a5; }
+/* ═══════════ ROUTE METRICS ═══════════ */
+#metrics-section { display: none; }
+.metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.metric-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.metric-card .val { font-size: 18px; font-weight: 700; color: var(--accent2); }
+.metric-card .key { font-size: 10px; color: var(--muted); margin-top: 2px; }
 
-/* Edit body */
-#edit-body {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
+/* ═══════════ WAYPOINT TABLE ═══════════ */
+.wp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.wp-table th { color: var(--muted); font-weight: 600; padding: 4px 6px; text-align: left; border-bottom: 1px solid var(--border); }
+.wp-table td { padding: 4px 6px; border-bottom: 1px solid #1a2236; color: var(--text); }
+.wp-table tr:last-child td { border-bottom: none; }
+.wp-table td.eca { color: var(--warn); }
+.wp-table tbody tr { cursor: pointer; transition: background .15s; }
+.wp-table tbody tr:hover { background: rgba(255,255,255,.04); }
+.wp-table tbody tr.wp-selected { background: rgba(245,158,11,.15); outline: 1px solid rgba(245,158,11,.4); }
+.wp-table tbody tr.wp-selected td { color: #fcd34d; }
+
+/* Waypoint delete toolbar */
+#wp-delete-bar {
+  display: none; align-items: center; gap: 8px;
+  padding: 5px 6px; background: rgba(239,68,68,.12);
+  border: 1px solid rgba(239,68,68,.3); border-radius: 5px;
+  margin-top: 4px; font-size: 11px; color: var(--text);
+}
+#wp-delete-bar.visible { display: flex; }
+#wp-delete-bar span { flex: 1; color: var(--muted); }
+#wp-delete-btn {
+  padding: 3px 10px; background: #ef4444; color: #fff;
+  border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;
+}
+#wp-delete-btn:hover { background: #dc2626; }
+#wp-deselect-btn {
+  padding: 3px 8px; background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;
 }
 
-/* Edit sidebar */
-#edit-sidebar {
-  width: var(--sb-w);
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  padding: 14px;
-  gap: 8px;
-  overflow-y: auto;
+/* Map highlight pulse for selected waypoint */
+@keyframes wp-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(245,158,11,.8), 0 1px 4px rgba(0,0,0,.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(245,158,11,0), 0 1px 4px rgba(0,0,0,.5); }
+  100% { box-shadow: 0 0 0 0 rgba(245,158,11,0), 0 1px 4px rgba(0,0,0,.5); }
 }
-#edit-sidebar h3 {
-  font-family: var(--f-mono);
-  font-size: 9px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--text3);
-  margin-bottom: 4px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
+.wp-marker.wp-highlight {
+  background: #fcd34d !important;
+  border-color: #f59e0b !important;
+  animation: wp-pulse 1s ease-out 3;
+  z-index: 10;
 }
-.edit-tool {
-  padding: 10px 14px;
-  border-radius: 7px;
-  border: 1px solid var(--border2);
-  background: rgba(255,255,255,.02);
-  cursor: pointer;
-  transition: all .15s;
-  display: flex;
+
+/* ═══════════ WEATHER SECTION ═══════════ */
+#wx-route-section { display: none; margin-top: 6px; }
+.wx-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid #1a2236; font-size: 11px; }
+.wx-row:last-child { border-bottom: none; }
+.wx-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.wx-leg { flex: 1; color: var(--muted); }
+.wx-val { color: var(--text); font-weight: 600; }
+
+/* ═══════════ SIMULATE VOYAGE ═══════════ */
+#sim-bar {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 5px;
+  background: rgba(255,255,255,.15); z-index: 700; display: none;
+}
+#sim-bar-fill { height: 100%; background: linear-gradient(90deg,#0ea5e9,#22d3ee); width: 0%; transition: none; }
+
+/* Vessel marker — rotating SVG ship arrow */
+#sim-vessel {
+  position: absolute; z-index: 800; pointer-events: none;
+  width: 28px; height: 28px;
+  transform: translate(-50%, -50%) rotate(0deg);
+  display: none; transition: none;
+  filter: drop-shadow(0 0 6px rgba(14,165,233,.8));
+}
+
+/* Simulation HUD — floating info card */
+#sim-hud {
+  display: none;
+  position: absolute; top: 56px; right: 12px;
+  z-index: 750; width: 220px;
+  background: rgba(10,17,32,.88);
+  border: 1px solid rgba(14,165,233,.35);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  padding: 10px 12px;
+  font-family: 'Segoe UI', sans-serif;
+  color: #f1f5f9;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+}
+#sim-hud .hud-title {
+  font-size: 9px; font-weight: 700; color: #0ea5e9;
+  text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+#sim-hud .hud-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 5px;
+}
+#sim-hud .hud-label {
+  font-size: 9px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px;
+}
+#sim-hud .hud-val {
+  font-size: 12px; font-weight: 700; color: #f1f5f9;
+}
+#sim-hud .hud-val.accent { color: #0ea5e9; }
+#sim-hud .hud-val.warn   { color: #f59e0b; }
+#sim-hud .hud-val.danger { color: #ef4444; }
+#sim-hud .hud-divider {
+  height: 1px; background: rgba(255,255,255,.08); margin: 6px 0;
+}
+#sim-hud .hud-progress-bar {
+  height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; margin-top: 8px;
+}
+#sim-hud .hud-progress-fill {
+  height: 100%; background: linear-gradient(90deg,#0ea5e9,#22d3ee);
+  border-radius: 2px; transition: none;
+}
+#sim-hud .hud-beyond-fcst {
+  font-size: 9px; color: #f59e0b; text-align: center; margin-top: 6px;
+  display: none;
+}
+
+/* Simulation controls bar */
+#sim-controls {
+  display: none;
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 750;
+  background: rgba(10,17,32,.88);
+  border: 1px solid rgba(14,165,233,.25);
+  border-radius: 24px;
+  backdrop-filter: blur(8px);
+  padding: 6px 14px;
+  display: none;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
-  color: var(--text2);
-  font-family: var(--f-body);
-}
-.edit-tool:hover { background: rgba(255,255,255,.05); border-color: var(--border); color: var(--text); }
-.edit-tool.active {
-  background: rgba(14,165,233,.1);
-  border-color: rgba(14,165,233,.4);
-  color: var(--accent2);
-}
-.edit-tool .et-icon { font-size: 16px; width: 22px; text-align: center; }
-.edit-tool .et-desc { font-size: 10px; color: var(--text3); margin-top: 1px; line-height: 1.4; }
-.edit-tool-stack { display: flex; flex-direction: column; gap: 6px; }
-.edit-undo-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-  margin-top: 4px;
-}
-.edit-undo-btn {
-  padding: 8px;
-  background: transparent;
-  border: 1px solid var(--border2);
-  border-radius: 6px;
-  color: var(--text3);
-  font-size: 11px;
-  font-family: var(--f-body);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  transition: all .15s;
-}
-.edit-undo-btn:hover { background: rgba(255,255,255,.04); color: var(--text2); }
-
-/* Push radius row (reuse existing) */
-#push-radius-row {
-  padding: 10px;
-  background: rgba(249,115,22,.05);
-  border: 1px solid rgba(249,115,22,.2);
-  border-radius: 7px;
-  margin-top: 4px;
-}
-
-/* Edit map wrap */
-#edit-map-wrap {
-  flex: 1;
-  position: relative;
-}
-
-/* ══════════════════════════════════════════════════
-   WEATHER LOADED STATE badges
-   ══════════════════════════════════════════════════ */
-.wx-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-family: var(--f-mono);
-  background: rgba(14,165,233,.1);
-  border: 1px solid rgba(14,165,233,.25);
-  color: var(--accent2);
-}
-.wx-badge.loaded {
-  background: rgba(16,185,129,.1);
-  border-color: rgba(16,185,129,.25);
-  color: #34d399;
-}
-.wx-badge.warn {
-  background: rgba(245,158,11,.1);
-  border-color: rgba(245,158,11,.25);
-  color: var(--warn);
-}
-
-/* ══════════════════════════════════════════════════
-   SHARED — kept from original, essential overrides
-   ══════════════════════════════════════════════════ */
-
-/* Notification area */
-#notif-area {
-  position: fixed;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 9999;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  pointer-events: none;
-}
-.notif {
-  padding: 9px 18px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: var(--f-body);
-  font-weight: 500;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  color: var(--text);
   box-shadow: 0 4px 16px rgba(0,0,0,.4);
-  animation: notif-in .2s ease;
-  pointer-events: auto;
 }
-.notif.err { background: rgba(239,68,68,.12); border-color: rgba(239,68,68,.3); color: #fca5a5; }
-.notif.ok  { background: rgba(16,185,129,.12); border-color: rgba(16,185,129,.3); color: #6ee7b7; }
-@keyframes notif-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+#sim-controls button {
+  background: none; border: none; color: #f1f5f9; cursor: pointer;
+  font-size: 16px; padding: 2px 4px; line-height: 1;
+  transition: color .15s;
+}
+#sim-controls button:hover { color: #0ea5e9; }
+.sim-speed-chip {
+  font-size: 10px; font-weight: 700; padding: 2px 8px;
+  border-radius: 10px; border: 1px solid rgba(255,255,255,.2);
+  color: #94a3b8; cursor: pointer; background: none; transition: all .15s;
+}
+.sim-speed-chip[aria-selected="true"] {
+  background: rgba(14,165,233,.2); border-color: #0ea5e9; color: #0ea5e9;
+}
 
-/* Modals */
+/* ═══════════ MODAL ═══════════ */
 .modal-backdrop {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.7);
-  backdrop-filter: blur(4px);
-  z-index: 8000;
-  align-items: center;
-  justify-content: center;
+  position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 9000; display: none;
+  align-items: center; justify-content: center; backdrop-filter: blur(3px);
 }
 .modal-backdrop.open { display: flex; }
 .modal {
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: 10px;
-  padding: 24px;
-  min-width: 360px;
-  max-width: 480px;
-  width: 90%;
-  position: relative;
-  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 24px; max-width: 480px; width: 90vw; max-height: 85vh; overflow-y: auto;
 }
-.modal h2 {
-  font-family: var(--f-head);
-  font-size: 16px;
-  font-weight: 700;
-  margin-bottom: 16px;
-  color: var(--text);
-}
-.close-btn {
-  position: absolute; top: 16px; right: 16px;
-  background: none; border: none; color: var(--text3);
-  cursor: pointer; font-size: 18px; line-height: 1;
-  transition: color .15s;
-}
-.close-btn:hover { color: var(--text); }
-.form-row { margin-bottom: 12px; }
-.form-row label { display: block; font-size: 10px; font-family: var(--f-mono); letter-spacing: .8px; text-transform: uppercase; color: var(--text3); margin-bottom: 5px; }
-.form-row input { width: 100%; background: var(--bg); border: 1px solid var(--border2); border-radius: 5px; padding: 8px 10px; color: var(--text); font-family: var(--f-body); font-size: 12px; outline: none; }
-.form-row input:focus { border-color: var(--accent); }
-.btn-group { display: flex; gap: 8px; margin-top: 16px; }
-.btn { padding: 8px 14px; border-radius: 6px; font-size: 12px; font-family: var(--f-body); cursor: pointer; border: none; transition: all .15s; }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent2); }
-.btn-secondary { background: rgba(255,255,255,.06); border: 1px solid var(--border2); color: var(--text2); }
-.btn-secondary:hover { background: rgba(255,255,255,.1); }
-.btn-full { width: 100%; }
+.modal h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+.modal .close-btn { float: right; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; }
 
-/* Progress overlay */
-#progress-overlay {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(8,12,20,.85);
-  backdrop-filter: blur(6px);
-  z-index: 9000;
-  align-items: center;
-  justify-content: center;
-}
-#progress-overlay.open { display: flex; }
-#progress-card {
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: 12px;
-  padding: 28px 32px;
-  text-align: center;
-  min-width: 300px;
-}
-#progress-icon { font-size: 28px; margin-bottom: 10px; }
-#progress-title { font-family: var(--f-head); font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 5px; }
-#progress-msg { font-size: 12px; color: var(--text3); margin-bottom: 16px; font-family: var(--f-mono); }
-#progress-bar-wrap { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 14px; }
-#progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s; width: 0%; }
-.progress-step { display: flex; align-items: center; gap: 8px; padding: 4px 0; text-align: left; font-size: 11px; font-family: var(--f-mono); color: var(--text3); }
-.progress-step-icon { width: 16px; text-align: center; }
-.progress-step.active { color: var(--accent2); }
-.progress-step.done { color: var(--success); }
+/* ═══════════ STATUS BADGE ═══════════ */
+.status-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 7px; border-radius: 10px; }
+.status-badge.ok   { background: rgba(34,197,94,.15); color: var(--success); }
+.status-badge.err  { background: rgba(239,68,68,.15); color: var(--danger); }
+.status-badge.warn { background: rgba(245,158,11,.15); color: var(--warn); }
 
-/* Weather analysis overlay */
-#wx-analysis-overlay {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(8,12,20,.92);
-  backdrop-filter: blur(8px);
-  z-index: 9000;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-}
-#wx-analysis-overlay.open { display: flex; }
-.wxa-header { text-align: center; margin-bottom: 28px; }
-.wxa-title { font-family: var(--f-head); font-size: 20px; font-weight: 800; color: var(--text); margin-bottom: 4px; }
-.wxa-route { font-size: 12px; color: var(--text3); font-family: var(--f-mono); }
-.wxa-body { display: flex; gap: 20px; width: 100%; max-width: 700px; }
-.wxa-panel {
-  flex: 1;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: 10px;
-  padding: 20px;
-}
-.wxa-panel-title {
-  font-family: var(--f-mono);
-  font-size: 9px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--text3);
-  margin-bottom: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.wxa-panel-title::before { content: ''; display: inline-block; width: 3px; height: 12px; border-radius: 2px; background: var(--accent); }
-.wxa-steps { display: flex; flex-direction: column; gap: 6px; }
-.wxa-step { display: flex; align-items: center; gap: 8px; font-size: 11px; font-family: var(--f-mono); color: var(--text3); }
-.wxa-step.active { color: var(--accent2); }
-.wxa-step.done { color: var(--success); }
-.wxa-bar-wrap { height: 3px; background: var(--border); border-radius: 2px; margin-top: 14px; overflow: hidden; }
-.wxa-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s; }
-.wxa-pct { font-size: 11px; font-family: var(--f-mono); color: var(--text3); margin-top: 8px; }
-.wxa-tip { font-size: 10px; color: var(--text3); margin-top: 10px; font-style: italic; min-height: 30px; line-height: 1.5; }
-.wxa-intel { display: flex; flex-direction: column; gap: 10px; }
-.wxa-intel-item { padding: 10px 12px; background: rgba(255,255,255,.03); border-radius: 6px; border: 1px solid var(--border); }
-.wxa-intel-title { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
-.wxa-intel-body { font-size: 11px; color: var(--text2); line-height: 1.5; }
+/* ═══════════ ROUTE OPTIMISATION ═══════════ */
 
-/* Optimisation overlay */
-#opt-overlay {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.7);
-  backdrop-filter: blur(6px);
-  z-index: 8500;
-  align-items: center;
-  justify-content: center;
+/* Optimise Route button */
+#opt-btn {
+  display: none; width: 100%; margin: 4px 0;
+  background: linear-gradient(135deg,#f59e0b,#d97706);
+  color: #fff; font-weight: 700; font-size: 12px; border: none;
 }
-#opt-overlay.open { display: flex; }
-#opt-overlay-card {
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: 12px;
-  padding: 28px;
-  min-width: 320px;
-  text-align: center;
-}
-.opt-ov-title { font-family: var(--f-head); font-size: 15px; font-weight: 700; margin-bottom: 14px; color: var(--text); }
-#opt-steps { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
-#opt-ov-bar-wrap { height: 3px; background: var(--border); border-radius: 2px; margin-bottom: 8px; }
-#opt-ov-bar { height: 100%; background: var(--gold); border-radius: 2px; transition: width .3s; width: 0%; }
-#opt-ov-pct { font-size: 11px; font-family: var(--f-mono); color: var(--text3); margin-bottom: 14px; }
-#opt-ov-cancel { background: transparent; border: 1px solid var(--border2); border-radius: 5px; color: var(--text3); padding: 6px 14px; font-size: 11px; cursor: pointer; }
-#opt-ov-cancel:hover { color: var(--danger); border-color: var(--danger); }
-
-/* Route comparison card */
-#opt-compare-card {
-  display: none;
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 8000;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: 10px;
-  padding: 16px 18px;
-  min-width: 400px;
-  box-shadow: 0 16px 40px rgba(0,0,0,.5);
-}
-#opt-compare-card.open { display: block; }
-.cmp-title { display: flex; justify-content: space-between; align-items: center; font-family: var(--f-head); font-size: 13px; font-weight: 700; margin-bottom: 12px; color: var(--text); }
-.cmp-close { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 16px; }
-.cmp-caution { padding: 6px 10px; background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.25); border-radius: 5px; font-size: 10px; color: var(--warn); margin-bottom: 10px; font-family: var(--f-mono); }
-#opt-compare-card table { width: 100%; border-collapse: collapse; font-size: 11px; }
-#opt-compare-card th { font-family: var(--f-mono); font-size: 9px; letter-spacing: .8px; text-transform: uppercase; color: var(--text3); padding: 0 8px 6px; text-align: left; border-bottom: 1px solid var(--border); }
-#opt-compare-card td { padding: 6px 8px; font-family: var(--f-mono); color: var(--text2); border-bottom: 1px solid rgba(255,255,255,.03); }
-.cmp-actions { display: flex; gap: 8px; margin-top: 12px; }
-.cmp-use-btn { flex: 1; padding: 8px; background: var(--gold); border: none; border-radius: 6px; color: #0a0a0a; font-size: 12px; font-weight: 700; cursor: pointer; font-family: var(--f-head); }
-.cmp-use-btn:hover { background: #c9983e; }
-.cmp-keep-btn { flex: 1; padding: 8px; background: transparent; border: 1px solid var(--border2); border-radius: 6px; color: var(--text2); font-size: 12px; cursor: pointer; font-family: var(--f-body); }
-.cmp-keep-btn:hover { border-color: var(--border); color: var(--text); }
-
-/* Dual route legend */
-#opt-legend {
-  display: none;
-  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
-  background: rgba(13,18,32,.9);
-  border: 1px solid var(--border2);
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 11px; font-family: var(--f-mono);
-  color: var(--text2);
-  z-index: 300;
-  gap: 16px;
-}
-#opt-legend.open { display: flex; }
-.swatch-orig { display: inline-block; width: 12px; height: 3px; background: #f97316; vertical-align: middle; border-radius: 2px; margin-right: 4px; }
-.swatch-opt { display: inline-block; width: 12px; height: 3px; background: #fcd34d; vertical-align: middle; border-radius: 2px; margin-right: 4px; }
-
-/* ECA legend */
-#eca-legend {
-  display: none;
-  position: absolute;
-  right: 60px; bottom: 32px;
-  background: rgba(13,18,32,.9);
-  border: 1px solid var(--border2);
-  border-radius: 7px;
-  padding: 12px 14px;
-  z-index: 300;
-  font-size: 11px;
-}
-#eca-legend.open { display: block; }
-.legend-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--text2); }
-.legend-swatch { width: 14px; height: 10px; border-radius: 2px; }
-
-/* Time slider */
-#wx-slider-wrap {
-  display: none;
-  position: absolute;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(13,18,32,.9);
-  border: 1px solid var(--border2);
-  border-radius: 8px;
-  padding: 10px 16px;
-  z-index: 300;
-  min-width: 260px;
-  text-align: center;
-}
-#wx-slider-wrap.open { display: block; }
-#wx-slider-label { font-size: 9px; font-family: var(--f-mono); letter-spacing: 1px; text-transform: uppercase; color: var(--text3); margin-bottom: 6px; }
-#wx-slider { width: 100%; accent-color: var(--accent); }
-#wx-time-display { font-size: 11px; font-family: var(--f-mono); color: var(--accent2); margin-top: 4px; }
-
-/* Wind hover tile */
-#wind-hover-tile {
-  display: none;
-  position: absolute;
-  top: 12px; left: 12px;
-  background: rgba(13,18,32,.9);
-  border: 1px solid var(--border2);
-  border-radius: 7px;
-  padding: 10px 14px;
-  z-index: 300;
-  font-size: 11px;
-}
-#wind-hover-tile.open { display: block; }
-.wind-hover-label { font-size: 9px; font-family: var(--f-mono); letter-spacing: .8px; text-transform: uppercase; color: var(--text3); }
-.wind-hover-row { display: flex; gap: 16px; }
-.wind-hover-val { font-size: 16px; font-family: var(--f-mono); font-weight: 500; color: var(--text); margin-top: 2px; }
-
-/* Sim elements */
-#sim-bar { display: none; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,.05); z-index: 500; }
-#sim-bar.open { display: block; }
-#sim-bar-fill { height: 100%; background: var(--accent); transition: width .5s; }
-#sim-vessel { display: none; position: absolute; width: 28px; height: 28px; z-index: 500; pointer-events: none; transform-origin: center; }
-#sim-vessel.open { display: block; }
-#sim-hud {
-  display: none; position: absolute; top: 12px; left: 12px; z-index: 400;
-  background: rgba(13,18,32,.92); border: 1px solid var(--border2);
-  border-radius: 8px; padding: 12px 14px; min-width: 200px;
-}
-#sim-hud.open { display: block; }
-.hud-title { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-family: var(--f-head); font-weight: 700; color: var(--text); margin-bottom: 8px; }
-.hud-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
-.hud-label { font-size: 10px; font-family: var(--f-mono); color: var(--text3); }
-.hud-val { font-size: 11px; font-family: var(--f-mono); color: var(--text2); }
-.hud-val.accent { color: var(--accent2); }
-.hud-divider { height: 1px; background: var(--border); margin: 6px 0; }
-.hud-progress-bar { height: 2px; background: var(--border); border-radius: 2px; margin-top: 6px; }
-.hud-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; }
-#sim-controls {
-  display: none; position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
-  background: rgba(13,18,32,.9); border: 1px solid var(--border2);
-  border-radius: 8px; padding: 8px 12px;
-  display: none; gap: 8px; align-items: center; z-index: 400;
-}
-#sim-controls.open { display: flex; }
-#sim-controls button { background: transparent; border: 1px solid var(--border2); border-radius: 5px; color: var(--text2); padding: 4px 10px; cursor: pointer; font-size: 14px; transition: all .15s; }
-#sim-controls button:hover { background: rgba(255,255,255,.05); color: var(--text); }
-.sim-speed-chip { font-size: 11px !important; font-family: var(--f-mono) !important; padding: 3px 8px !important; }
-.sim-speed-chip[aria-selected="true"] { background: rgba(14,165,233,.15) !important; border-color: var(--accent) !important; color: var(--accent2) !important; }
+#opt-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Optimisation settings panel */
 #opt-settings {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.7);
+  display: none; margin: 0 0 8px;
+  padding: 10px 12px; background: var(--bg);
+  border: 1px solid rgba(245,158,11,.3); border-radius: 8px;
+}
+#opt-settings .opt-title {
+  font-size: 9px; color: #f59e0b; text-transform: uppercase;
+  letter-spacing: .8px; margin-bottom: 8px; font-weight: 700;
+}
+#opt-settings .opt-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+#opt-settings label { font-size: 9px; color: var(--muted); display: block; margin-bottom: 2px; }
+#opt-settings input {
+  width: 100%; padding: 4px 6px; font-size: 11px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text);
+}
+#opt-settings .opt-run-btn {
+  width: 100%; margin-top: 8px;
+  background: linear-gradient(135deg,#f59e0b,#d97706);
+  color: #fff; font-weight: 700; font-size: 11px; border: none; padding: 7px;
+  border-radius: 6px; cursor: pointer;
+}
+#opt-settings .opt-hint {
+  font-size: 9px; color: var(--muted); margin-top: 6px; line-height: 1.5; text-align: center;
+}
+
+/* Optimisation progress overlay */
+#opt-overlay {
+  display: none; position: absolute; inset: 0; z-index: 850;
+  background: rgba(10,17,32,.82); backdrop-filter: blur(6px);
+  align-items: center; justify-content: center;
+}
+#opt-overlay.visible { display: flex; }
+#opt-overlay-card {
+  background: var(--surface); border: 1px solid rgba(245,158,11,.4);
+  border-radius: 12px; padding: 20px 24px; width: 320px; max-width: 90vw;
+}
+#opt-overlay-card .opt-ov-title {
+  font-size: 14px; font-weight: 700; color: #f59e0b; margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.opt-step {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid #1a2236; opacity: .4; transition: opacity .3s;
+}
+.opt-step:last-child { border-bottom: none; }
+.opt-step.active  { opacity: 1; }
+.opt-step.done    { opacity: .7; }
+.opt-step-icon    { font-size: 13px; width: 18px; flex-shrink: 0; }
+.opt-step-label   { font-size: 11px; color: var(--text); font-weight: 600; }
+.opt-step-sub     { font-size: 9px; color: var(--muted); margin-top: 2px; }
+#opt-ov-bar-wrap  { margin-top: 12px; background: rgba(255,255,255,.08); border-radius: 4px; height: 4px; }
+#opt-ov-bar       { height: 100%; background: linear-gradient(90deg,#f59e0b,#fbbf24); border-radius: 4px; transition: width .4s; width: 0%; }
+#opt-ov-pct       { text-align: right; font-size: 9px; color: #f59e0b; margin-top: 3px; }
+#opt-ov-cancel    {
+  width: 100%; margin-top: 10px; padding: 5px; font-size: 10px;
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; cursor: pointer;
+}
+
+/* Route comparison card (floats top-left of map) */
+#opt-compare-card {
+  display: none; position: absolute; top: 52px; left: 12px; z-index: 750;
+  background: rgba(10,17,32,.92); border: 1px solid rgba(245,158,11,.4);
+  border-radius: 10px; backdrop-filter: blur(8px);
+  padding: 12px 14px; width: 310px; font-family: 'Segoe UI', sans-serif;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+}
+#opt-compare-card .cmp-title {
+  font-size: 10px; font-weight: 700; color: #f59e0b;
+  text-transform: uppercase; letter-spacing: .8px; margin-bottom: 10px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+#opt-compare-card .cmp-close {
+  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0;
+}
+#opt-compare-card table { width: 100%; border-collapse: collapse; font-size: 11px; }
+#opt-compare-card th {
+  font-size: 9px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .5px; padding: 0 4px 4px; text-align: right; font-weight: 600;
+}
+#opt-compare-card th:first-child { text-align: left; }
+#opt-compare-card td {
+  padding: 3px 4px; color: var(--text); text-align: right; border-top: 1px solid #1a2236;
+}
+#opt-compare-card td:first-child { text-align: left; color: var(--muted); font-size: 10px; }
+#opt-compare-card .cmp-better { color: #22c55e; font-weight: 700; }
+#opt-compare-card .cmp-worse  { color: #f59e0b; }
+#opt-compare-card .cmp-caution {
+  background: rgba(245,158,11,.1);
+  border: 1px solid rgba(245,158,11,.35);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: #fcd34d;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+#opt-compare-card .cmp-caution strong { color: #f59e0b; }
+#opt-compare-card .cmp-actions {
+  display: flex; gap: 6px; margin-top: 10px;
+}
+#opt-compare-card .cmp-use-btn {
+  flex: 1; padding: 6px; font-size: 11px; font-weight: 700;
+  background: linear-gradient(135deg,#f59e0b,#d97706); color: #fff;
+  border: none; border-radius: 6px; cursor: pointer;
+}
+#opt-compare-card .cmp-keep-btn {
+  flex: 1; padding: 6px; font-size: 11px;
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; cursor: pointer;
+}
+
+/* Legend pill for dual route */
+#opt-legend {
+  display: none; position: absolute; bottom: 14px; right: 14px; z-index: 700;
+  background: rgba(10,17,32,.88); border: 1px solid var(--border);
+  border-radius: 20px; padding: 5px 12px; font-size: 10px; color: var(--text);
+  align-items: center; gap: 10px; backdrop-filter: blur(4px);
+}
+#opt-legend.visible { display: flex; }
+#opt-legend span { display: flex; align-items: center; gap: 5px; }
+#opt-legend .swatch-orig { display: inline-block; width: 22px; height: 3px; background:#0ea5e9; border-radius: 2px; }
+#opt-legend .swatch-opt  { display: inline-block; width: 22px; height: 3px;
+  background: repeating-linear-gradient(90deg, #f59e0b 0 8px, transparent 8px 12px); }
+
+/* ═══════════ NOTIFICATIONS ═══════════ */
+#notif-area { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
+.notif {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; font-size: 12px; min-width: 220px; max-width: 320px;
+  animation: slideIn .2s ease; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.notif.err { border-color: var(--danger); }
+.notif.ok  { border-color: var(--success); }
+@keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+/* ═══════════ CURSOR ═══════════ */
+body.picking #map { cursor: crosshair; }
+body.adding-wp #map { cursor: cell; }
+
+/* ═══════════ MAPLIBRE POPUP ═══════════ */
+.maplibregl-popup-content {
+  background: var(--surface) !important; color: var(--text) !important;
+  border: 1px solid var(--border) !important; border-radius: 8px !important;
+  font-size: 12px !important; padding: 10px 14px !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5) !important;
+}
+.maplibregl-popup-tip { border-top-color: var(--surface) !important; }
+.maplibregl-ctrl-bottom-left, .maplibregl-ctrl-bottom-right { font-size: 10px; }
+/* Hide compass (reset north) and geolocate — not required for voyage planning */
+.maplibregl-ctrl-compass,
+.maplibregl-ctrl-geolocate { display: none !important; }
+
+/* Push waypoint tool */
+body.push-wp-active #map { cursor: crosshair !important; }
+body.push-wp-active .maplibregl-canvas { cursor: crosshair !important; }
+#push-circle-svg { transition: opacity .1s; }
+#push-circle { transition: r .15s ease; }
+.wp-marker-pushed {
+  background: #f97316 !important;
+  box-shadow: 0 0 8px 3px rgba(249,115,22,.7) !important;
+  transform: scale(1.4);
+  transition: transform .1s, box-shadow .1s;
+}
+
+/* ═══════════ IMPORT/EXPORT ROW ═══════════ */
+.ie-row { display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* ═══════════ CHECKBOX ═══════════ */
+.checkbox-row { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; font-size: 12px; cursor: pointer; }
+.checkbox-row input { width: auto; accent-color: var(--accent); }
+
+/* ═══════════ WEATHER INTERVAL CHIPS ═══════════ */
+.wx-int-chip {
+  flex: 1; padding: 4px 0; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); font-size: 11px; font-weight: 600; cursor: pointer;
+  color: var(--muted); transition: all .15s; text-align: center;
+}
+.wx-int-chip[aria-selected="true"] {
+  background: rgba(14,165,233,.18); border-color: #0ea5e9; color: #0ea5e9;
+}
+
+/* ═══════════ PASSAGE CHIPS ═══════════ */
+.passage-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+.pchip {
+  padding: 3px 9px; border-radius: 12px; border: 1px solid var(--border);
+  background: var(--bg); font-size: 11px; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+  user-select: none;
+}
+/* AVOID chips — turn red with ✕ when active */
+.pchip.avoid-chip.on {
+  background: rgba(239,68,68,.15); border-color: #ef4444; color: #ef4444; font-weight: 600;
+}
+.pchip.avoid-chip.on::before { content: '✕ '; font-size: 9px; }
+/* FORCE-VIA chips — turn blue/teal with ✓ when active */
+.pchip.via-chip.on {
+  background: rgba(14,165,233,.18); border-color: #0ea5e9; color: #0ea5e9; font-weight: 600;
+}
+.pchip.via-chip.on::before { content: '✓ '; font-size: 9px; }
+
+/* ═══════════ SCROLLBAR (WebKit) ═══════════ */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ═══════════ PROGRESS OVERLAY ═══════════ */
+#progress-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(7,10,20,.92); backdrop-filter: blur(8px);
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0;
+}
+#progress-overlay.visible { display: flex; }
+
+/* Simple card (for route calculation) */
+#progress-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 28px 36px; min-width: 320px; max-width: 440px; text-align: center;
+  box-shadow: 0 8px 40px rgba(0,0,0,.6);
+}
+#progress-icon { font-size: 32px; margin-bottom: 10px; }
+#progress-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+#progress-msg { font-size: 12px; color: var(--muted); margin-bottom: 18px; min-height: 18px; }
+#progress-bar-wrap { background: var(--border); border-radius: 6px; height: 6px; overflow: hidden; margin-bottom: 14px; }
+#progress-bar-fill { height: 100%; border-radius: 6px; background: var(--accent); width: 0%; transition: width .4s ease; }
+#progress-steps { display: flex; flex-direction: column; gap: 6px; text-align: left; margin-top: 4px; }
+.progress-step { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); transition: color .2s; }
+.progress-step.done   { color: var(--success); }
+.progress-step.active { color: var(--accent2); font-weight: 600; }
+.progress-step-icon { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; }
+
+/* Weather analysis overlay — rich two-panel */
+#wx-analysis-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(7,10,20,.95); backdrop-filter: blur(10px);
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center; padding: 24px;
+}
+#wx-analysis-overlay.visible { display: flex; }
+.wxa-header {
+  width: 100%; max-width: 860px; margin-bottom: 16px; text-align: center;
+}
+.wxa-title { font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 4px; }
+.wxa-route { font-size: 12px; color: var(--muted); }
+.wxa-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  width: 100%; max-width: 860px;
+}
+.wxa-panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 20px; min-height: 280px;
+}
+.wxa-panel-title {
+  font-size: 9px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 14px; display: flex; align-items: center; gap: 6px;
+}
+.wxa-panel-title::before { content: ''; display: inline-block; width: 3px; height: 12px; border-radius: 2px; background: var(--accent); }
+/* Steps panel */
+.wxa-steps { display: flex; flex-direction: column; gap: 8px; }
+.wxa-step { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1a2236; }
+.wxa-step:last-child { border-bottom: none; }
+.wxa-step-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; margin-top: 1px; }
+.wxa-step-text { flex: 1; }
+.wxa-step-label { font-size: 12px; color: var(--muted); transition: color .3s; }
+.wxa-step-label.done   { color: var(--success); }
+.wxa-step-label.active { color: var(--text); font-weight: 600; }
+.wxa-step-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
+/* Bar */
+.wxa-bar-wrap { background: var(--border); border-radius: 4px; height: 4px; margin: 14px 0 6px; }
+.wxa-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg,#0ea5e9,#22c55e); transition: width .5s ease; }
+.wxa-pct { font-size: 10px; color: var(--muted); text-align: right; }
+/* Intelligence panel */
+.wxa-intel { display: flex; flex-direction: column; gap: 8px; }
+.wxa-intel-card {
+  background: #0a0f1e; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
+  animation: fadeSlideIn .4s ease;
+  opacity: 0; animation-fill-mode: forwards;
+}
+@keyframes fadeSlideIn {
+  from { opacity:0; transform:translateX(10px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+.wxa-intel-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+.wxa-intel-body .wxa-intel-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.wxa-intel-body .wxa-intel-sub   { font-size: 10px; color: var(--muted); line-height: 1.4; }
+.wxa-intel-card.warn  { border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.05); }
+.wxa-intel-card.danger{ border-color: rgba(239,68,68,.4);  background: rgba(239,68,68,.05); }
+.wxa-intel-card.good  { border-color: rgba(34,197,94,.4);  background: rgba(34,197,94,.05); }
+.wxa-intel-card.info  { border-color: rgba(59,130,246,.4); background: rgba(59,130,246,.05); }
+.wxa-tip { font-size: 10px; color: var(--muted); text-align: center; margin-top: 10px; font-style: italic; }
+
+/* ═══════════ MAPLIBRE MARKER OVERRIDES ═══════════ */
+.maplibregl-marker { cursor: grab; }
+.maplibregl-marker:active { cursor: grabbing; }
+
+/* ═══════════ WIND HOVER TILE ═══════════ */
+#wind-hover-tile {
+  position: absolute; bottom: 90px; left: 12px; z-index: 600;
+  background: rgba(11,15,26,.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 12px; display: none; min-width: 140px;
+  backdrop-filter: blur(6px); pointer-events: none;
+}
+#wind-hover-tile.visible { display: block; }
+.wind-hover-row { display: flex; justify-content: space-between; gap: 16px; }
+.wind-hover-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.wind-hover-val { font-weight: 700; color: var(--accent2); font-size: 14px; }
+
+/* ═══════════ LAYER LEGEND PANEL ═══════════ */
+/* ═══════════ CHECKBOX ═══════════ */
+  position: absolute; right: 12px; bottom: 90px; z-index: 600;
+  background: rgba(11,15,26,.92); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; font-size: 11px; display: none; min-width: 180px;
   backdrop-filter: blur(6px);
-  z-index: 8000;
-  align-items: center;
-  justify-content: center;
 }
-#opt-settings.open { display: flex; }
-#opt-settings .opt-inner {
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: 12px;
-  padding: 24px;
-  min-width: 380px;
-  max-width: 440px;
-  width: 90%;
-}
-.opt-title { font-family: var(--f-head); font-size: 15px; font-weight: 700; margin-bottom: 16px; color: var(--text); }
-#opt-settings label { display: block; font-size: 10px; font-family: var(--f-mono); letter-spacing: .8px; text-transform: uppercase; color: var(--text3); margin-bottom: 4px; }
-#opt-settings input, #opt-settings select { width: 100%; background: var(--bg); border: 1px solid var(--border2); border-radius: 5px; padding: 7px 10px; color: var(--text); font-size: 12px; font-family: var(--f-body); margin-bottom: 10px; outline: none; }
-#opt-settings input:focus, #opt-settings select:focus { border-color: var(--accent); }
-#opt-settings .hint { font-size: 10px; color: var(--text3); font-style: italic; margin-bottom: 10px; line-height: 1.5; font-family: var(--f-mono); }
 
-/* Weather re-edit warning modal */
-#wx-edit-warning {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.7);
-  backdrop-filter: blur(6px);
-  z-index: 8500;
-  align-items: center;
-  justify-content: center;
-}
-#wx-edit-warning.open { display: flex; }
-#wx-edit-warning .warn-card {
-  background: var(--surface2);
-  border: 1px solid rgba(245,158,11,.3);
-  border-radius: 10px;
-  padding: 24px;
-  max-width: 380px;
-  width: 90%;
-}
-.warn-card-icon { font-size: 24px; margin-bottom: 10px; }
-.warn-card-title { font-family: var(--f-head); font-size: 14px; font-weight: 700; color: var(--warn); margin-bottom: 8px; }
-.warn-card-body { font-size: 12px; color: var(--text2); line-height: 1.6; margin-bottom: 18px; }
-.warn-card-actions { display: flex; flex-direction: column; gap: 7px; }
-.warn-btn { padding: 9px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; border: none; font-family: var(--f-body); font-weight: 500; transition: all .15s; }
-.warn-btn-proceed { background: rgba(245,158,11,.15); border: 1px solid rgba(245,158,11,.35); color: var(--warn); }
-.warn-btn-proceed:hover { background: rgba(245,158,11,.25); }
-.warn-btn-optimise { background: linear-gradient(135deg, var(--gold) 0%, var(--gold-dim) 100%); color: #0a0a0a; font-weight: 700; }
-.warn-btn-overlay { background: transparent; border: 1px solid var(--border2); color: var(--text3); }
-.warn-btn-overlay:hover { color: var(--text2); }
+/* ═══════════ MAX STATS CARDS ═══════════ */
+.max-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.max-stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+.max-stat-card .val { font-size: 16px; font-weight: 700; color: var(--danger); }
+.max-stat-card .key { font-size: 9px; color: var(--muted); margin-top: 1px; }
 
-/* Push cursor elements (keep for edit canvas) */
-#push-cursor-tooltip {
-  display: none; position: absolute; pointer-events: none; z-index: 600;
-  background: rgba(13,18,32,.92); color: var(--text);
-  font-size: 11px; font-family: var(--f-mono); font-weight: 600;
-  padding: 5px 10px; border-radius: 6px; white-space: nowrap;
-  border: 1px solid rgba(249,115,22,.5);
-  box-shadow: 0 2px 8px rgba(0,0,0,.4);
-  transform: translate(14px,-50%);
-}
-#push-circle-svg { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 500; }
+/* ═══════════ SCROLLABLE WAYPOINT TABLE ═══════════ */
+#wp-table-wrap { max-height: 160px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 5px; }
+#wp-table-wrap::-webkit-scrollbar { width: 4px; }
+#wp-table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* Compat: old JS toggles .on class — map to new visual styles */
-.pchip.on { 
-  background: rgba(14,165,233,.1);
-  border-color: rgba(14,165,233,.4);
-  color: var(--accent2);
+/* ═══════════ ECA HIGHLIGHT ROW ═══════════ */
+.wp-table tr.eca-entry td { background: rgba(255,200,0,.12); }
+.wp-table tr.eca-exit td  { background: rgba(100,200,255,.12); }
+.eca-badge { font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 700; margin-left: 4px; }
+.eca-badge.entry { background: rgba(255,200,0,.25); color: #ffc800; }
+.eca-badge.exit  { background: rgba(100,200,255,.25); color: #64c8ff; }
+#eca-legend {
+  position: absolute; right: 12px; top: 12px; z-index: 600;
+  background: rgba(11,15,26,.88); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; font-size: 11px; display: none;
 }
-.avoid-chip.on {
-  background: rgba(239,68,68,.1) !important;
-  border-color: rgba(239,68,68,.4) !important;
-  color: #fca5a5 !important;
-}
+#eca-legend.visible { display: block; }
+.legend-item { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+.legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
 </style>
 </head>
 <body>
 
-<!-- ══════════════════════════════════════════════
-     SCREEN 1 — VOYAGE PLAN (Landing)
-     ══════════════════════════════════════════════ -->
-<div id="screen-plan" class="screen active">
+<!-- ═══════════════════════════════════════════════════════════
+     LAYOUT
+     ═══════════════════════════════════════════════════════════ -->
+<div id="app">
 
-  <!-- Left: planning form -->
-  <div id="plan-panel">
-
-    <div id="plan-brand">
-      <div class="brand-logo">
-        <div class="brand-icon">⚓</div>
-        <h1>RoutePlannerPro<span class="version-badge">v2.5</span></h1>
-      </div>
-      <div class="brand-tagline">Professional Sea Route Planning Platform</div>
+  <!-- ───────────── SIDEBAR ───────────── -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>⚓ RoutePlannerPro</h1>
+      <p>Professional Sea Route Planner <span style="opacity:.5;font-size:10px">v2.5.0</span></p>
     </div>
+    <div id="sidebar-body">
 
-    <div id="plan-form-body">
+      <!-- VOYAGE INPUTS -->
+      <div class="section">
+        <div class="section-title">Voyage Inputs</div>
 
-      <!-- VOYAGE DETAILS -->
-      <div class="pf-section">
-        <div class="pf-section-title">Voyage Details</div>
-
-        <!-- Origin -->
-        <div class="pf-field">
-          <label class="pf-label">Port of Departure</label>
-          <div class="pf-port-mode">
-            <button id="o-mode-port" class="pf-mode-btn active" onclick="setOriginMode('port')">⚓ Port</button>
-            <button id="o-mode-coord" class="pf-mode-btn" onclick="setOriginMode('coord')">🎯 Coords</button>
+        <!-- ORIGIN -->
+        <div class="form-row">
+          <label>Origin</label>
+          <div class="mode-toggle">
+            <button id="o-mode-port" class="active" onclick="setOriginMode('port')">⚓ Port</button>
+            <button id="o-mode-coord" onclick="setOriginMode('coord')">🎯 Coords</button>
           </div>
-          <div id="o-port-wrap" class="pf-port-wrap">
-            <input id="o-port-input" class="pf-input" type="text" placeholder="Search 13,700+ ports…" autocomplete="off"
+          <div id="o-port-wrap" class="port-wrap">
+            <input id="o-port-input" type="text" placeholder="Search 13,700+ ports…" autocomplete="off"
                    oninput="portSearch(this,'o')" onfocus="portSearch(this,'o')"/>
-            <button class="pf-pin-btn" id="o-pin-btn" title="Pick on map" onclick="toggleMapPick('o')">📍</button>
+            <button class="pin-btn" id="o-pin-btn" title="Pick on map" onclick="toggleMapPick('o')">📍</button>
             <div class="autocomplete-list" id="o-ac"></div>
           </div>
           <div id="o-coord-wrap" style="display:none">
-            <div class="pf-row2">
-              <div><input type="number" id="o-lat" class="pf-input" placeholder="Latitude" step="0.0001"/></div>
-              <div><input type="number" id="o-lon" class="pf-input" placeholder="Longitude" step="0.0001"/></div>
+            <div class="form-row-2">
+              <div><input type="number" id="o-lat" placeholder="Lat" step="0.0001"/></div>
+              <div><input type="number" id="o-lon" placeholder="Lon" step="0.0001"/></div>
             </div>
           </div>
         </div>
 
-        <!-- Destination -->
-        <div class="pf-field">
-          <label class="pf-label">Port of Destination</label>
-          <div class="pf-port-mode">
-            <button id="d-mode-port" class="pf-mode-btn active" onclick="setDestMode('port')">⚓ Port</button>
-            <button id="d-mode-coord" class="pf-mode-btn" onclick="setDestMode('coord')">🎯 Coords</button>
+        <!-- DESTINATION -->
+        <div class="form-row">
+          <label>Destination</label>
+          <div class="mode-toggle">
+            <button id="d-mode-port" class="active" onclick="setDestMode('port')">⚓ Port</button>
+            <button id="d-mode-coord" onclick="setDestMode('coord')">🎯 Coords</button>
           </div>
-          <div id="d-port-wrap" class="pf-port-wrap">
-            <input id="d-port-input" class="pf-input" type="text" placeholder="Search 13,700+ ports…" autocomplete="off"
+          <div id="d-port-wrap" class="port-wrap">
+            <input id="d-port-input" type="text" placeholder="Search 13,700+ ports…" autocomplete="off"
                    oninput="portSearch(this,'d')" onfocus="portSearch(this,'d')"/>
-            <button class="pf-pin-btn" id="d-pin-btn" title="Pick on map" onclick="toggleMapPick('d')">📍</button>
+            <button class="pin-btn" id="d-pin-btn" title="Pick on map" onclick="toggleMapPick('d')">📍</button>
             <div class="autocomplete-list" id="d-ac"></div>
           </div>
           <div id="d-coord-wrap" style="display:none">
-            <div class="pf-row2">
-              <div><input type="number" id="d-lat" class="pf-input" placeholder="Latitude" step="0.0001"/></div>
-              <div><input type="number" id="d-lon" class="pf-input" placeholder="Longitude" step="0.0001"/></div>
+            <div class="form-row-2">
+              <div><input type="number" id="d-lat" placeholder="Lat" step="0.0001"/></div>
+              <div><input type="number" id="d-lon" placeholder="Lon" step="0.0001"/></div>
             </div>
           </div>
         </div>
 
-        <!-- Speed & Departure -->
-        <div class="pf-row2">
-          <div class="pf-field" style="margin-bottom:0">
-            <label class="pf-label">Speed (knots)</label>
-            <input type="number" id="speed" class="pf-input" value="14" min="1" max="30" step="0.5"/>
+        <!-- SPEED & DEPARTURE -->
+        <div class="form-row-2">
+          <div>
+            <label>Speed (knots)</label>
+            <input type="number" id="speed" value="14" min="1" max="30" step="0.5"/>
           </div>
-          <div class="pf-field" style="margin-bottom:0">
-            <label class="pf-label">Departure (UTC)</label>
-            <input type="datetime-local" id="dep-time" class="pf-input" style="font-size:11px;padding:8px 10px"/>
+          <div>
+            <label>Departure (UTC)</label>
+            <input type="datetime-local" id="dep-time" style="padding:6px 8px;font-size:11px"/>
           </div>
         </div>
       </div>
-
-      <div class="pf-divider"></div>
 
       <!-- ROUTING OPTIONS -->
-      <div class="pf-section">
-        <div class="pf-section-title">Routing Options</div>
+      <div class="section">
+        <div class="section-title">Routing Options</div>
 
-        <div class="pf-chips-group">
-          <div class="pf-chips-label">
+        <!-- AVOID section -->
+        <div class="form-row" style="margin-bottom:8px">
+          <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
             <span>🚫 Avoid Passage</span>
-            <span>tap to exclude</span>
-          </div>
-          <div class="pf-chips" id="passage-chips">
-            <div class="pf-chip pchip avoid-chip" data-val="suez"      onclick="togglePassage(this,'avoid')">Suez</div>
-            <div class="pf-chip pchip avoid-chip" data-val="panama"    onclick="togglePassage(this,'avoid')">Panama</div>
-            <div class="pf-chip pchip avoid-chip" data-val="kiel"      onclick="togglePassage(this,'avoid')">Kiel</div>
-            <div class="pf-chip pchip avoid-chip" data-val="magellan"  onclick="togglePassage(this,'avoid')">Magellan</div>
-            <div class="pf-chip pchip avoid-chip" data-val="dover"     onclick="togglePassage(this,'avoid')">Dover</div>
-            <div class="pf-chip pchip avoid-chip" data-val="bosphorus" onclick="togglePassage(this,'avoid')">Bosphorus</div>
+            <span style="font-size:9px;color:var(--muted)">tap to exclude</span>
+          </label>
+          <div class="passage-grid" id="passage-chips">
+            <div class="pchip avoid-chip" data-val="suez"      onclick="togglePassage(this,'avoid')">Suez</div>
+            <div class="pchip avoid-chip" data-val="panama"    onclick="togglePassage(this,'avoid')">Panama</div>
+            <div class="pchip avoid-chip" data-val="kiel"      onclick="togglePassage(this,'avoid')">Kiel</div>
+            <div class="pchip avoid-chip" data-val="magellan"  onclick="togglePassage(this,'avoid')">Magellan</div>
+            <div class="pchip avoid-chip" data-val="dover"     onclick="togglePassage(this,'avoid')">Dover</div>
+            <div class="pchip avoid-chip" data-val="bosphorus" onclick="togglePassage(this,'avoid')">Bosphorus</div>
           </div>
         </div>
 
-        <div class="pf-chips-group">
-          <div class="pf-chips-label">
+        <!-- FORCE VIA section -->
+        <div class="form-row">
+          <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
             <span>📍 Force Route Via</span>
-            <span>tap to force</span>
+            <span style="font-size:9px;color:var(--muted)">tap to force</span>
+          </label>
+          <div class="passage-grid" id="via-chips">
+            <div class="pchip via-chip" data-via="goodhope"    onclick="toggleVia(this)">C. Good Hope</div>
+            <div class="pchip via-chip" data-via="capehorn"    onclick="toggleVia(this)">Cape Horn</div>
+            <div class="pchip via-chip" data-via="malacca"     onclick="toggleVia(this)">Malacca</div>
+            <div class="pchip via-chip" data-via="babalmandab" onclick="toggleVia(this)">Bab-el-Mandeb</div>
+            <div class="pchip via-chip" data-via="hormuz"      onclick="toggleVia(this)">Hormuz</div>
+            <div class="pchip via-chip" data-via="sunda"       onclick="toggleVia(this)">Sunda</div>
+            <div class="pchip via-chip" data-via="lombok"      onclick="toggleVia(this)">Lombok</div>
+            <div class="pchip via-chip" data-via="bering"      onclick="toggleVia(this)">Bering</div>
           </div>
-          <div class="pf-chips" id="via-chips">
-            <div class="pf-chip pchip via-chip" data-via="goodhope"    onclick="toggleVia(this)">C. Good Hope</div>
-            <div class="pf-chip pchip via-chip" data-via="capehorn"    onclick="toggleVia(this)">Cape Horn</div>
-            <div class="pf-chip pchip via-chip" data-via="malacca"     onclick="toggleVia(this)">Malacca</div>
-            <div class="pf-chip pchip via-chip" data-via="babalmandab" onclick="toggleVia(this)">Bab-el-Mandeb</div>
-            <div class="pf-chip pchip via-chip" data-via="hormuz"      onclick="toggleVia(this)">Hormuz</div>
-            <div class="pf-chip pchip via-chip" data-via="sunda"       onclick="toggleVia(this)">Sunda</div>
-            <div class="pf-chip pchip via-chip" data-via="lombok"      onclick="toggleVia(this)">Lombok</div>
-            <div class="pf-chip pchip via-chip" data-via="bering"      onclick="toggleVia(this)">Bering</div>
+        </div>
+
+        <div class="toggle-row" style="margin-top:8px">
+          <span class="toggle-label">🚫 Add Waypoint Mode</span>
+          <label class="toggle"><input type="checkbox" id="add-wp-chk" onchange="setAddWpMode(this.checked)"/><span class="toggle-slider"></span></label>
+        </div>
+        <div class="toggle-row" style="margin-top:6px">
+          <span class="toggle-label">↔ Push Waypoints</span>
+          <label class="toggle"><input type="checkbox" id="push-wp-chk" onchange="setPushWpMode(this.checked)"/><span class="toggle-slider"></span></label>
+        </div>
+        <!-- Push radius slider — shown only when push mode active -->
+        <div id="push-radius-row" style="display:none;margin-top:8px">
+          <label style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+            Push Radius: <span id="push-radius-label">200</span> nm
+          </label>
+          <input type="range" id="push-radius-slider" min="50" max="800" step="25" value="200"
+            oninput="document.getElementById('push-radius-label').textContent=this.value"
+            style="width:100%;margin-top:4px;accent-color:var(--accent2)"/>
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:2px">
+            <span>50 nm</span><span>gentle ← → strong</span><span>800 nm</span>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.6">
+            <span id="push-state-idle"  >🟠 Move circle over waypoints, then <strong>click to activate</strong>.</span>
+            <span id="push-state-active" style="display:none;color:var(--accent2)">🟢 Broom active — move to push. <strong>Click to save.</strong></span><br>
+            <span id="push-undo-hint" style="display:none;color:var(--muted)">↩ ESC or Ctrl+Z to undo</span>
           </div>
         </div>
       </div>
-
-      <div class="pf-divider"></div>
 
       <!-- MAP LAYERS -->
-      <div class="pf-section" style="margin-bottom:16px">
-        <div class="pf-section-title">Map Layers</div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:var(--text2)">
-            <input type="checkbox" id="eca-chk" checked onchange="toggleEcaLayer(this.checked)" style="accent-color:var(--accent)"/>
-            ECA Zones
-          </label>
-          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:var(--text2)">
-            <input type="checkbox" id="osm-chk" onchange="toggleOpenSeaMap(this.checked)" style="accent-color:var(--accent)"/>
-            OpenSeaMap
-          </label>
+      <div class="section">
+        <div class="section-title">Map Layers</div>
+        <div class="toggle-row">
+          <span class="toggle-label">🏔 ECA Zones</span>
+          <label class="toggle"><input type="checkbox" id="eca-chk" checked onchange="toggleEcaLayer(this.checked)"/><span class="toggle-slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">🧭 OpenSeaMap</span>
+          <label class="toggle"><input type="checkbox" id="osm-chk" onchange="toggleOpenSeaMap(this.checked)"/><span class="toggle-slider"></span></label>
         </div>
       </div>
 
-      <!-- IMPORT -->
-      <div class="pf-import-row" style="margin-bottom:20px">
-        <span>Import existing route</span>
-        <label class="pf-import-btn">RTZ <input type="file" accept=".rtz,.xml" style="display:none" onchange="importRTZ(this)"/></label>
-        <label class="pf-import-btn">CSV <input type="file" accept=".csv" style="display:none" onchange="importCSV(this)"/></label>
+      <!-- CALCULATE / CLEAR -->
+      <div class="btn-group" style="margin-bottom:10px">
+        <button class="btn btn-primary" style="flex:1" onclick="calculateRoute()">🧮 Calculate Route</button>
+        <button class="btn btn-secondary" onclick="clearAll()">✕ Clear</button>
       </div>
 
-      <!-- CALCULATE -->
-      <button id="btn-calculate" onclick="calculateRoute()">
-        Calculate Route →
+      <!-- OPTIMISE ROUTE — appears after route calculated -->
+      <button class="btn btn-full" id="opt-btn" onclick="toggleOptSettings()" style="display:none">
+        ⚡ Optimise Route
       </button>
 
-      <div style="margin-top:10px;text-align:center">
-        <button onclick="clearAll()" style="background:none;border:none;color:var(--text3);font-size:11px;cursor:pointer;font-family:var(--f-mono);letter-spacing:.5px">
-          ✕ Clear All
+      <!-- OPTIMISATION SETTINGS PANEL -->
+      <div id="opt-settings">
+        <div class="opt-title">⚡ Route Optimisation — Weather Limits</div>
+        <div class="opt-grid">
+          <div>
+            <label>Max Wind (kt)</label>
+            <input type="number" id="opt-max-wind" placeholder="e.g. 25" min="5" max="60" step="1" value="25"/>
+          </div>
+          <div>
+            <label>Max Wave (m)</label>
+            <input type="number" id="opt-max-wave" placeholder="e.g. 3.0" min="0.5" max="15" step="0.5" value="3.0"/>
+          </div>
+          <div>
+            <label>Min Speed (kt)</label>
+            <input type="number" id="opt-min-speed" placeholder="e.g. 8" min="3" max="20" step="0.5" value="8"/>
+          </div>
+          <div>
+            <label>Max Speed (kt)</label>
+            <input type="number" id="opt-max-speed" placeholder="e.g. 18" min="5" max="30" step="0.5" value="18"/>
+          </div>
+        </div>
+        <button class="opt-run-btn" onclick="runOptimisation()">⚡ Run Optimisation</button>
+        <div class="opt-hint">Requires Load Weather first · Detours only around risk windows · Graceful alterations · ETA guaranteed ≤ original</div>
+      </div>
+
+      <!-- METRICS (hidden until route calculated) -->
+      <div class="section" id="metrics-section">
+        <div class="section-title">Route Metrics</div>
+        <div class="metric-grid">
+          <div class="metric-card"><div class="val" id="m-dist">—</div><div class="key">Distance (nm)</div></div>
+          <div class="metric-card"><div class="val" id="m-eta">—</div><div class="key">ETA (UTC)</div></div>
+          <div class="metric-card"><div class="val" id="m-transit">—</div><div class="key">Transit (days)</div></div>
+          <div class="metric-card"><div class="val" id="m-eca">—</div><div class="key">ECA Miles</div></div>
+        </div>
+
+        <!-- LOAD WEATHER BUTTON — appears after route calculated -->
+        <button class="btn btn-full" id="load-wx-btn" onclick="loadWeatherAndAnalyse()"
+          style="margin:10px 0 4px;background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;font-weight:700;font-size:12px;border:none;gap:6px">
+          🌊 Load Weather &amp; Analyse Route
         </button>
+        <div id="wx-status-hint" style="font-size:10px;color:var(--muted);text-align:center;margin-bottom:6px">
+          Fetches wind, wave &amp; current data along the full route
+        </div>
+
+        <!-- Ocean leg weather interval selector -->
+        <div style="margin:0 0 8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px">
+            🌊 Ocean Leg Sampling Interval
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap" id="wx-interval-chips">
+            <button class="wx-int-chip" data-h="3"  onclick="setWxInterval(this)">3h</button>
+            <button class="wx-int-chip" data-h="6"  onclick="setWxInterval(this)" aria-selected="true">6h ✓</button>
+            <button class="wx-int-chip" data-h="9"  onclick="setWxInterval(this)">9h</button>
+            <button class="wx-int-chip" data-h="12" onclick="setWxInterval(this)">12h</button>
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:5px;line-height:1.5" id="wx-interval-hint">
+            6h — balanced detail for most voyages
+          </div>
+        </div>
+
+        <!-- Max wind / wave highlight cards (shown after weather loads) -->
+        <div class="max-stat-grid" id="max-stat-section" style="display:none">
+          <div class="max-stat-card"><div class="val" id="m-maxwind">—</div><div class="key">Max Wind (kt)</div></div>
+          <div class="max-stat-card"><div class="val" id="m-maxwave" style="color:var(--accent2)">—</div><div class="key">Max Wave (m)</div></div>
+        </div>
+        <!-- Weather delay section -->
+        <div id="wx-delay-section" style="display:none;margin-bottom:8px">
+          <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:8px 10px">
+            <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">⚡ Weather Impact</div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11px;color:var(--text)">Weather-adj. ETA</span>
+              <span style="font-size:12px;font-weight:700;color:var(--accent2)" id="m-adj-eta">—</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px">
+              <span style="font-size:11px;color:var(--text)">Total delay</span>
+              <span style="font-size:13px;font-weight:700" id="m-wxdelay">—</span>
+            </div>
+          </div>
+        </div>
+        <!-- Scrollable waypoint table -->
+        <div id="wp-table-wrap">
+          <table class="wp-table" id="wp-table">
+            <thead><tr><th>#</th><th>Position</th><th>Brg</th><th>nm</th><th>ECA</th></tr></thead>
+            <tbody id="wp-tbody"></tbody>
+          </table>
+        </div>
+        <!-- Waypoint selection / delete toolbar -->
+        <div id="wp-delete-bar">
+          <span id="wp-selected-label">No waypoint selected</span>
+          <button id="wp-deselect-btn" onclick="deselectWaypoint()">✕</button>
+          <button id="wp-delete-btn" onclick="deleteSelectedWaypoint()">🗑 Delete</button>
+        </div>
+        <!-- WEATHER ALONG ROUTE — hidden, used for PDF export -->
+        <div id="wx-route-section" style="display:none">
+          <div id="wx-route-rows"></div>
+        </div>
+        <!-- ACTION BUTTONS -->
+        <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px">
+          <button class="btn btn-success btn-full" id="sim-btn" onclick="startSimulation()" disabled
+            title="Load weather first to enable simulation">🚢 Simulate Voyage</button>
+          <button class="btn btn-outline btn-full" id="export-btn" onclick="openExportModal()" disabled
+            title="Click 'Load Weather' first">📄 Export Voyage Report</button>
+        </div>
       </div>
 
-    </div><!-- /plan-form-body -->
-  </div><!-- /plan-panel -->
+      <!-- IMPORT / EXPORT -->
+      <div class="section">
+        <div class="section-title">Import / Export</div>
+        <div style="margin-bottom:8px">
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px">📤 Export Route</div>
+          <div class="ie-row">
+            <button class="btn btn-outline" onclick="exportRTZ()" title="Export as RTZ file (Vessel route exchange format)">RTZ</button>
+            <button class="btn btn-outline" onclick="exportCSV()" title="Export as CSV spreadsheet">CSV</button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px">📥 Import Route</div>
+          <div class="ie-row">
+            <button class="btn btn-outline" onclick="document.getElementById('rtz-file').click()" title="Import RTZ route file">RTZ</button>
+            <button class="btn btn-outline" onclick="document.getElementById('csv-file').click()" title="Import CSV waypoints">CSV</button>
+          </div>
+        </div>
+        <input type="file" id="rtz-file" accept=".rtz,.xml" style="display:none" onchange="importRTZ(this)"/>
+        <input type="file" id="csv-file" accept=".csv" style="display:none" onchange="importCSV(this)"/>
+      </div>
 
-  <!-- Right: live map (landing preview) -->
-  <div id="plan-visual">
-    <div id="plan-visual-map"></div>
-    <div class="plan-visual-overlay">
-      <div class="pvo-title">PROFESSIONAL SEA ROUTE PLANNING</div>
+    </div><!-- /sidebar-body -->
+  </div><!-- /sidebar -->
+
+  <!-- ───────────── MAP AREA ───────────── -->
+  <div id="map-wrap">
+    <div id="map"></div>
+
+    <!-- FLOATING TOOLBAR -->
+    <div id="toolbar">
+      <button class="tool-btn" id="tb-osm"     title="OpenSeaMap"   onclick="toggleOpenSeaMapBtn()">🧭</button>
+      <button class="tool-btn" id="tb-wind"    title="Wind (MapTiler Weather)"   onclick="toggleWx('wind')">💨</button>
+      <button class="tool-btn" id="tb-wave"    title="Wave (Copernicus)"  onclick="toggleWx('wave')">🌊</button>
+      <button class="tool-btn" id="tb-current" title="Current (Copernicus)" onclick="toggleWx('current')">🌀</button>
+      <button class="tool-btn" id="tb-legend"  title="ECA Legend"   onclick="toggleEcaLegend()">◉</button>
+    </div>
+
+    <!-- ECA LEGEND -->
+    <div id="eca-legend">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);margin-bottom:8px">ECA ZONES</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:rgba(255,200,0,.5)"></div> SECA (Sulphur)</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:rgba(100,200,255,.5)"></div> NECA (Nitrogen)</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:rgba(200,100,255,.5)"></div> Combined</div>
+    </div>
+
+    <!-- TIME SLIDER -->
+    <div id="wx-slider-wrap">
+      <div id="wx-slider-label">FORECAST TIME</div>
+      <input type="range" id="wx-slider" min="0" max="39" step="1" value="0" oninput="onWxSliderMove(this.value)"/>
+      <div id="wx-time-display">—</div>
+    </div>
+
+    <!-- WIND HOVER TILE -->
+    <div id="wind-hover-tile">
+      <div class="wind-hover-label">At cursor</div>
+      <div class="wind-hover-row" style="margin-top:4px">
+        <div>
+          <div class="wind-hover-label">SPEED</div>
+          <div class="wind-hover-val" id="wh-speed">—</div>
+        </div>
+        <div>
+          <div class="wind-hover-label">DIR</div>
+          <div class="wind-hover-val" id="wh-dir">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PUSH TOOL CURSOR TOOLTIP -->
+  <div id="push-cursor-tooltip" style="
+    display:none; position:absolute; pointer-events:none; z-index:600;
+    background:rgba(15,23,42,.92); color:#f1f5f9; font-size:11px;
+    font-family:'Segoe UI',sans-serif; font-weight:600;
+    padding:5px 10px; border-radius:6px; white-space:nowrap;
+    border:1px solid rgba(249,115,22,.5);
+    box-shadow:0 2px 8px rgba(0,0,0,.4);
+    transform:translate(14px,-50%);
+  "></div>
+
+  <!-- PUSH TOOL CIRCLE OVERLAY -->
+  <svg id="push-circle-svg" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:500">
+    <circle id="push-circle" cx="0" cy="0" r="100"
+      fill="rgba(249,115,22,.08)" stroke="#f97316" stroke-width="2"
+      stroke-dasharray="6 4" opacity="0.9"/>
+    <circle id="push-circle-center" cx="0" cy="0" r="4"
+      fill="#f97316" opacity="0.9"/>
+    <!-- Arrows indicating push direction -->
+    <g id="push-arrows" opacity="0.7"></g>
+  </svg>
+
+  <!-- NOTIFICATION AREA -->
+    <div id="notif-area"></div>
+
+    <!-- OPTIMISATION PROGRESS OVERLAY -->
+    <div id="opt-overlay">
+      <div id="opt-overlay-card">
+        <div class="opt-ov-title">⚡ Optimising Route…</div>
+        <div id="opt-steps"></div>
+        <div id="opt-ov-bar-wrap"><div id="opt-ov-bar"></div></div>
+        <div id="opt-ov-pct">0%</div>
+        <button id="opt-ov-cancel" onclick="cancelOptimisation()">✕ Cancel</button>
+      </div>
+    </div>
+
+    <!-- ROUTE COMPARISON CARD -->
+    <div id="opt-compare-card">
+      <div class="cmp-title">
+        <span>⚡ Route Comparison</span>
+        <button class="cmp-close" onclick="dismissComparison()">✕</button>
+      </div>
+      <div class="cmp-caution" id="cmp-caution-row" style="display:none"></div>
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th style="color:#93c5fd">Original</th>
+            <th style="color:#fcd34d">Optimised</th>
+            <th style="color:#94a3b8">Δ</th>
+          </tr>
+        </thead>
+        <tbody id="cmp-tbody"></tbody>
+      </table>
+      <div class="cmp-actions">
+        <button class="cmp-use-btn" onclick="applyOptimisedRoute()">✓ Use Optimised</button>
+        <button class="cmp-keep-btn" onclick="dismissComparison()">Keep Original</button>
+      </div>
+    </div>
+
+    <!-- DUAL ROUTE LEGEND -->
+    <div id="opt-legend">
+      <span><span class="swatch-orig"></span>Original</span>
+      <span><span class="swatch-opt"></span>Optimised</span>
+    </div>
+
+    <!-- SIM BAR — voyage progress timeline -->
+    <div id="sim-bar"><div id="sim-bar-fill"></div></div>
+
+    <!-- SIM VESSEL — rotating SVG ship arrow -->
+    <svg id="sim-vessel" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+      <!-- Ship hull shape pointing UP (north = 0°) -->
+      <polygon points="14,2 22,24 14,20 6,24" fill="#0ea5e9" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+      <circle cx="14" cy="14" r="2.5" fill="#fff" opacity="0.9"/>
+    </svg>
+
+    <!-- SIM HUD — floating voyage info card -->
+    <div id="sim-hud">
+      <div class="hud-title">
+        <span>⚓ Voyage Simulation</span>
+        <span id="sim-hud-status" style="font-size:9px;color:#22d3ee">▶ PLAYING</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Date / Time</span>
+        <span class="hud-val accent" id="sim-hud-time">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Position</span>
+        <span class="hud-val" id="sim-hud-pos" style="font-size:10px">—</span>
+      </div>
+      <div class="hud-divider"></div>
+      <div class="hud-row">
+        <span class="hud-label">Wind</span>
+        <span class="hud-val" id="sim-hud-wind">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Wave</span>
+        <span class="hud-val" id="sim-hud-wave">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Eff. Speed</span>
+        <span class="hud-val" id="sim-hud-speed">—</span>
+      </div>
+      <div class="hud-divider"></div>
+      <div class="hud-row">
+        <span class="hud-label">Progress</span>
+        <span class="hud-val" id="sim-hud-progress">Day 0 of —</span>
+      </div>
+      <div class="hud-progress-bar"><div class="hud-progress-fill" id="sim-hud-pbar" style="width:0%"></div></div>
+    </div>
+
+    <!-- SIM CONTROLS — play/pause/stop + speed -->
+    <div id="sim-controls">
+      <button id="sim-btn-playpause" onclick="simTogglePlayPause()" title="Play / Pause">⏸</button>
+      <button onclick="stopSimulation()" title="Stop">⏹</button>
+      <div style="width:1px;height:16px;background:rgba(255,255,255,.15)"></div>
+      <button class="sim-speed-chip" data-h="3"  onclick="simSetSpeed(this)">0.5×</button>
+      <button class="sim-speed-chip" data-h="6"  onclick="simSetSpeed(this)" aria-selected="true">1×</button>
+      <button class="sim-speed-chip" data-h="12" onclick="simSetSpeed(this)">2×</button>
     </div>
   </div>
 
-</div><!-- /screen-plan -->
+</div><!-- /app -->
 
-
-<!-- ══════════════════════════════════════════════
-     SCREEN 2 — ROUTE VIEW (read-only)
-     ══════════════════════════════════════════════ -->
-<div id="screen-route" class="screen">
-
-  <!-- Top summary bar -->
-  <div id="route-topbar">
-    <div class="rtb-brand">
-      <span>⚓</span>
-      <span>RoutePlannerPro</span>
-    </div>
-    <div class="rtb-route">
-      <span class="rtb-port" id="rtb-origin">—</span>
-      <span class="rtb-arrow">→</span>
-      <span class="rtb-port" id="rtb-dest">—</span>
-    </div>
-    <div class="rtb-sep"></div>
-    <div class="rtb-metric">
-      <span class="rtb-metric-label">Distance</span>
-      <span class="rtb-metric-val accent" id="rtb-dist">—</span>
-    </div>
-    <div class="rtb-metric">
-      <span class="rtb-metric-label">ECA Miles</span>
-      <span class="rtb-metric-val gold" id="rtb-eca">—</span>
-    </div>
-    <div class="rtb-metric">
-      <span class="rtb-metric-label">Transit</span>
-      <span class="rtb-metric-val" id="rtb-transit">—</span>
-    </div>
-    <div class="rtb-metric">
-      <span class="rtb-metric-label">ETA (UTC)</span>
-      <span class="rtb-metric-val accent" id="rtb-eta">—</span>
-    </div>
-    <div class="rtb-metric" id="rtb-wx-eta-wrap" style="display:none">
-      <span class="rtb-metric-label">Wx ETA</span>
-      <span class="rtb-metric-val" id="rtb-wx-eta" style="color:var(--warn)">—</span>
-    </div>
-    <div style="margin-left:auto">
-      <button onclick="goToPlanScreen()" style="background:none;border:1px solid var(--border2);border-radius:5px;color:var(--text3);padding:5px 10px;font-size:10px;cursor:pointer;font-family:var(--f-mono);letter-spacing:.5px;transition:all .15s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">← NEW VOYAGE</button>
-    </div>
-  </div>
-
-  <!-- Body: sidebar + map -->
-  <div id="route-body">
-
-    <div id="route-sidebar">
-
-      <!-- Tabs -->
-      <div id="rs-tabs">
-        <button class="rs-tab active" onclick="switchRsTab('waypoints',this)">Waypoints</button>
-        <button class="rs-tab" onclick="switchRsTab('passages',this)">Passages</button>
-        <button class="rs-tab" onclick="switchRsTab('weather',this)">Weather</button>
-      </div>
-
-      <!-- Waypoints pane -->
-      <div class="rs-pane active" id="rs-pane-waypoints">
-        <table class="wp-table" id="wp-table-main">
-          <thead>
-            <tr>
-              <th>#</th><th>Position</th><th>Brg</th><th>nm</th><th>ECA</th>
-            </tr>
-          </thead>
-          <tbody id="wp-tbody"></tbody>
-        </table>
-      </div>
-
-      <!-- Passages pane -->
-      <div class="rs-pane" id="rs-pane-passages">
-        <div class="passages-list" id="passages-list">
-          <div style="font-size:11px;color:var(--text3);font-family:var(--f-mono);text-align:center;padding:20px 0">
-            Calculate a route to see passages
-          </div>
-        </div>
-      </div>
-
-      <!-- Weather pane -->
-      <div class="rs-pane" id="rs-pane-weather">
-        <div id="weather-summary-panel">
-          <div style="font-size:11px;color:var(--text3);font-family:var(--f-mono);text-align:center;padding:20px 0;line-height:1.8">
-            Load weather to see<br/>conditions along route
-          </div>
-        </div>
-        <!-- Hidden wx results table — used by PDF -->
-        <div id="wx-results-table" style="display:none"></div>
-      </div>
-
-    </div><!-- /route-sidebar -->
-
-    <!-- Map -->
-    <div id="route-map-wrap">
-      <div id="map"></div>
-
-      <!-- Floating toolbar -->
-      <div id="toolbar">
-        <button class="tool-btn" id="tb-osm"     title="OpenSeaMap"   onclick="toggleOpenSeaMapBtn()">🧭</button>
-        <button class="tool-btn" id="tb-wind"    title="Wind"          onclick="toggleWx('wind')">💨</button>
-        <button class="tool-btn" id="tb-wave"    title="Wave"          onclick="toggleWx('wave')">🌊</button>
-        <button class="tool-btn" id="tb-current" title="Current"       onclick="toggleWx('current')">🌀</button>
-        <button class="tool-btn" id="tb-legend"  title="ECA Legend"    onclick="toggleEcaLegend()">◉</button>
-      </div>
-
-      <!-- ECA Legend -->
-      <div id="eca-legend">
-        <div style="font-size:10px;font-weight:700;color:var(--muted);margin-bottom:8px">ECA ZONES</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(255,200,0,.5)"></div> SECA (Sulphur)</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(100,200,255,.5)"></div> NECA (Nitrogen)</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(200,100,255,.5)"></div> Combined</div>
-      </div>
-
-      <!-- Time slider -->
-      <div id="wx-slider-wrap">
-        <div id="wx-slider-label">FORECAST TIME</div>
-        <input type="range" id="wx-slider" min="0" max="39" step="1" value="0" oninput="onWxSliderMove(this.value)"/>
-        <div id="wx-time-display">—</div>
-      </div>
-
-      <!-- Wind hover tile -->
-      <div id="wind-hover-tile">
-        <div class="wind-hover-label">At cursor</div>
-        <div class="wind-hover-row" style="margin-top:4px">
-          <div>
-            <div class="wind-hover-label">SPEED</div>
-            <div class="wind-hover-val" id="wh-speed">—</div>
-          </div>
-          <div>
-            <div class="wind-hover-label">DIR</div>
-            <div class="wind-hover-val" id="wh-dir">—</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Push tool elements -->
-      <div id="push-cursor-tooltip"></div>
-      <svg id="push-circle-svg">
-        <circle id="push-circle" cx="0" cy="0" r="100"
-          fill="rgba(249,115,22,.08)" stroke="#f97316" stroke-width="2"
-          stroke-dasharray="6 4" opacity="0.9"/>
-        <circle id="push-circle-center" cx="0" cy="0" r="4"
-          fill="#f97316" opacity="0.9"/>
-        <g id="push-arrows" opacity="0.7"></g>
-      </svg>
-
-      <!-- Notification area -->
-      <div id="notif-area"></div>
-
-      <!-- Optimisation overlays -->
-      <div id="opt-overlay">
-        <div id="opt-overlay-card">
-          <div class="opt-ov-title">⚡ Optimising Route…</div>
-          <div id="opt-steps"></div>
-          <div id="opt-ov-bar-wrap"><div id="opt-ov-bar"></div></div>
-          <div id="opt-ov-pct">0%</div>
-          <button id="opt-ov-cancel" onclick="cancelOptimisation()">✕ Cancel</button>
-        </div>
-      </div>
-
-      <div id="opt-compare-card">
-        <div class="cmp-title">
-          <span>⚡ Route Comparison</span>
-          <button class="cmp-close" onclick="dismissComparison()">✕</button>
-        </div>
-        <div class="cmp-caution" id="cmp-caution-row" style="display:none"></div>
-        <table>
-          <thead><tr><th></th><th style="color:#93c5fd">Original</th><th style="color:#fcd34d">Optimised</th><th style="color:#94a3b8">Δ</th></tr></thead>
-          <tbody id="cmp-tbody"></tbody>
-        </table>
-        <div class="cmp-actions">
-          <button class="cmp-use-btn" onclick="applyOptimisedRoute()">✓ Use Optimised</button>
-          <button class="cmp-keep-btn" onclick="dismissComparison()">Keep Original</button>
-        </div>
-      </div>
-
-      <div id="opt-legend">
-        <span><span class="swatch-orig"></span>Original</span>
-        <span><span class="swatch-opt"></span>Optimised</span>
-      </div>
-
-      <!-- Sim elements -->
-      <div id="sim-bar"><div id="sim-bar-fill"></div></div>
-      <svg id="sim-vessel" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-        <polygon points="14,2 22,24 14,20 6,24" fill="#0ea5e9" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
-        <circle cx="14" cy="14" r="2.5" fill="#fff" opacity="0.9"/>
-      </svg>
-      <div id="sim-hud">
-        <div class="hud-title"><span>⚓ Voyage Simulation</span><span id="sim-hud-status" style="font-size:9px;color:#22d3ee">▶ PLAYING</span></div>
-        <div class="hud-row"><span class="hud-label">Date / Time</span><span class="hud-val accent" id="sim-hud-time">—</span></div>
-        <div class="hud-row"><span class="hud-label">Position</span><span class="hud-val" id="sim-hud-pos" style="font-size:10px">—</span></div>
-        <div class="hud-divider"></div>
-        <div class="hud-row"><span class="hud-label">Wind</span><span class="hud-val" id="sim-hud-wind">—</span></div>
-        <div class="hud-row"><span class="hud-label">Wave</span><span class="hud-val" id="sim-hud-wave">—</span></div>
-        <div class="hud-row"><span class="hud-label">Eff. Speed</span><span class="hud-val" id="sim-hud-speed">—</span></div>
-        <div class="hud-divider"></div>
-        <div class="hud-row"><span class="hud-label">Progress</span><span class="hud-val" id="sim-hud-progress">Day 0 of —</span></div>
-        <div class="hud-progress-bar"><div class="hud-progress-fill" id="sim-hud-pbar" style="width:0%"></div></div>
-      </div>
-      <div id="sim-controls">
-        <button id="sim-btn-playpause" onclick="simTogglePlayPause()" title="Play/Pause">⏸</button>
-        <button onclick="stopSimulation()" title="Stop">⏹</button>
-        <div style="width:1px;height:16px;background:rgba(255,255,255,.15)"></div>
-        <button class="sim-speed-chip" data-h="3"  onclick="simSetSpeed(this)">0.5×</button>
-        <button class="sim-speed-chip" data-h="6"  onclick="simSetSpeed(this)" aria-selected="true">1×</button>
-        <button class="sim-speed-chip" data-h="12" onclick="simSetSpeed(this)">2×</button>
-      </div>
-
-    </div><!-- /route-map-wrap -->
-  </div><!-- /route-body -->
-
-  <!-- Bottom action bar -->
-  <div id="rs-actions">
-    <div class="act-btn-row">
-      <button id="btn-edit-canvas" class="act-btn" onclick="goToEditCanvas()">✎ Edit Route</button>
-      <button id="btn-load-wx" class="act-btn act-btn-primary" onclick="loadWeatherAndAnalyse()">⚡ Load Weather</button>
-    </div>
-    <div class="act-btn-row">
-      <button id="btn-simulate" class="act-btn act-btn-secondary" onclick="simulateVoyage()">▶ Simulate</button>
-      <button id="btn-optimise" class="act-btn act-btn-secondary" onclick="showOptimisationPanel()" disabled>⚡ Optimise</button>
-    </div>
-    <div class="act-btn-row">
-      <button id="btn-export-rtz" class="act-btn act-btn-ghost" onclick="exportRTZ()">↓ RTZ</button>
-      <button id="btn-export-csv" class="act-btn act-btn-ghost" onclick="exportCSV()">↓ CSV</button>
-      <button id="btn-gen-pdf" class="act-btn act-btn-gold" onclick="openModal('export-modal')" disabled style="grid-column:span 2">📄 PDF Report</button>
-    </div>
-    <!-- Load weather interval selector (shown only during weather load context) -->
-    <div id="wx-interval-row" style="display:none;padding:8px 0 2px">
-      <div style="font-size:9px;font-family:var(--f-mono);color:var(--text3);letter-spacing:.8px;text-transform:uppercase;margin-bottom:6px">Ocean Leg Sampling Interval</div>
-      <div style="display:flex;gap:5px">
-        <button class="act-btn act-btn-ghost" style="flex:1;padding:5px;font-size:10px" onclick="setWxInterval(3)">3h</button>
-        <button class="act-btn act-btn-secondary" style="flex:1;padding:5px;font-size:10px" onclick="setWxInterval(6)" id="wx-int-6">6h ✓</button>
-        <button class="act-btn act-btn-ghost" style="flex:1;padding:5px;font-size:10px" onclick="setWxInterval(9)">9h</button>
-        <button class="act-btn act-btn-ghost" style="flex:1;padding:5px;font-size:10px" onclick="setWxInterval(12)">12h</button>
-      </div>
-    </div>
-  </div>
-
-</div><!-- /screen-route -->
-
-
-<!-- ══════════════════════════════════════════════
-     SCREEN 3 — EDIT CANVAS
-     ══════════════════════════════════════════════ -->
-<div id="screen-edit" class="screen">
-
-  <div id="edit-topbar">
-    <div class="et-warning">EDIT CANVAS — Route is editable. Weather will require reload after saving.</div>
-    <div class="et-spacer"></div>
-    <button class="et-discard-btn" onclick="discardEdits()">Discard</button>
-    <button class="et-save-btn" onclick="saveEditsAndReturn()">Save & Return →</button>
-  </div>
-
-  <div id="edit-body">
-    <div id="edit-sidebar">
-      <h3>Editing Tools</h3>
-
-      <div class="edit-tool-stack">
-        <div class="edit-tool" id="edit-tool-add" onclick="activateEditTool('add')">
-          <span class="et-icon">＋</span>
-          <div>
-            <div>Add Waypoint</div>
-            <div class="et-desc">Click on the route to insert a new waypoint</div>
-          </div>
-        </div>
-        <div class="edit-tool" id="edit-tool-push" onclick="activateEditTool('push')">
-          <span class="et-icon">↔</span>
-          <div>
-            <div>Push Waypoints</div>
-            <div class="et-desc">Drag a circular area to deflect the route</div>
-          </div>
-        </div>
-        <div class="edit-tool" id="edit-tool-delete" onclick="activateEditTool('delete')">
-          <span class="et-icon">✕</span>
-          <div>
-            <div>Delete Waypoint</div>
-            <div class="et-desc">Click any waypoint on the map to remove it</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Push radius (shown when push active) -->
-      <div id="push-radius-row" style="display:none">
-        <label style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-family:var(--f-mono)">
-          Push Radius: <span id="push-radius-label">200</span> nm
-        </label>
-        <input type="range" id="push-radius-slider" min="50" max="800" step="25" value="200"
-          oninput="document.getElementById('push-radius-label').textContent=this.value"
-          style="width:100%;margin-top:6px;accent-color:var(--accent)"/>
-        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);margin-top:2px">
-          <span>50 nm</span><span>gentle ← → strong</span><span>800 nm</span>
-        </div>
-        <div style="margin-top:8px;font-size:10px;color:var(--text3);line-height:1.6;font-family:var(--f-mono)">
-          <span id="push-state-idle">🟠 Move over waypoints, <strong>click to activate</strong></span>
-          <span id="push-state-active" style="display:none;color:var(--accent2)">🟢 Active — move to push. <strong>Click to save.</strong></span>
-          <span id="push-undo-hint" style="display:none"> · ESC to undo</span>
-        </div>
-      </div>
-
-      <div class="edit-undo-row">
-        <button class="edit-undo-btn" onclick="undoLastWpChange()">↩ Undo</button>
-        <button class="edit-undo-btn" onclick="restoreOriginalRoute()">⟳ Restore</button>
-      </div>
-
-      <div style="margin-top:auto;padding-top:12px;border-top:1px solid var(--border)">
-        <div style="font-size:9px;font-family:var(--f-mono);color:var(--text3);letter-spacing:.5px;line-height:1.7">
-          Drag any waypoint marker to move it.<br/>
-          All changes are previewed in real-time.
-        </div>
-      </div>
-
-      <!-- Hidden add-wp checkbox (keep for JS compat) -->
-      <input type="checkbox" id="add-wp-chk" style="display:none" onchange="setAddWpMode(this.checked)"/>
-      <input type="checkbox" id="push-wp-chk" style="display:none" onchange="setPushWpMode(this.checked)"/>
-    </div>
-
-    <div id="edit-map-wrap">
-      <!-- Map renders here (same #map div moved by JS) -->
-    </div>
-  </div>
-
-</div><!-- /screen-edit -->
-
-
-<!-- ══════════════════════════════════════════════
-     WEATHER-EDIT WARNING MODAL
-     ══════════════════════════════════════════════ -->
-<div id="wx-edit-warning">
-  <div class="warn-card">
-    <div class="warn-card-icon">⚠️</div>
-    <div class="warn-card-title">Weather Data Will Be Lost</div>
-    <div class="warn-card-body">
-      Editing the route will remove the loaded weather analysis. You will need to reload weather after saving your changes.
-    </div>
-    <div class="warn-card-actions">
-      <button class="warn-btn warn-btn-proceed" onclick="proceedToEdit()">✎ Edit Anyway</button>
-      <button class="warn-btn warn-btn-optimise" onclick="closeWxWarning();showOptimisationPanel()">⚡ Optimise Instead</button>
-      <button class="warn-btn warn-btn-overlay" onclick="closeWxWarning()">Cancel</button>
-    </div>
-  </div>
-</div>
-
-
-<!-- ══════════════════════════════════════════════
-     EXPORT MODAL
-     ══════════════════════════════════════════════ -->
+<!-- ═══ EXPORT MODAL ═══ -->
 <div class="modal-backdrop" id="export-modal">
   <div class="modal">
     <button class="close-btn" onclick="closeModal('export-modal')">✕</button>
-    <h2>📄 Voyage Report</h2>
+    <h2>📄 Export Voyage Report</h2>
     <div class="form-row"><label>Vessel Name</label><input type="text" id="pdf-vessel" placeholder="MV Example"/></div>
     <div class="form-row"><label>Voyage Number</label><input type="text" id="pdf-voyage" placeholder="VOY-2024-001"/></div>
     <div class="form-row"><label>Prepared By</label><input type="text" id="pdf-prepby" placeholder="Name / Company"/></div>
+    <!-- Port name override — shown only when coordinates (not named ports) are used -->
     <div id="pdf-port-override" style="display:none">
       <div style="margin:10px 0 6px;padding:8px 10px;background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.2);border-radius:6px;font-size:11px;color:var(--muted)">
         📍 Coordinate route detected — optionally name your ports for the report
@@ -1773,36 +1175,6 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
     </div>
   </div>
 </div>
-
-<!-- ══════════════════════════════════════════════
-     OPTIMISATION SETTINGS PANEL
-     ══════════════════════════════════════════════ -->
-<div id="opt-settings">
-  <div class="opt-inner">
-    <button class="close-btn" onclick="document.getElementById('opt-settings').classList.remove('open')">✕</button>
-    <div class="opt-title">⚡ Route Optimisation</div>
-    <div id="opt-wx-hint" class="hint"></div>
-    <label>Max Wave Height (m)</label>
-    <input type="number" id="opt-max-wave" value="3.5" step="0.5" min="1" max="10"/>
-    <label>Max Wind Speed (Bft)</label>
-    <input type="number" id="opt-max-wind-bft" value="7" step="1" min="3" max="12"/>
-    <label>Min Speed (knots)</label>
-    <input type="number" id="opt-min-spd" value="10" step="0.5" min="1"/>
-    <label>Max Speed (knots)</label>
-    <input type="number" id="opt-max-spd" value="16" step="0.5" min="1"/>
-    <label>Optimise For</label>
-    <select id="opt-goal">
-      <option value="weather">Weather Avoidance</option>
-      <option value="time">Earliest ETA</option>
-      <option value="fuel">Fuel Efficiency</option>
-    </select>
-    <div class="btn-group" style="margin-top:4px">
-      <button class="btn btn-primary" onclick="runOptimisation()">Find Optimal Route</button>
-      <button class="btn btn-secondary" onclick="document.getElementById('opt-settings').classList.remove('open')">Cancel</button>
-    </div>
-  </div>
-</div>
-
 
 <!-- ═══ PROGRESS OVERLAY (route calculation) ═══ -->
 <div id="progress-overlay">
@@ -17218,12 +16590,6 @@ async function calculateRoute(){
       ? ` · TSS: ${routeData.tss_applied.join(', ')}` : '';
     notify('Route calculated: '+Math.round(routeData.distance_nm)+' nm'+viaNote+tssNote+' — click Load Weather to analyse','ok');
 
-    // ── Switch to Route View screen ───────────────────────────────────────────
-    if (typeof goToRouteView === 'function') {
-      window._appliedTss = routeData.tss_applied || [];
-      goToRouteView();
-    }
-
     // ── Background route map generation ─────────────────────────────────────
     // Fetches a server-rendered SVG of the route for PDF embedding.
     // Runs silently in background — doesn't block the UI.
@@ -17510,11 +16876,7 @@ function hideWxAnalysisOverlay(){
   // Complete bar
   document.getElementById('wxa-bar').style.width = '100%';
   document.getElementById('wxa-pct').textContent = '100%';
-  setTimeout(() => {
-    overlay.classList.remove('visible');
-    // Update new UI state
-    if (typeof updateWxState === 'function') updateWxState(true);
-  }, 600);
+  setTimeout(() => overlay.classList.remove('visible'), 600);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -20359,300 +19721,6 @@ function setNowDeparture(){
 window.addEventListener('DOMContentLoaded', ()=>{
   initMap();
 });
-
-// ═══════════════════════════════════════════════════════
-// UI BRIDGE — Screen management + new layout wiring
-// ═══════════════════════════════════════════════════════
-
-// Current active screen
-let _currentScreen = 'plan';
-
-function showScreen(id) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById('screen-' + id).classList.add('active');
-  _currentScreen = id;
-  // Move the map into the correct container
-  const mapEl = document.getElementById('map');
-  if (id === 'route') {
-    const wrap = document.getElementById('route-map-wrap');
-    if (wrap && mapEl.parentElement !== wrap) wrap.insertBefore(mapEl, wrap.firstChild);
-  } else if (id === 'edit') {
-    const wrap = document.getElementById('edit-map-wrap');
-    if (wrap && mapEl.parentElement !== wrap) wrap.insertBefore(mapEl, wrap.firstChild);
-  } else if (id === 'plan') {
-    const wrap = document.getElementById('plan-visual-map');
-    if (wrap && mapEl.parentElement !== wrap) wrap.appendChild(mapEl);
-  }
-  if (window.map) setTimeout(() => window.map.resize(), 50);
-}
-
-function goToPlanScreen() {
-  showScreen('plan');
-}
-
-function goToRouteView() {
-  showScreen('route');
-  updateRouteTopbar();
-  updateWaypointTable();
-  updatePassagesPane();
-}
-
-function goToEditCanvas() {
-  if (window._wxResults && window._wxResults.length) {
-    // Weather is loaded — warn before editing
-    document.getElementById('wx-edit-warning').classList.add('open');
-  } else {
-    proceedToEdit();
-  }
-}
-
-function proceedToEdit() {
-  document.getElementById('wx-edit-warning').classList.remove('open');
-  showScreen('edit');
-}
-
-function closeWxWarning() {
-  document.getElementById('wx-edit-warning').classList.remove('open');
-}
-
-function saveEditsAndReturn() {
-  // Disable all edit tools
-  activateEditTool(null);
-  // Clear weather since route changed
-  window._wxResults = null;
-  window._wxDelayH  = null;
-  window._wxAdjTotalH = null;
-  updateWxState(false);
-  goToRouteView();
-}
-
-function discardEdits() {
-  // Restore pre-edit waypoints if saved
-  if (window._preEditCoords) {
-    wpCoords = window._preEditCoords.map(c => [...c]);
-    window._preEditCoords = null;
-    drawRoute();
-    updateRouteMetrics();
-  }
-  goToRouteView();
-}
-
-// Edit tool management
-let _activeEditTool = null;
-function activateEditTool(tool) {
-  _activeEditTool = tool;
-  ['add','push','delete'].forEach(t => {
-    const el = document.getElementById('edit-tool-' + t);
-    if (el) el.classList.toggle('active', t === tool);
-  });
-  // Wire existing mode functions
-  const addChk  = document.getElementById('add-wp-chk');
-  const pushChk = document.getElementById('push-wp-chk');
-  if (addChk)  addChk.checked  = (tool === 'add');
-  if (pushChk) pushChk.checked = (tool === 'push');
-  if (addChk)  setAddWpMode(tool === 'add');
-  if (pushChk) setPushWpMode(tool === 'push');
-  // Push radius
-  const prRow = document.getElementById('push-radius-row');
-  if (prRow) prRow.style.display = (tool === 'push') ? 'block' : 'none';
-}
-
-// Sidebar tab switching
-function switchRsTab(name, btn) {
-  document.querySelectorAll('.rs-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.rs-pane').forEach(p => p.classList.remove('active'));
-  btn.classList.add('active');
-  const pane = document.getElementById('rs-pane-' + name);
-  if (pane) pane.classList.add('active');
-  // Lazy-load weather pane content
-  if (name === 'weather') updateWeatherPane();
-}
-
-// Update top bar after route calculation
-function updateRouteTopbar() {
-  const originEl = document.getElementById('rtb-origin');
-  const destEl   = document.getElementById('rtb-dest');
-  const distEl   = document.getElementById('rtb-dist');
-  const ecaEl    = document.getElementById('rtb-eca');
-  const transEl  = document.getElementById('rtb-transit');
-  const etaEl    = document.getElementById('rtb-eta');
-
-  // Port names from input fields
-  const oPort = document.getElementById('o-port-input');
-  const dPort = document.getElementById('d-port-input');
-  if (originEl) originEl.textContent = (oPort && oPort.value.trim()) || 'Origin';
-  if (destEl)   destEl.textContent   = (dPort && dPort.value.trim()) || 'Destination';
-
-  // Metrics from ghost elements written by showMetrics()
-  const mDist    = document.getElementById('m-dist');
-  const mEca     = document.getElementById('m-eca');
-  const mEta     = document.getElementById('m-eta');
-  const mTransit = document.getElementById('m-transit');
-
-  if (mDist    && distEl)   distEl.textContent   = (mDist.textContent    || '—') + ' nm';
-  if (mEca     && ecaEl)    ecaEl.textContent    = (mEca.textContent     || '—') + ' nm';
-  if (mEta     && etaEl)    etaEl.textContent    = mEta.textContent      || '—';
-  if (mTransit && transEl)  transEl.textContent  = (mTransit.textContent || '—') + ' days';
-}
-
-// Update waypoint table in new sidebar
-// buildWpTable() from existing JS already writes to #wp-tbody which is in our sidebar
-function updateWaypointTable() {
-  if (typeof buildWpTable === 'function') buildWpTable();
-}
-
-// Passages pane update
-function updatePassagesPane() {
-  const list = document.getElementById('passages-list');
-  if (!list) return;
-  const applied = window._appliedTss || [];
-  if (!applied.length) {
-    list.innerHTML = '<div style="font-size:11px;color:var(--text3);font-family:var(--f-mono);text-align:center;padding:20px 0">No TSS passages on this route</div>';
-    return;
-  }
-  list.innerHTML = applied.map(name => `
-    <div class="passage-item">
-      <span class="passage-item-icon">🚦</span>
-      <div>
-        <div class="passage-item-name">${name}</div>
-        <div class="passage-item-detail">TSS Applied</div>
-      </div>
-    </div>
-  `).join('');
-}
-
-// Weather pane
-function updateWeatherPane() {
-  const panel = document.getElementById('weather-summary-panel');
-  if (!panel) return;
-  if (!window._wxResults || !window._wxResults.length) return;
-  const wx = window._wxResults;
-  const maxWind = Math.max(...wx.map(r => r.windKn || 0));
-  const maxWave = Math.max(...wx.map(r => r.waveM  || 0));
-  const delay   = window._wxDelayH || 0;
-  const adjEta  = document.getElementById('wx-adj-eta');
-  panel.innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-      <div style="padding:10px;background:rgba(14,165,233,.06);border:1px solid rgba(14,165,233,.15);border-radius:6px;text-align:center">
-        <div style="font-size:9px;font-family:var(--f-mono);color:var(--text3);letter-spacing:.8px;text-transform:uppercase;margin-bottom:4px">Max Wind</div>
-        <div style="font-size:18px;font-family:var(--f-mono);font-weight:500;color:var(--text)">${maxWind.toFixed(0)}<span style="font-size:10px;color:var(--text3)"> kn</span></div>
-      </div>
-      <div style="padding:10px;background:rgba(14,165,233,.06);border:1px solid rgba(14,165,233,.15);border-radius:6px;text-align:center">
-        <div style="font-size:9px;font-family:var(--f-mono);color:var(--text3);letter-spacing:.8px;text-transform:uppercase;margin-bottom:4px">Max Wave</div>
-        <div style="font-size:18px;font-family:var(--f-mono);font-weight:500;color:var(--text)">${maxWave.toFixed(1)}<span style="font-size:10px;color:var(--text3)"> m</span></div>
-      </div>
-    </div>
-    ${delay > 0 ? `<div style="padding:8px 10px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;font-size:11px;color:var(--warn);font-family:var(--f-mono)">⚠ Weather delay: +${delay.toFixed(1)}h</div>` : ''}
-  `;
-}
-
-// Weather state toggle
-function updateWxState(loaded) {
-  const loadBtn  = document.getElementById('btn-load-wx');
-  const optBtn   = document.getElementById('btn-optimise');
-  const pdfBtn   = document.getElementById('btn-gen-pdf');
-  const wxEtaWrap = document.getElementById('rtb-wx-eta-wrap');
-  const wxEtaEl   = document.getElementById('rtb-wx-eta');
-  if (loadBtn)  loadBtn.textContent = loaded ? '↺ Reload Weather' : '⚡ Load Weather';
-  if (optBtn)   optBtn.disabled = !loaded;
-  if (pdfBtn)   pdfBtn.disabled = !loaded;
-  if (wxEtaWrap) wxEtaWrap.style.display = loaded ? 'flex' : 'none';
-  if (loaded && wxEtaEl) {
-    const adjEl = document.getElementById('wx-adj-eta');
-    if (adjEl) wxEtaEl.textContent = adjEl.textContent;
-  }
-  if (loaded) updateWeatherPane();
-}
-
-// Wx interval selection
-let _wxIntervalH = 6;
-function setWxInterval(h) {
-  _wxIntervalH = h;
-  ['3','6','9','12'].forEach(v => {
-    const btn = document.getElementById('wx-int-' + v);
-    if (btn) {
-      btn.className = 'act-btn act-btn-ghost';
-      btn.style.flex = '1'; btn.style.padding = '5px'; btn.style.fontSize = '10px';
-      btn.textContent = v + 'h';
-    }
-  });
-  const active = document.getElementById('wx-int-' + h);
-  if (active) {
-    active.className = 'act-btn act-btn-secondary';
-    active.textContent = h + 'h ✓';
-  }
-}
-
-// showOptimisationPanel — alias for existing function
-function showOptimisationPanel() {
-  document.getElementById('opt-settings').classList.add('open');
-}
-
-// Override post-calculateRoute to switch to route view
-const _origCalculateRoute = typeof calculateRoute === 'function' ? calculateRoute : null;
-
-// Hook into route calculation completion to auto-switch screens
-// We patch the post-route display function
-const _origDisplayRoute = typeof displayRouteOnMap === 'function' ? displayRouteOnMap : null;
-
-// Intercept route display to show route screen
-function _afterRouteCalculated() {
-  // Store pre-edit coords
-  if (window.wpCoords) window._preEditCoords = window.wpCoords.map(c => [...c]);
-  goToRouteView();
-}
-
-// Intercept weather completion
-function _afterWeatherLoaded() {
-  updateWxState(true);
-  updateWeatherPane();
-  // Switch to weather tab
-  const weatherTab = document.querySelector('.rs-tab:nth-child(3)');
-  if (weatherTab) {
-    switchRsTab('weather', weatherTab);
-  }
-}
-
-// Override the wx interval chips to use new function
-window.SUBLEGGING_INTERVAL_H = _wxIntervalH;
-function getWxInterval() { return _wxIntervalH; }
-
 </script>
-<!-- ═══ GHOST ELEMENTS — satisfy old JS getElementById refs, all display:none ═══ -->
-<div style="display:none" aria-hidden="true">
-  <div id="metrics-section"></div>
-  <div id="max-stat-section"><span id="m-maxwind">—</span><span id="m-maxwave">—</span></div>
-  <div id="wx-delay-section"><span id="m-wxdelay">—</span><span id="m-adj-eta">—</span></div>
-  <span id="wx-adj-eta">—</span>
-  <span id="route-dist">—</span>
-  <span id="route-eca">—</span>
-  <span id="route-eta">—</span>
-  <span id="route-transit">—</span>
-  <span id="route-days">—</span>
-  <span id="route-tss"></span>
-  <span id="wx-status-hint"></span>
-  <span id="wx-interval-hint"></span>
-  <button id="load-wx-btn"></button>
-  <button id="export-btn"></button>
-  <button id="sim-btn"></button>
-  <button id="opt-btn"></button>
-  <div id="optimise-section"></div>
-  <div id="wp-table-wrap"></div>
-  <div id="wp-delete-bar"><span id="wp-selected-label"></span><button id="wp-delete-btn"></button></div>
-  <div id="wx-results-section"></div>
-  <!-- Metric display IDs written by showMetrics() -->
-  <span id="m-dist">—</span>
-  <span id="m-eta">—</span>
-  <span id="m-transit">—</span>
-  <span id="m-eca">—</span>
-  <!-- wx interval chips (old selector) -->
-  <div id="wx-interval-chips">
-    <button class="wx-int-chip" data-h="3">3h</button>
-    <button class="wx-int-chip" data-h="6" aria-selected="true">6h ✓</button>
-    <button class="wx-int-chip" data-h="9">9h</button>
-    <button class="wx-int-chip" data-h="12">12h</button>
-  </div>
-</div>
-
 </body>
 </html>
