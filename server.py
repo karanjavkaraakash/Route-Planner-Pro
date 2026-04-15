@@ -514,9 +514,15 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
     """
     Select the correct TSS lane based on vessel bearing.
     Lane keys are cardinal/ordinal direction names matching the vessel's heading.
+
+    Primary: try seg_bearing then overall_bearing against direction ranges.
+    Fallback: if no range matches (e.g. bearing 303° for a zone that only has
+    'east'/'west'), pick the lane whose canonical bearing centre is closest
+    in angle to the overall bearing. This correctly handles routes like
+    Singapore→Mumbai (bearing 303°, needs 'west' lane, not 'east').
     """
     keys = [k for k in tss.keys() if k not in ('name', 'reference', 'trigger_nm',
-                                                 'trigger_box')]  # trigger_box kept for compat
+                                                 'trigger_box')]
     if not keys:
         return None
 
@@ -535,6 +541,7 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
         b = bearing % 360
         return b >= rmin or b < (rmax - 360) if rmax > 360 else rmin <= b < rmax
 
+    # Primary: exact range match on seg_bearing, then overall_bearing
     for use_bearing in [seg_bearing, overall_bearing]:
         for key in keys:
             if key in direction_map:
@@ -542,7 +549,19 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
                 if matches(use_bearing, rmin, rmax):
                     return tss[key]
 
-    return tss[keys[0]]  # fallback: first lane
+    # Fallback: pick lane whose canonical centre bearing is closest in
+    # angle to overall_bearing. Avoids picking a completely wrong lane.
+    def centre(key):
+        if key not in direction_map:
+            return 0
+        rmin, rmax = direction_map[key]
+        return ((rmin + rmax) / 2) % 360
+
+    def angle_diff(a, b):
+        return abs((a - b + 180) % 360 - 180)
+
+    best_key = min(keys, key=lambda k: angle_diff(overall_bearing, centre(k)))
+    return tss[best_key]
 
 
 def inject_tss_waypoints(coords):
@@ -553,10 +572,7 @@ def inject_tss_waypoints(coords):
     1. Find closest approach to TSS reference. If > trigger_nm, skip.
     2. Select correct lane from bearing.
     3. Remove original coords within removal_nm of reference.
-    4. ALSO remove any remaining MARNET coords that would create a
-       backward step relative to the lane entry/exit direction.
-    5. Apply smart exit clipping (stop at WP closest to destination
-       if lane diverges >60° from destination bearing).
+    4. Smart exit clipping: only clip if destination is within 50nm of lane exit.
     """
     if len(coords) < 2:
         return coords, []
