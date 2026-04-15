@@ -1893,12 +1893,12 @@ html, body {
     <div id="opt-wx-hint" class="hint"></div>
     <label>Max Wave Height (m)</label>
     <input type="number" id="opt-max-wave" value="3.5" step="0.5" min="1" max="10"/>
-    <label>Max Wind Speed (Bft)</label>
-    <input type="number" id="opt-max-wind-bft" value="7" step="1" min="3" max="12"/>
+    <label>Max Wind Speed (knots)</label>
+    <input type="number" id="opt-max-wind" value="25" step="1" min="5" max="60"/>
     <label>Min Speed (knots)</label>
-    <input type="number" id="opt-min-spd" value="10" step="0.5" min="1"/>
+    <input type="number" id="opt-min-speed" value="10" step="0.5" min="1"/>
     <label>Max Speed (knots)</label>
-    <input type="number" id="opt-max-spd" value="16" step="0.5" min="1"/>
+    <input type="number" id="opt-max-speed" value="16" step="0.5" min="1"/>
     <label>Optimise For</label>
     <select id="opt-goal">
       <option value="weather">Weather Avoidance</option>
@@ -21000,6 +21000,12 @@ window.addEventListener('DOMContentLoaded', function() {
   <div id="wp-table-wrap"></div>
   <div id="wp-delete-bar"><span id="wp-selected-label"></span><button id="wp-delete-btn"></button></div>
   <div id="wx-results-section"></div>
+  <!-- wx-route-rows: tbody cleared/populated by fetchRouteWeather, read by PDF -->
+  <table><tbody id="wx-route-rows"></tbody></table>
+  <!-- wx-route-section: visibility toggled on clear -->
+  <div id="wx-route-section"></div>
+  <!-- push-svg-defs: arrowhead defs injected by push tool init -->
+  <svg style="display:none"><defs id="push-svg-defs"></defs></svg>
   <!-- Metric display IDs written by showMetrics() -->
   <span id="m-dist">—</span>
   <span id="m-eta">—</span>
