@@ -20788,7 +20788,6 @@ window.addEventListener('DOMContentLoaded', function() {
       'border:2px solid #fff',
       'cursor:' + (inEdit ? 'grab' : 'default'),
       'box-shadow:0 1px 4px rgba(0,0,0,.3)',
-      'transition:transform .15s',
     ].join(';');
     el.title = 'WP' + (idx+1) + ': ' + lat.toFixed(4) + ', ' + lon.toFixed(4);
 
@@ -20969,7 +20968,7 @@ window.addEventListener('DOMContentLoaded', function() {
   // ── Inject CSS fixes ──────────────────────────────────────────
   const style = document.createElement('style');
   style.textContent = [
-    '.wp-marker:hover { transform: scale(1.5) !important; z-index:10; }',
+    '.wp-marker:hover { transform: translate(-50%, -50%) scale(1.4) !important; z-index:10; }',
     '#wp-tbody tr { transition: background .1s; }',
     '#wp-tbody tr.wp-selected td { background:#dbeafe!important; color:#0c1628!important; font-weight:600; }',
     '#wp-tbody tr:hover td { background:#f0f5fb!important; }',
