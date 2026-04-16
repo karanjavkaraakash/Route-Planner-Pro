@@ -602,8 +602,27 @@ def inject_tss_waypoints(coords):
             continue
 
         # Step 2: lane selection
-        seg_bearing = bearing_deg(coords[closest_seg][0], coords[closest_seg][1],
-                                  coords[closest_seg+1][0], coords[closest_seg+1][1])
+        # Use the bearing of the segment APPROACHING the reference point,
+        # not the closest segment (which may already be past the strait).
+        # The approach segment is the one whose endpoint is closest to the
+        # reference — i.e. the segment the vessel is on when entering the zone.
+        # This correctly handles routes like Rotterdam→Singapore where the
+        # closest segment to Bab el Mandeb is the exit segment (heading east)
+        # rather than the entry segment (heading south through the strait).
+        approach_seg = closest_seg
+        # Walk backward: if the segment BEFORE closest is also within 2×trigger,
+        # use the bearing of the first segment that enters the trigger zone
+        for i in range(closest_seg, -1, -1):
+            d = _pt_to_seg_nm(ref_lon, ref_lat,
+                              coords[i][0], coords[i][1],
+                              coords[i+1][0] if i+1 < len(coords) else coords[i][0],
+                              coords[i+1][1] if i+1 < len(coords) else coords[i][1])
+            if d <= trigger_nm:
+                approach_seg = i
+            else:
+                break
+        seg_bearing = bearing_deg(coords[approach_seg][0], coords[approach_seg][1],
+                                  coords[approach_seg+1][0], coords[approach_seg+1][1])
         lane_wps = list(_select_tss_lane(tss, seg_bearing, overall_bearing) or [])
         if len(lane_wps) < 2:
             continue
@@ -707,7 +726,27 @@ def inject_tss_waypoints(coords):
         if haversine_km(deduped[-1][0], deduped[-1][1], pt[0], pt[1]) > 0.5 * 1.852:
             deduped.append(pt)
 
-    return deduped, tss_applied
+    # Post-injection backtrack filter:
+    # Remove any waypoint that is dramatically further from the destination
+    # than the previous waypoint — this catches MARNET straggler sections
+    # (e.g. Dover waypoints remaining in a Rotterdam→Singapore route) that
+    # survived TSS injection but represent a wrong-direction detour.
+    # Threshold: 300nm increase in distance-to-destination (safe — largest
+    # legitimate detour from Cape of Good Hope or similar is ~200nm).
+    BACKTRACK_THRESHOLD_NM = 300
+    filtered = [deduped[0]]
+    for i in range(1, len(deduped)):
+        d_prev = haversine_km(filtered[-1][0], filtered[-1][1],
+                              dest_lon, dest_lat) / 1.852
+        d_curr = haversine_km(deduped[i][0], deduped[i][1],
+                              dest_lon, dest_lat) / 1.852
+        if d_curr - d_prev > BACKTRACK_THRESHOLD_NM:
+            log.warning('TSS backtrack filter: removed [%.3f,%.3f] (+%.0fnm from dest)',
+                        deduped[i][0], deduped[i][1], d_curr - d_prev)
+        else:
+            filtered.append(deduped[i])
+
+    return filtered, tss_applied
 
 
 # ── ROUTING ENGINE ────────────────────────────────────────────────────────────
