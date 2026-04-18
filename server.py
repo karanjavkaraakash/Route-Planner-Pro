@@ -510,22 +510,53 @@ def bearing_deg(lon1, lat1, lon2, lat2):
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 
-def _select_tss_lane(tss, seg_bearing, overall_bearing):
+def _select_tss_lane(tss, seg_bearing, overall_bearing, approach_coord=None):
     """
     Select the correct TSS lane based on vessel bearing.
     Lane keys are cardinal/ordinal direction names matching the vessel's heading.
 
-    Primary: try seg_bearing then overall_bearing against direction ranges.
-    Fallback: if no range matches (e.g. bearing 303° for a zone that only has
-    'east'/'west'), pick the lane whose canonical bearing centre is closest
-    in angle to the overall bearing. This correctly handles routes like
-    Singapore→Mumbai (bearing 303°, needs 'west' lane, not 'east').
+    Strategy (in priority order):
+    1. If approach_coord is given, use the vessel's position RELATIVE to the
+       TSS reference to determine passage direction for N/S and E/W straits.
+       This is the most reliable signal and works regardless of MARNET density.
+    2. Try seg_bearing (bearing from approach coord toward reference) against
+       direction ranges with a ±20° tolerance buffer.
+    3. Fallback: pick lane whose centre is closest to seg_bearing.
+       (NOT overall_bearing — that's too unreliable for transits.)
     """
     keys = [k for k in tss.keys() if k not in ('name', 'reference', 'trigger_nm',
                                                  'trigger_box')]
     if not keys:
         return None
 
+    # ── Strategy 1: relative position ────────────────────────────────────────
+    # For N/S straits (north/south lanes), the vessel's latitude relative to
+    # the reference tells us which direction it's traversing the strait:
+    #   approach_coord lat > ref lat  → approaching from north → heading south
+    #   approach_coord lat < ref lat  → approaching from south → heading north
+    # For E/W straits (east/west lanes), use longitude similarly.
+    if approach_coord is not None:
+        ref_lon, ref_lat = tss['reference']
+        ap_lon, ap_lat   = approach_coord
+
+        has_ns = any(k in keys for k in ('north', 'south'))
+        has_ew = any(k in keys for k in ('east', 'west'))
+
+        if has_ns and not has_ew:
+            # Pure N/S strait: latitude decides direction
+            if ap_lat > ref_lat + 0.3 and 'south' in keys:
+                return tss['south']  # approaching from north → heading south
+            if ap_lat < ref_lat - 0.3 and 'north' in keys:
+                return tss['north']  # approaching from south → heading north
+
+        if has_ew and not has_ns:
+            # Pure E/W strait: longitude decides direction
+            if ap_lon < ref_lon - 0.3 and 'east' in keys:
+                return tss['east']   # approaching from west → heading east
+            if ap_lon > ref_lon + 0.3 and 'west' in keys:
+                return tss['west']   # approaching from east → heading west
+
+    # ── Strategy 2: bearing range match with ±20° tolerance ──────────────────
     direction_map = {
         'northeast': (22.5,  112.5),
         'east':      (67.5,  112.5),
@@ -536,21 +567,22 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
         'northwest': (292.5, 382.5),
         'north':     (337.5, 382.5),
     }
+    TOLERANCE = 20.0  # degrees — widens each range to catch near-misses
 
-    def matches(bearing, rmin, rmax):
-        b = bearing % 360
-        return b >= rmin or b < (rmax - 360) if rmax > 360 else rmin <= b < rmax
+    def matches(brg, rmin, rmax):
+        b = brg % 360
+        lo, hi = rmin - TOLERANCE, rmax + TOLERANCE
+        if hi > 360:
+            return b >= lo or b < (hi - 360)
+        return lo <= b < hi
 
-    # Primary: exact range match on seg_bearing, then overall_bearing
+    # Try seg_bearing first, then overall_bearing
     for use_bearing in [seg_bearing, overall_bearing]:
         for key in keys:
-            if key in direction_map:
-                rmin, rmax = direction_map[key]
-                if matches(use_bearing, rmin, rmax):
-                    return tss[key]
+            if key in direction_map and matches(use_bearing, *direction_map[key]):
+                return tss[key]
 
-    # Fallback: pick lane whose canonical centre bearing is closest in
-    # angle to overall_bearing. Avoids picking a completely wrong lane.
+    # ── Strategy 3: closest centre to seg_bearing ────────────────────────────
     def centre(key):
         if key not in direction_map:
             return 0
@@ -560,34 +592,53 @@ def _select_tss_lane(tss, seg_bearing, overall_bearing):
     def angle_diff(a, b):
         return abs((a - b + 180) % 360 - 180)
 
-    best_key = min(keys, key=lambda k: angle_diff(overall_bearing, centre(k)))
+    best_key = min(keys, key=lambda k: angle_diff(seg_bearing, centre(k)))
     return tss[best_key]
 
 
 def inject_tss_waypoints(coords):
     """
-    Proximity-based TSS injection with clean entry/exit.
+    TSS injection — processes ONE TSS zone at a time, in route order.
 
-    Core algorithm:
-    1. Find closest approach to TSS reference. If > trigger_nm, skip.
-    2. Select correct lane from bearing.
-    3. Remove original coords within removal_nm of reference.
-    4. Smart exit clipping: only clip if destination is within 50nm of lane exit.
+    For each TSS zone the route passes through:
+
+      1. DETECT  — does the route pass within trigger_nm of the TSS reference?
+                   If not, skip this zone entirely.
+
+      2. LANE    — which lane does the vessel use?
+                   Primary: latitude/longitude of approach coord relative to ref
+                   (north of ref → heading south → south lane, etc.)
+                   Fallback: bearing ranges with ±20° tolerance.
+
+      3. ENTRY   — find the MARNET coord whose segment is closest to the lane
+                   entry WP (lane_wps[0]). Everything before that coord in
+                   the MARNET is kept as-is. The lane starts here.
+
+      4. EXIT    — find the MARNET coord whose segment is closest to the lane
+                   exit WP (lane_wps[-1]). If the destination is inside the TSS,
+                   clip the lane at the WP nearest to the destination.
+                   The MARNET resumes after the exit coord.
+
+      5. SPLICE  — replace the MARNET section from entry..exit with the lane WPs.
+
+    This approach is direction-agnostic: it never tries to infer direction from
+    large-scale bearings, never removes coords outside the immediate TSS region,
+    and handles origins/destinations inside TSS zones naturally.
     """
     if len(coords) < 2:
         return coords, []
 
-    dest_lon, dest_lat   = coords[-1]
-    overall_bearing      = bearing_deg(coords[0][0], coords[0][1], dest_lon, dest_lat)
-    tss_applied          = []
-    splices              = []
+    dest_lon, dest_lat = coords[-1]
+    overall_bearing    = bearing_deg(coords[0][0], coords[0][1], dest_lon, dest_lat)
+    tss_applied        = []
+    splices            = []
 
     for tss_key, tss in TSS_ZONES.items():
         ref_lon, ref_lat = tss['reference']
         trigger_nm       = tss['trigger_nm']
-        removal_nm       = trigger_nm * 0.6
 
-        # Step 1: closest approach
+        # ── Step 1: DETECT ────────────────────────────────────────────────────
+        # Find the closest segment of the MARNET to the TSS reference point.
         min_dist_nm = float('inf')
         closest_seg = -1
         for i in range(len(coords) - 1):
@@ -599,154 +650,114 @@ def inject_tss_waypoints(coords):
                 closest_seg = i
 
         if min_dist_nm > trigger_nm:
-            continue
+            continue   # route doesn't pass near this TSS — skip
 
-        # Step 2: lane selection
-        # Use the bearing of the segment APPROACHING the reference point,
-        # not the closest segment (which may already be past the strait).
-        # The approach segment is the one whose endpoint is closest to the
-        # reference — i.e. the segment the vessel is on when entering the zone.
-        # This correctly handles routes like Rotterdam→Singapore where the
-        # closest segment to Bab el Mandeb is the exit segment (heading east)
-        # rather than the entry segment (heading south through the strait).
-        approach_seg = closest_seg
-        # Walk backward: if the segment BEFORE closest is also within 2×trigger,
-        # use the bearing of the first segment that enters the trigger zone
+        # ── Step 2: LANE ──────────────────────────────────────────────────────
+        # Find the last MARNET coord that is OUTSIDE the trigger zone, walking
+        # backward from closest_seg. That coord is on the approach side.
+        pre_trigger_idx = None
         for i in range(closest_seg, -1, -1):
-            d = _pt_to_seg_nm(ref_lon, ref_lat,
-                              coords[i][0], coords[i][1],
-                              coords[i+1][0] if i+1 < len(coords) else coords[i][0],
-                              coords[i+1][1] if i+1 < len(coords) else coords[i][1])
-            if d <= trigger_nm:
-                approach_seg = i
-            else:
+            if haversine_km(coords[i][0], coords[i][1], ref_lon, ref_lat) / 1.852 > trigger_nm:
+                pre_trigger_idx = i
                 break
-        seg_bearing = bearing_deg(coords[approach_seg][0], coords[approach_seg][1],
-                                  coords[approach_seg+1][0], coords[approach_seg+1][1])
-        lane_wps = list(_select_tss_lane(tss, seg_bearing, overall_bearing) or [])
+
+        if pre_trigger_idx is not None:
+            approach_coord   = (coords[pre_trigger_idx][0], coords[pre_trigger_idx][1])
+            approach_bearing = bearing_deg(approach_coord[0], approach_coord[1],
+                                           ref_lon, ref_lat)
+        else:
+            # Origin is inside the trigger zone — use the start of the closest seg
+            approach_coord   = (coords[closest_seg][0], coords[closest_seg][1])
+            approach_bearing = bearing_deg(coords[closest_seg][0], coords[closest_seg][1],
+                                           coords[closest_seg+1][0], coords[closest_seg+1][1])
+
+        lane_wps = list(_select_tss_lane(tss, approach_bearing, overall_bearing,
+                                          approach_coord=approach_coord) or [])
         if len(lane_wps) < 2:
             continue
 
-        # Step 3: removal zone — all coords within removal_nm of reference
-        in_zone = [i for i in range(len(coords))
-                   if haversine_km(coords[i][0], coords[i][1],
-                                   ref_lon, ref_lat) / 1.852 <= removal_nm]
+        lane_entry = lane_wps[0]   # first WP of the correct lane
+        lane_exit  = lane_wps[-1]  # last WP of the correct lane
 
-        if not in_zone:
-            first_remove = closest_seg + 1
-            last_remove  = closest_seg
-        else:
-            first_remove = in_zone[0]
-            last_remove  = in_zone[-1]
+        # ── Step 3: ENTRY ─────────────────────────────────────────────────────
+        # Find which MARNET index is closest to the lane entry WP.
+        # Everything before that index is kept; the lane starts there.
+        entry_cut = min(range(len(coords)),
+                        key=lambda i: haversine_km(coords[i][0], coords[i][1],
+                                                   lane_entry[0], lane_entry[1]))
 
-        # Step 4: extend removal to catch MARNET stragglers
-        # After the removal zone, check if the next MARNET coord would create
-        # a backward step relative to the lane exit bearing.
-        # "Backward" = bearing toward that coord differs from lane exit by >90°
-        lane_exit_brg = bearing_deg(lane_wps[-2][0], lane_wps[-2][1],
-                                    lane_wps[-1][0], lane_wps[-1][1])
-        while last_remove + 1 < len(coords) - 1:
-            nxt = coords[last_remove + 1]
-            brg_to_nxt = bearing_deg(lane_wps[-1][0], lane_wps[-1][1],
-                                     nxt[0], nxt[1])
-            angle_diff = abs((brg_to_nxt - lane_exit_brg + 180) % 360 - 180)
-            if angle_diff > 90:
-                last_remove += 1  # this coord is behind us — remove it
-            else:
-                break
+        # ── Step 4: EXIT ──────────────────────────────────────────────────────
+        # Find which MARNET index is closest to the lane exit WP.
+        # The MARNET resumes from after that index.
+        exit_cut = min(range(len(coords)),
+                       key=lambda i: haversine_km(coords[i][0], coords[i][1],
+                                                  lane_exit[0], lane_exit[1]))
 
-        # Similarly, extend first_remove backward to catch stragglers before entry
-        lane_entry_brg = bearing_deg(lane_wps[0][0], lane_wps[0][1],
-                                     lane_wps[1][0], lane_wps[1][1])
-        while first_remove > 0:
-            prev = coords[first_remove - 1]
-            brg_from_prev = bearing_deg(prev[0], prev[1],
-                                        lane_wps[0][0], lane_wps[0][1])
-            angle_diff = abs((brg_from_prev - lane_entry_brg + 180) % 360 - 180)
-            if angle_diff > 90:
-                first_remove -= 1  # this coord is behind the lane entry — remove it
-            else:
-                break
+        # Safety: entry must come before exit in the route
+        if entry_cut >= exit_cut:
+            # Treat the whole closest_seg region as the splice point
+            entry_cut = closest_seg
+            exit_cut  = min(closest_seg + 1, len(coords) - 1)
 
-        # Step 5: smart exit clipping — only applies when destination is
-        # within 50nm of the lane exit (i.e. vessel is arriving, not transiting).
-        # If destination is further than 50nm, use the full lane — the vessel
-        # is transiting the strait and will turn toward its destination after.
-        dist_to_last = haversine_km(lane_wps[-1][0], lane_wps[-1][1],
-                                    dest_lon, dest_lat) / 1.852
-        exit_idx = len(lane_wps) - 1
-        if dist_to_last <= 50:
-            for j in range(len(lane_wps) - 1):
-                d = haversine_km(lane_wps[j][0], lane_wps[j][1],
-                                 dest_lon, dest_lat) / 1.852
-                if d < dist_to_last:
-                    next_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
-                                           lane_wps[j+1][0], lane_wps[j+1][1])
-                    dest_brg = bearing_deg(lane_wps[j][0], lane_wps[j][1],
-                                           dest_lon, dest_lat)
-                    if abs((dest_brg - next_brg + 180) % 360 - 180) > 60:
-                        exit_idx = j
-                        break
+        # Clip lane at the destination if it is inside the TSS.
+        # Find the lane WP nearest to the destination; truncate there.
+        exit_lane_idx = len(lane_wps) - 1
+        dist_dest_to_exit = haversine_km(lane_exit[0], lane_exit[1],
+                                          dest_lon, dest_lat) / 1.852
+        if dist_dest_to_exit < trigger_nm:
+            # Destination is inside or near the TSS — clip at the nearest lane WP
+            nearest_idx = min(range(len(lane_wps)),
+                              key=lambda j: haversine_km(lane_wps[j][0], lane_wps[j][1],
+                                                          dest_lon, dest_lat))
+            exit_lane_idx = nearest_idx
 
-        lane_wps = lane_wps[:exit_idx + 1]
+        clipped_lane = lane_wps[:exit_lane_idx + 1]
 
-        splices.append((first_remove, last_remove, lane_wps, tss['name'],
-                        min_dist_nm, seg_bearing))
-        log.info('TSS: %s dist=%.1fnm brg=%.0f° remove[%d:%d] lane=%d exit=%d',
-                 tss['name'], min_dist_nm, seg_bearing,
-                 first_remove, last_remove, len(lane_wps), exit_idx)
+        splices.append((entry_cut, exit_cut, clipped_lane, tss['name'], min_dist_nm))
+        log.info('TSS: %s dist=%.1fnm entry[%d] exit[%d] lane=%d',
+                 tss['name'], min_dist_nm, entry_cut, exit_cut, len(clipped_lane))
 
     if not splices:
         return coords, []
 
+    # ── Step 5: SPLICE ────────────────────────────────────────────────────────
+    # Sort by entry_cut so we process zones in route order.
+    # Build the result by walking the MARNET and substituting each TSS section
+    # with the corresponding lane WPs.
     splices.sort(key=lambda s: s[0])
 
     result   = []
     prev_idx = 0
 
-    for first_remove, last_remove, lane_wps, tss_name, dist_nm, bearing in splices:
-        if first_remove < prev_idx:
-            first_remove = prev_idx
+    for entry_cut, exit_cut, lane_wps, tss_name, dist_nm in splices:
+        # Skip if this splice has already been consumed by a previous one
+        if entry_cut < prev_idx:
+            entry_cut = prev_idx
+        if exit_cut < prev_idx:
+            continue
 
-        for k in range(prev_idx, first_remove):
+        # Append MARNET coords from where we left off up to (not including) entry_cut
+        for k in range(prev_idx, entry_cut):
             result.append([coords[k][0], coords[k][1]])
 
+        # Append the lane WPs
         for wp in lane_wps:
             result.append([wp[0], wp[1]])
 
         tss_applied.append(tss_name)
-        prev_idx = last_remove + 1
+        prev_idx = exit_cut + 1   # resume MARNET AFTER the exit coord
 
+    # Append remaining MARNET after the last TSS
     for k in range(prev_idx, len(coords)):
         result.append([coords[k][0], coords[k][1]])
 
-    # Deduplicate consecutive near-identical points (< 0.5nm)
+    # Deduplicate consecutive near-identical points (< 0.5nm apart)
     deduped = [result[0]]
     for pt in result[1:]:
         if haversine_km(deduped[-1][0], deduped[-1][1], pt[0], pt[1]) > 0.5 * 1.852:
             deduped.append(pt)
 
-    # Post-injection backtrack filter:
-    # Remove any waypoint that is dramatically further from the destination
-    # than the previous waypoint — this catches MARNET straggler sections
-    # (e.g. Dover waypoints remaining in a Rotterdam→Singapore route) that
-    # survived TSS injection but represent a wrong-direction detour.
-    # Threshold: 300nm increase in distance-to-destination (safe — largest
-    # legitimate detour from Cape of Good Hope or similar is ~200nm).
-    BACKTRACK_THRESHOLD_NM = 300
-    filtered = [deduped[0]]
-    for i in range(1, len(deduped)):
-        d_prev = haversine_km(filtered[-1][0], filtered[-1][1],
-                              dest_lon, dest_lat) / 1.852
-        d_curr = haversine_km(deduped[i][0], deduped[i][1],
-                              dest_lon, dest_lat) / 1.852
-        if d_curr - d_prev > BACKTRACK_THRESHOLD_NM:
-            log.warning('TSS backtrack filter: removed [%.3f,%.3f] (+%.0fnm from dest)',
-                        deduped[i][0], deduped[i][1], d_curr - d_prev)
-        else:
-            filtered.append(deduped[i])
-
-    return filtered, tss_applied
+    return deduped, tss_applied
 
 
 # ── ROUTING ENGINE ────────────────────────────────────────────────────────────
