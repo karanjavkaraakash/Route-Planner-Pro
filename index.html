@@ -738,6 +738,8 @@ html, body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  position: relative;
+  transition: width .25s cubic-bezier(.4,0,.2,1);
   box-shadow: 2px 0 8px rgba(12,22,40,.04);
 }
 
@@ -1291,6 +1293,178 @@ html, body {
   background: var(--accent-lt); border: 1px solid var(--accent-md); color: var(--accent);
 }
 .wx-badge.loaded { background: #f0fdf4; border-color: #a7f3d0; color: var(--success); }
+
+/* ═══════════════════════════════════════════════════════════════
+   SIDEBAR TOGGLE BUTTON — always visible on route/edit screens
+   ═══════════════════════════════════════════════════════════════ */
+#sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  right: -16px;
+  transform: translateY(-50%);
+  z-index: 400;
+  width: 32px; height: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text2);
+  box-shadow: var(--shadow-md);
+  transition: all .2s;
+  user-select: none;
+}
+#sidebar-toggle:hover { background: var(--navy); color: #fff; border-color: var(--navy); }
+
+/* Collapsed sidebar state */
+#route-sidebar.collapsed {
+  width: 0 !important;
+  overflow: hidden;
+  border-right: none;
+  min-width: 0;
+}
+#route-sidebar.collapsed #sidebar-toggle {
+  right: -20px;
+}
+#edit-sidebar.collapsed {
+  width: 0 !important;
+  overflow: hidden;
+  border-right: none;
+  min-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — ≤ 768px
+   ═══════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  :root {
+    --topbar-h: 48px;
+    --sb-w: 100vw; /* sidebar takes full width on mobile when open */
+  }
+
+  /* ── Welcome screen ── */
+  .welcome-inner { padding: 0 20px; }
+  .welcome-title  { font-size: 28px; }
+  .welcome-tagline { font-size: 13px; margin: 14px 0 28px; }
+  .welcome-options { grid-template-columns: 1fr; gap: 12px; }
+  .welcome-option  { padding: 22px 20px; }
+
+  /* ── Plan screen ── */
+  #screen-plan { flex-direction: column; }
+  #plan-panel  { width: 100%; max-height: 100vh; overflow-y: auto; }
+  #plan-visual { display: none; } /* hide map preview on mobile */
+
+  /* ── Route view topbar ── */
+  #route-topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  .rtb-brand     { display: none; } /* hide brand on mobile topbar */
+  .rtb-sep       { display: none; }
+  .rtb-route     { width: 100%; order: -1; gap: 6px; }
+  .rtb-port      { max-width: none; font-size: 12px; }
+  /* Show only Distance and ETA on mobile topbar */
+  .rtb-metric    { padding: 0 8px; border-right: none; }
+  .rtb-metric:nth-child(4), /* ECA */
+  .rtb-metric:nth-child(5)  /* Transit */ { display: none; }
+  .rtb-metric-val { font-size: 11px; }
+
+  /* ── Route body — mobile: sidebar overlays the map ── */
+  #route-body { position: relative; }
+
+  #route-sidebar {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    z-index: 300;
+    width: 88vw !important;
+    max-width: 340px;
+    box-shadow: 4px 0 24px rgba(12,22,40,.15);
+    transition: transform .25s cubic-bezier(.4,0,.2,1);
+    transform: translateX(0);
+  }
+  #route-sidebar.collapsed {
+    transform: translateX(-100%);
+    width: 88vw !important;
+    overflow: visible;
+    border-right: 1px solid var(--border);
+  }
+  /* Collapse toggle repositioned for overlay mode */
+  #route-sidebar.collapsed #sidebar-toggle { right: -40px; }
+  #route-sidebar:not(.collapsed) #sidebar-toggle { right: -16px; }
+
+  /* Map takes full width always on mobile */
+  #route-map-wrap { width: 100%; }
+
+  /* ── Action bar — stack more compactly ── */
+  #rs-actions { padding: 10px; gap: 6px; }
+  .act-btn     { padding: 10px 8px; font-size: 11px; }
+  /* Full-width buttons on mobile */
+  #btn-edit-canvas, #btn-load-wx { flex: 1; }
+
+  /* ── Edit screen ── */
+  #edit-sidebar {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    z-index: 300;
+    width: 88vw !important;
+    max-width: 300px;
+    box-shadow: 4px 0 24px rgba(12,22,40,.15);
+    transition: transform .25s cubic-bezier(.4,0,.2,1);
+    transform: translateX(0);
+  }
+  #edit-sidebar.collapsed {
+    transform: translateX(-100%);
+    width: 88vw !important;
+    overflow: visible;
+  }
+  #edit-map-wrap { width: 100%; }
+
+  #edit-topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  .et-warning { font-size: 10px; }
+
+  /* ── Toolbar moves to left on mobile (sidebar overlays right side) ── */
+  #toolbar { right: 10px; }
+
+  /* ── Map overlays compact ── */
+  #sim-hud    { min-width: 170px; font-size: 10px; }
+  #wind-hover-tile { max-width: 140px; }
+
+  /* ── Modals full-width on mobile ── */
+  .modal { min-width: unset; width: 96vw; padding: 20px 16px; }
+
+  /* ── Welcome upload dropzone ── */
+  .upload-drop-inner { width: 90vw; padding: 28px 20px; }
+
+  /* ── Plan form adjustments ── */
+  #plan-form-body  { padding: 18px 20px; }
+  .pf-row2         { grid-template-columns: 1fr; gap: 8px; }
+  #plan-header     { padding: 14px 20px 12px; }
+}
+
+/* ── Extra small phones ── */
+@media (max-width: 400px) {
+  .welcome-title  { font-size: 24px; }
+  #route-topbar   { padding: 6px 10px; }
+  .rtb-port       { font-size: 11px; max-width: 120px; }
+}
+
+/* ── Tablet — sidebar narrower ── */
+@media (min-width: 769px) and (max-width: 1024px) {
+  :root { --sb-w: 280px; }
+  #plan-panel { width: 380px; }
+  .rtb-metric { padding: 0 10px; }
+}
+
 </style>
 </head>
 <body>
@@ -1560,8 +1734,9 @@ html, body {
   <div id="route-body">
 
     <div id="route-sidebar">
+      <!-- Collapse / expand toggle -->
+      <button id="sidebar-toggle" onclick="toggleRouteSidebar()" title="Toggle sidebar" aria-label="Toggle sidebar">‹</button>
 
-      <!-- Tabs -->
       <div id="rs-tabs">
         <button class="rs-tab active" onclick="switchRsTab('waypoints',this)">Waypoints</button>
         <button class="rs-tab" onclick="switchRsTab('passages',this)">Passages</button>
@@ -1734,7 +1909,7 @@ html, body {
     <div class="act-btn-row">
       <button id="btn-export-rtz" class="act-btn act-btn-ghost" onclick="exportRTZ()">↓ RTZ</button>
       <button id="btn-export-csv" class="act-btn act-btn-ghost" onclick="exportCSV()">↓ CSV</button>
-      <button id="btn-gen-pdf" class="act-btn act-btn-gold" onclick="openModal('export-modal')" disabled style="grid-column:span 2">📄 PDF Report</button>
+      <button id="btn-gen-pdf" class="act-btn act-btn-gold" onclick="openExportModal()" disabled style="grid-column:span 2">📄 PDF Report</button>
     </div>
     <!-- Load weather interval selector (shown only during weather load context) -->
     <div id="wx-interval-row" style="display:none;padding:8px 0 2px">
@@ -20724,6 +20899,45 @@ function showOptimisationPanel() {
 
 // Hook into importRTZ/importCSV to go to route view after import
 const _origImportRTZ = typeof importRTZ === 'function' ? importRTZ : null;
+
+// ── Sidebar collapse / expand ─────────────────────────────────────────────
+let _sidebarCollapsed = false;
+
+function toggleRouteSidebar() {
+  _sidebarCollapsed = !_sidebarCollapsed;
+  const sb  = document.getElementById('route-sidebar');
+  const btn = document.getElementById('sidebar-toggle');
+  const bd  = document.getElementById('sidebar-backdrop');
+  if (!sb) return;
+  sb.classList.toggle('collapsed', _sidebarCollapsed);
+  if (btn) {
+    btn.textContent = _sidebarCollapsed ? '›' : '‹';
+    btn.title       = _sidebarCollapsed ? 'Show panel' : 'Hide panel';
+  }
+  // Show backdrop on mobile when sidebar is open (overlay mode)
+  if (bd) bd.classList.toggle('open', !_sidebarCollapsed && window.innerWidth <= 768);
+  // Resize map to use newly freed/given space
+  if (window.map) setTimeout(() => window.map.resize(), 260);
+}
+
+// Inject backdrop element and wiring on DOMContentLoaded
+document.addEventListener('DOMContentLoaded', function() {
+  const routeBody = document.getElementById('route-body');
+  if (routeBody) {
+    const bd = document.createElement('div');
+    bd.id = 'sidebar-backdrop';
+    bd.style.cssText = 'display:none;position:absolute;inset:0;z-index:299;background:rgba(12,22,40,.38);';
+    bd.addEventListener('click', function() {
+      if (window.innerWidth <= 768) toggleRouteSidebar();
+    });
+    routeBody.appendChild(bd);
+
+    // CSS to handle .open state
+    const s = document.createElement('style');
+    s.textContent = '#sidebar-backdrop.open{display:block;}';
+    document.head.appendChild(s);
+  }
+});
 
 
 
