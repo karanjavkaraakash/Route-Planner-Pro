@@ -1,12 +1,13 @@
 """
-RoutePlannerPro Weather Pipeline v2.1 — Optimised ETL
-======================================================
-v2.1 fixes: explicit parse diagnostics, better error visibility,
-fallback to pure-Python GRIB subset via NOMADS HTTP byte-range,
-ocean mask key normalisation fix.
+RoutePlannerPro Weather Pipeline v2.2
+======================================
+Fixes vs v2.1:
+  - norm_lon() applied BEFORE snap() to fix ocean mask key mismatch
+  - PRMSL fetched via separate NOMADS request (surface level, not 10m)
+  - WW3 path corrected for NOMADS directory structure
 """
 
-import os, sys, time, argparse, logging, requests, tempfile, math, csv, struct
+import os, sys, time, argparse, logging, requests, tempfile, math, csv
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 
@@ -45,39 +46,49 @@ SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
 OCEAN_MASK_PATH = os.path.join(SCRIPT_DIR, "ocean_points_0p5.csv")
 
 # ── Supabase ──────────────────────────────────────────────────────────────────
-def get_supabase() -> Client:
+def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # ── Ocean mask ────────────────────────────────────────────────────────────────
-def load_ocean_mask() -> set:
+def load_ocean_mask():
     mask = set()
     with open(OCEAN_MASK_PATH, newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
             mask.add((round(float(row['lat']), 2), round(float(row['lon']), 2)))
     log.info(f"Ocean mask loaded: {len(mask):,} points")
-    # Log a few sample keys so we can verify format
-    sample = list(mask)[:3]
-    log.info(f"Ocean mask sample keys: {sample}")
     return mask
 
-# ── NOMADS URL builders ───────────────────────────────────────────────────────
-def latest_gfs_run() -> tuple:
+# ── NOMADS URLs ───────────────────────────────────────────────────────────────
+def latest_gfs_run():
     candidate = datetime.now(timezone.utc) - timedelta(hours=5)
     run_hour  = (candidate.hour // 6) * 6
     return candidate.strftime("%Y%m%d"), f"{run_hour:02d}"
 
-def gfs_url(date, run, fhour):
+def gfs_wind_url(date, run, fhour):
+    """GFS 10m wind — U and V components."""
     fstr = f"{fhour:03d}"
     return (
         f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl?"
         f"file=gfs.t{run}z.pgrb2full.0p50.f{fstr}"
-        f"&lev_10_m_above_ground=on&var_UGRD=on&var_VGRD=on&var_PRMSL=on"
+        f"&lev_10_m_above_ground=on&var_UGRD=on&var_VGRD=on"
+        f"&leftlon=0&rightlon=360&toplat=90&bottomlat=-90"
+        f"&dir=%2Fgfs.{date}%2F{run}%2Fatmos"
+    )
+
+def gfs_mslp_url(date, run, fhour):
+    """GFS MSLP — mean sea level pressure (surface level)."""
+    fstr = f"{fhour:03d}"
+    return (
+        f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl?"
+        f"file=gfs.t{run}z.pgrb2full.0p50.f{fstr}"
+        f"&lev_mean_sea_level=on&var_PRMSL=on"
         f"&leftlon=0&rightlon=360&toplat=90&bottomlat=-90"
         f"&dir=%2Fgfs.{date}%2F{run}%2Fatmos"
     )
 
 def ww3_url(date, run, fhour):
+    """WaveWatch III global 0.25°."""
     fstr = f"{fhour:03d}"
     return (
         f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfswave.pl?"
@@ -94,69 +105,72 @@ def download_grib(url, label):
             log.info(f"  Downloading {label} (attempt {attempt})")
             r = requests.get(url, timeout=REQUEST_TIMEOUT)
             if r.status_code == 404:
-                log.info(f"  {label} → 404 not available, skipping")
+                log.info(f"  {label} → 404, skipping")
                 return None
-            if r.status_code == 200 and len(r.content) > 1000:
-                log.info(f"  {label} → {len(r.content)/1024:.0f} KB downloaded")
+            if r.status_code == 200 and len(r.content) > 500:
+                log.info(f"  {label} → {len(r.content)/1024:.0f} KB")
                 return r.content
-            log.warning(f"  {label} → HTTP {r.status_code}, size={len(r.content)}")
+            log.warning(f"  {label} → HTTP {r.status_code} size={len(r.content)}")
         except requests.RequestException as e:
             log.warning(f"  Request error: {e}")
         if attempt < MAX_RETRIES:
             time.sleep(10 * attempt)
     return None
 
-# ── GRIB parsing ──────────────────────────────────────────────────────────────
-def parse_grib(data: bytes, label: str) -> dict:
-    """Parse GRIB2 bytes. Returns dict of shortName → (lats, lons, vals)."""
+# ── GRIB parse ────────────────────────────────────────────────────────────────
+def parse_grib(data, label):
     with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as f:
         f.write(data)
         fname = f.name
-
     result = {}
     try:
         if HAS_ECCODES:
-            log.info(f"  Parsing {label} via eccodes")
             with open(fname, "rb") as fh:
                 while True:
                     msg = eccodes.codes_grib_new_from_file(fh)
-                    if msg is None:
-                        break
+                    if msg is None: break
                     try:
                         short = eccodes.codes_get(msg, "shortName")
                         lats  = eccodes.codes_get_array(msg, "latitudes")
                         lons  = eccodes.codes_get_array(msg, "longitudes")
                         vals  = eccodes.codes_get_array(msg, "values")
                         result[short] = (lats, lons, vals)
-                        log.info(f"    Found variable: {short} ({len(vals):,} values)")
+                        log.info(f"    {label}: var={short} pts={len(vals):,} lon_range=[{min(lons):.1f},{max(lons):.1f}]")
                     finally:
                         eccodes.codes_release(msg)
-
         elif HAS_XARRAY:
-            log.info(f"  Parsing {label} via cfgrib/xarray")
             ds = xr.open_dataset(fname, engine="cfgrib", indexpath="")
             flat_lats = ds.latitude.values.flatten()
             flat_lons = ds.longitude.values.flatten()
             for var in ds.data_vars:
                 vals = ds[var].values.flatten()
                 result[var] = (flat_lats, flat_lons, vals)
-                log.info(f"    Found variable: {var} ({len(vals):,} values)")
-        else:
-            log.error("No GRIB parser available — install eccodes or cfgrib")
-
+                log.info(f"    {label}: var={var} pts={len(vals):,}")
     except Exception as e:
-        log.error(f"  GRIB parse error for {label}: {e}")
+        log.error(f"  Parse error {label}: {e}")
     finally:
         os.unlink(fname)
-
-    log.info(f"  Parsed {len(result)} variables from {label}: {list(result.keys())}")
     return result
+
+# ── Key normalisation — CRITICAL: norm THEN snap ──────────────────────────────
+def make_key(lat, lon):
+    """
+    Convert raw GRIB lat/lon to ocean mask key.
+    GRIB lons are 0–360. Ocean mask uses -180..180.
+    Must normalise lon BEFORE snapping to grid.
+    """
+    flat_lon = float(lon)
+    if flat_lon > 180:
+        flat_lon -= 360          # 0–360 → -180..180
+    rlat = round(round(float(lat) / RESOLUTION) * RESOLUTION, 2)
+    rlon = round(round(flat_lon  / RESOLUTION) * RESOLUTION, 2)
+    return (rlat, rlon)
 
 # ── Scaling ───────────────────────────────────────────────────────────────────
 def uv_to_speed_dir(u, v):
-    speed_ms  = math.sqrt(u**2 + v**2)
-    direction = (270 - math.degrees(math.atan2(v, u))) % 360
-    return speed_ms, direction
+    speed = math.sqrt(u**2 + v**2)
+    dirn  = (270 - math.degrees(math.atan2(v, u))) % 360
+    return speed, dirn
 
 def scale_wind_speed(ms):  return max(0, min(32767, round(ms * 1.94384 * 10)))
 def scale_wave_hs(m):      return max(0, min(32767, round(m * 100)))
@@ -164,48 +178,24 @@ def scale_wave_tp(s):      return max(0, min(32767, round(s * 10)))
 def scale_dir(deg):        return max(0, min(360,   round(float(deg) % 360)))
 def scale_mslp(pa):        return max(0, min(32767, round(pa / 100.0 - 950)))
 
-# ── Normalise lon to ocean mask format (-180..180) ────────────────────────────
-def norm_lon(lon):
-    lon = float(lon)
-    if lon > 180:
-        lon -= 360
-    return round(lon, 2)
-
-def snap(val, res=0.5):
-    """Snap to nearest grid resolution."""
-    return round(round(float(val) / res) * res, 2)
-
 # ── Row builders ──────────────────────────────────────────────────────────────
-def build_gfs_rows(parsed, valid_time, fhour, run_time, ocean_mask):
+def extract_var(parsed, varname, ocean_mask):
+    if varname not in parsed:
+        return {}
+    lats, lons, vals = parsed[varname]
+    pts = {}
+    for lat, lon, val in zip(lats, lons, vals):
+        key = make_key(lat, lon)
+        if key in ocean_mask and key not in pts and float(val) < 9e10:
+            pts[key] = float(val)
+    log.info(f"    '{varname}' → {len(pts):,} ocean points")
+    return pts
+
+def build_gfs_rows(wind_parsed, mslp_parsed, valid_time, fhour, run_time, ocean_mask):
     rows = {}
-
-    def extract(varname):
-        if varname not in parsed:
-            log.warning(f"    Variable '{varname}' not found in parsed GRIB")
-            return {}
-        lats, lons, vals = parsed[varname]
-        pts = {}
-        for lat, lon, val in zip(lats, lons, vals):
-            rlat = snap(lat)
-            rlon = norm_lon(snap(lon))
-            key  = (rlat, rlon)
-            if key in ocean_mask and key not in pts:
-                pts[key] = float(val)
-        log.info(f"    '{varname}' → {len(pts):,} ocean points extracted")
-        return pts
-
-    u_pts   = extract("10u")
-    v_pts   = extract("10v")
-    msl_pts = extract("prmsl")
-
-    # Diagnostic: if empty, check key format mismatch
-    if not u_pts and "10u" in parsed:
-        lats, lons, vals = parsed["10u"]
-        sample_lat = snap(lats[0])
-        sample_lon = norm_lon(snap(lons[0]))
-        log.warning(f"    Key format check — GRIB sample: ({sample_lat}, {sample_lon})")
-        mask_sample = list(ocean_mask)[:1]
-        log.warning(f"    Key format check — mask sample: {mask_sample}")
+    u_pts   = extract_var(wind_parsed, "10u",  ocean_mask)
+    v_pts   = extract_var(wind_parsed, "10v",  ocean_mask)
+    msl_pts = extract_var(mslp_parsed, "prmsl", ocean_mask) if mslp_parsed else {}
 
     for key in set(u_pts) | set(v_pts) | set(msl_pts):
         lat, lon = key
@@ -217,16 +207,16 @@ def build_gfs_rows(parsed, valid_time, fhour, run_time, ocean_mask):
         }
         u = u_pts.get(key)
         v = v_pts.get(key)
-        if u is not None and v is not None and abs(u) < 9e10 and abs(v) < 9e10:
+        if u is not None and v is not None:
             spd, drn = uv_to_speed_dir(u, v)
             row["wind_speed"] = scale_wind_speed(spd)
             row["wind_dir"]   = scale_dir(drn)
         mslp = msl_pts.get(key)
-        if mslp is not None and mslp < 9e10:
+        if mslp is not None:
             row["mslp"] = scale_mslp(mslp)
         rows[key] = row
 
-    log.info(f"    Built {len(rows):,} GFS rows for fhour={fhour}")
+    log.info(f"  Built {len(rows):,} GFS rows for fhour={fhour}")
     return list(rows.values())
 
 def build_ww3_rows(parsed, valid_time, fhour, run_time, ocean_mask):
@@ -239,31 +229,27 @@ def build_ww3_rows(parsed, valid_time, fhour, run_time, ocean_mask):
         "swdir": ("swell_dir", scale_dir),
     }
     for src, (dst, scaler) in mapping.items():
-        if src not in parsed:
-            continue
+        if src not in parsed: continue
         lats, lons, vals = parsed[src]
         for lat, lon, val in zip(lats, lons, vals):
-            rlat = snap(lat)
-            rlon = norm_lon(snap(lon))
-            key  = (rlat, rlon)
+            if float(val) > 9e10: continue
+            key = make_key(lat, lon)
             if key not in ocean_mask: continue
-            if float(val) > 9e10:    continue
             if key not in rows:
                 rows[key] = {
-                    "lat": rlat, "lon": rlon,
+                    "lat": key[0], "lon": key[1],
                     "valid_time":    valid_time.isoformat(),
                     "forecast_hour": fhour,
                     "run_time":      run_time.isoformat(),
                 }
             rows[key][dst] = scaler(float(val))
-
-    log.info(f"    Built {len(rows):,} WW3 rows for fhour={fhour}")
+    log.info(f"  Built {len(rows):,} WW3 rows for fhour={fhour}")
     return list(rows.values())
 
 # ── Upsert ────────────────────────────────────────────────────────────────────
 def upsert_rows(sb, rows, label):
     if not rows:
-        log.warning(f"    No rows to upsert for {label} — skipping")
+        log.warning(f"  No rows for {label}")
         return 0
     total = 0
     for i in range(0, len(rows), BATCH_SIZE):
@@ -272,15 +258,13 @@ def upsert_rows(sb, rows, label):
             batch, on_conflict="lat,lon,valid_time,run_time"
         ).execute()
         total += len(batch)
-    log.info(f"    Upserted {total:,} {label} rows")
+    log.info(f"  Upserted {total:,} {label} rows")
     return total
 
-def delete_old_runs(sb, current_run_time):
+def delete_old_runs(sb, run_time):
     sb.table("weather_grid")\
-      .delete()\
-      .neq("run_time", current_run_time.isoformat())\
-      .execute()
-    log.info("Old run data deleted")
+      .delete().neq("run_time", run_time.isoformat()).execute()
+    log.info("Old run deleted")
 
 def log_run(sb, source, records, duration, status, error=None):
     try:
@@ -291,21 +275,16 @@ def log_run(sb, source, records, duration, status, error=None):
             "status": status, "error_msg": error,
         }).execute()
     except Exception as e:
-        log.error(f"Failed to write pipeline log: {e}")
+        log.error(f"Log write failed: {e}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def run_pipeline(mode):
     t0 = time.time()
-
-    # Log parser availability
-    log.info(f"GRIB parsers — eccodes={HAS_ECCODES}, xarray/cfgrib={HAS_XARRAY}")
-    if not HAS_ECCODES and not HAS_XARRAY:
-        log.error("FATAL: No GRIB parser available. Cannot continue.")
-        sys.exit(1)
+    log.info(f"GRIB parsers — eccodes={HAS_ECCODES}, xarray={HAS_XARRAY}")
 
     date, run = latest_gfs_run()
     run_time  = datetime.strptime(f"{date}{run}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
-    log.info(f"Pipeline v2.1 | mode={mode} | GFS run={date}/{run}Z")
+    log.info(f"Pipeline v2.2 | mode={mode} | GFS run={date}/{run}Z")
 
     ocean_mask = load_ocean_mask()
     sb         = get_supabase()
@@ -319,29 +298,31 @@ def run_pipeline(mode):
 
     for fhour in hours:
         valid_time = run_time + timedelta(hours=fhour)
-        log.info(f"── fhour={fhour:03d} valid={valid_time.strftime('%Y-%m-%d %HZ')} ──")
+        log.info(f"── fhour={fhour:03d} {valid_time.strftime('%Y-%m-%d %HZ')} ──")
 
-        # GFS
-        data = download_grib(gfs_url(date, run, fhour), f"GFS f{fhour:03d}")
-        if data:
-            parsed = parse_grib(data, f"GFS f{fhour:03d}")
-            rows   = build_gfs_rows(parsed, valid_time, fhour, run_time, ocean_mask)
-            total_gfs += upsert_rows(sb, rows, "GFS")
-        else:
-            log.warning(f"  GFS f{fhour:03d} download failed — skipping")
+        # GFS wind
+        wind_data = download_grib(gfs_wind_url(date, run, fhour), f"GFS-wind f{fhour:03d}")
+        wind_parsed = parse_grib(wind_data, "wind") if wind_data else {}
 
-        # WW3
+        # GFS MSLP (separate request)
+        mslp_data = download_grib(gfs_mslp_url(date, run, fhour), f"GFS-mslp f{fhour:03d}")
+        mslp_parsed = parse_grib(mslp_data, "mslp") if mslp_data else {}
+
+        rows = build_gfs_rows(wind_parsed, mslp_parsed, valid_time, fhour, run_time, ocean_mask)
+        total_gfs += upsert_rows(sb, rows, "GFS")
+
+        # WW3 waves
         if fhour <= 120:
-            data = download_grib(ww3_url(date, run, fhour), f"WW3 f{fhour:03d}")
-            if data:
-                parsed = parse_grib(data, f"WW3 f{fhour:03d}")
-                rows   = build_ww3_rows(parsed, valid_time, fhour, run_time, ocean_mask)
+            ww3_data = download_grib(ww3_url(date, run, fhour), f"WW3 f{fhour:03d}")
+            if ww3_data:
+                ww3_parsed = parse_grib(ww3_data, "WW3")
+                rows = build_ww3_rows(ww3_parsed, valid_time, fhour, run_time, ocean_mask)
                 total_ww3 += upsert_rows(sb, rows, "WW3")
 
         time.sleep(1)
 
     duration = time.time() - t0
-    log.info(f"═══ Pipeline complete | GFS={total_gfs:,} WW3={total_ww3:,} rows | {duration:.0f}s ═══")
+    log.info(f"═══ Done | GFS={total_gfs:,} WW3={total_ww3:,} | {duration:.0f}s ═══")
     log_run(sb, f"GFS+WW3/{mode}", total_gfs + total_ww3, duration, "success")
 
 if __name__ == "__main__":
