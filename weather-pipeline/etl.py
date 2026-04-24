@@ -262,9 +262,25 @@ def upsert_rows(sb, rows, label):
     return total
 
 def delete_old_runs(sb, run_time):
-    sb.table("weather_grid")\
-      .delete().neq("run_time", run_time.isoformat()).execute()
-    log.info("Old run deleted")
+    """
+    Delete previous run data in small per-forecast-hour batches
+    to avoid Supabase free tier statement timeout (error 57014).
+    """
+    forecast_hours = list(range(0, 121, 6)) + list(range(126, 385, 6))
+    deleted = 0
+    for fhour in forecast_hours:
+        for attempt in range(1, 4):
+            try:
+                sb.table("weather_grid")                  .delete()                  .neq("run_time", run_time.isoformat())                  .eq("forecast_hour", fhour)                  .execute()
+                deleted += 1
+                break
+            except Exception as e:
+                if attempt < 3:
+                    log.warning(f"Delete fhour={fhour} attempt {attempt} failed: {e} — retrying")
+                    time.sleep(5 * attempt)
+                else:
+                    log.warning(f"Delete fhour={fhour} gave up after 3 attempts — skipping")
+    log.info(f"Old run deleted ({deleted} batches)")
 
 def log_run(sb, source, records, duration, status, error=None):
     try:
