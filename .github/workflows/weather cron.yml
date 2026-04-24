@@ -2,14 +2,11 @@ name: Weather Pipeline
 
 on:
   schedule:
-    # ── Short run (0–5 day forecast): every 6 hours ──────────────────────────
-    # GFS runs at 00, 06, 12, 18 UTC; we offset by 5h for processing lag
-    - cron: "0 5,11,17,23 * * *"    # short mode
+    # Short run (0-5 day): every 6 hours
+    - cron: "0 5,11,17,23 * * *"
+    # Long run (5-16 day): every 12 hours
+    - cron: "30 5,17 * * *"
 
-    # ── Long run (5–16 day forecast): every 12 hours ─────────────────────────
-    - cron: "30 5,17 * * *"          # long mode
-
-  # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
     inputs:
       mode:
@@ -24,48 +21,35 @@ on:
 
 jobs:
   run-etl:
-    name: "ETL · ${{ github.event.inputs.mode || 'scheduled' }}"
+    name: "ETL"
     runs-on: ubuntu-latest
-    timeout-minutes: 90       # safety cap — full run should be <60min
+    timeout-minutes: 90
 
     steps:
-      # ── 1. Checkout ─────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python setup ──────────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: weather-pipeline/requirements.txt
 
-      # ── 3. System deps for eccodes (GRIB2 parsing) ───────────────────────────
       - name: Install eccodes system library
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libeccodes-dev libeccodes-tools
 
-      # ── 4. Python deps ───────────────────────────────────────────────────────
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r weather-pipeline/requirements.txt
 
-      # ── 5. Determine mode ────────────────────────────────────────────────────
-      # Manual dispatch uses the input; scheduled runs are determined by
-      # which cron expression fired (we detect by current UTC hour)
       - name: Determine pipeline mode
         id: mode
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
-            HOUR=$(date -u +%-H)
-            # Long runs fire at 05:30 and 17:30 UTC
-            # Short runs fire at 05:00, 11:00, 17:00, 23:00 UTC
-            # If hour is 5 check minutes to distinguish
             MIN=$(date -u +%-M)
             if [ "$MIN" -gt 15 ]; then
               echo "mode=long" >> $GITHUB_OUTPUT
@@ -74,18 +58,17 @@ jobs:
             fi
           fi
 
-      # ── 6. Run ETL ───────────────────────────────────────────────────────────
+      - name: Debug mode
+        run: echo "Pipeline mode is ${{ steps.mode.outputs.mode }}"
+
       - name: Run weather ETL
         env:
-          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           cd weather-pipeline
           python etl.py --mode ${{ steps.mode.outputs.mode }}
 
-      # ── 7. Notify on failure (optional — uses GitHub's built-in email) ───────
       - name: Report failure
         if: failure()
-        run: |
-          echo "::error::Weather pipeline failed in mode=${{ steps.mode.outputs.mode }}"
-          echo "Check Supabase pipeline_run_log table for details."
+        run: echo "::error::Weather pipeline failed"
