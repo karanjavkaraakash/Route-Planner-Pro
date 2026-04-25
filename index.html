@@ -2194,6 +2194,10 @@ const MAPTILER_KEY = 'XaQgaXRnIoyC1qZKH1xl';
 const SUPABASE_URL  = 'https://iquccqhilypuuxpedsrm.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlxdWNjcWhpbHlwdXV4cGVkc3JtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwMzExNTQsImV4cCI6MjA5MjYwNzE1NH0.Gz-OAas3VZNzytXJAv1bekSYlJwJmNOntVfDdmhcb1I';
 
+// ── SUPABASE DB2 (days 5-16, 1° resolution) ───────────────────────────────────
+const SUPABASE_URL2  = 'https://qzsrgwlfohanjfuwhabj.supabase.co';
+const SUPABASE_ANON2 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6c3Jnd2xmb2hhbmpmdXdoYWJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwOTk2NjgsImV4cCI6MjA5MjY3NTY2OH0.Hx7ZU5i4MHH0H_GTZy9Wk8xAduD7uV2LZbtdygVKFeI';
+
 // ── FORCE-VIA WAYPOINTS ───────────────────────────────────────────────────────
 // Force-via works by splitting the route into legs: Origin → WP → Destination.
 // The engine routes each leg independently — guaranteed to pass through the WP.
@@ -18112,71 +18116,84 @@ function fmtLon(lon){ lon = normLon(lon); return `${Math.abs(lon).toFixed(4)}°$
 // Spatial matching: snaps midLat/midLon to nearest 0.5° grid point.
 // Falls back per-leg to Open-Meteo if DB has no data for that point/time.
 async function fetchWindFromDB(legs) {
-  // Uses Supabase RPC (server-side Postgres function) to bypass the
-  // 1000-row REST API limit on free tier. The function does all
-  // snapping and lookup server-side, returning one row per leg.
-  // Single HTTP call regardless of route length.
+  // Queries two Supabase DBs:
+  //   DB1: days 0-5  at 0.5° — wind + MSLP  (get_route_wind RPC)
+  //   DB2: days 5-16 at 1.0° — wind only    (get_route_wind RPC)
+  // Each DB uses a server-side RPC that snaps lat/lon/time and returns
+  // one row per leg — no row limit, single HTTP call per DB.
   const results = new Array(legs.length).fill(null);
   if (!legs.length) return results;
 
   const now = new Date();
 
-  // Build leg payload — only include legs within 16-day forecast window
-  // Each leg: {lat, lon, t} where t is ISO Z string
-  const payload = legs.map((leg, idx) => {
+  // Build payload for each leg — split by forecast range
+  // DB1 covers hours 0-120 (days 0-5), DB2 covers hours 126-384 (days 5-16)
+  const db1Payload = [];
+  const db2Payload = [];
+
+  legs.forEach((leg, idx) => {
     const diffDays = (leg.tArr - now) / 86400000;
-    if (diffDays > 16 || diffDays < -1) return null;
-    return {
+    if (diffDays < -1 || diffDays > 16) return; // outside any DB range
+    const entry = {
       lat: leg.midLat,
       lon: normLon(leg.midLon),
-      t:   leg.tArr.toISOString(),   // Postgres function does the snapping
+      t:   leg.tArr.toISOString(),
     };
+    if (diffDays <= 5.25) {
+      db1Payload.push({ ...entry, orig_idx: idx });
+    } else {
+      db2Payload.push({ ...entry, orig_idx: idx });
+    }
   });
 
-  const forecastCount = payload.filter(p => p !== null).length;
-  if (!forecastCount) return results;
-
-  // ── Single RPC call — no row limit ────────────────────────────────────────
-  let rpcRows = [];
-  try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_route_wind`, {
-      method:  'POST',
-      headers: {
-        'apikey':        SUPABASE_ANON,
-        'Authorization': `Bearer ${SUPABASE_ANON}`,
-        'Content-Type':  'application/json',
-        'Prefer':        'return=representation',
-      },
-      body: JSON.stringify({ legs: payload }),
-    });
-
-    if (r.ok) {
-      rpcRows = await r.json();
-      console.log(`[WeatherDB] RPC returned ${rpcRows.length} rows for ${legs.length} legs`);
-    } else {
-      console.warn('[WeatherDB] RPC failed:', r.status, await r.text());
-      return results; // full fallback to Open-Meteo
+  // Helper: call RPC on a given DB and merge results
+  async function queryDB(url, anon, payload, dbLabel) {
+    if (!payload.length) return;
+    // Strip orig_idx before sending — RPC returns leg_idx = position in array
+    const rpcPayload = payload.map(({ lat, lon, t }) => ({ lat, lon, t }));
+    try {
+      const r = await fetch(`${url}/rest/v1/rpc/get_route_wind`, {
+        method:  'POST',
+        headers: {
+          'apikey':        anon,
+          'Authorization': `Bearer ${anon}`,
+          'Content-Type':  'application/json',
+          'Prefer':        'return=representation',
+        },
+        body: JSON.stringify({ legs: rpcPayload }),
+      });
+      if (!r.ok) {
+        console.warn(`[WeatherDB] ${dbLabel} RPC failed:`, r.status);
+        return;
+      }
+      const rows = await r.json();
+      let matched = 0;
+      for (const row of rows) {
+        if (row.leg_idx == null || row.wind_speed == null) continue;
+        const origIdx = payload[row.leg_idx]?.orig_idx;
+        if (origIdx == null) continue;
+        results[origIdx] = {
+          windKn:  (row.wind_speed / 10).toFixed(1),
+          windDir: row.wind_dir,
+          mslp:    row.mslp != null ? row.mslp + 950 : null,
+          _source: dbLabel,
+        };
+        matched++;
+      }
+      console.log(`[WeatherDB] ${dbLabel}: ${matched}/${payload.length} legs matched`);
+    } catch (e) {
+      console.warn(`[WeatherDB] ${dbLabel} error:`, e.message);
     }
-  } catch (e) {
-    console.warn('[WeatherDB] RPC error:', e.message);
-    return results;
   }
 
-  // ── Map results back to leg indices ───────────────────────────────────────
-  // RPC returns {leg_idx, wind_speed, wind_dir, mslp} — one per leg
-  for (const row of rpcRows) {
-    const idx = row.leg_idx;
-    if (idx == null || row.wind_speed == null) continue;
-    results[idx] = {
-      windKn:  (row.wind_speed / 10).toFixed(1),
-      windDir: row.wind_dir,
-      mslp:    row.mslp != null ? row.mslp + 950 : null,
-      _source: 'db',
-    };
-  }
+  // Query both DBs in parallel
+  await Promise.all([
+    queryDB(SUPABASE_URL,  SUPABASE_ANON,  db1Payload, 'DB1(0-5d)'),
+    queryDB(SUPABASE_URL2, SUPABASE_ANON2, db2Payload, 'DB2(5-16d)'),
+  ]);
 
-  const dbCount = results.filter(r => r?._source === 'db').length;
-  console.log(`[WeatherDB] Matched ${dbCount}/${legs.length} legs from DB`);
+  const dbCount = results.filter(r => r?._source != null).length;
+  console.log(`[WeatherDB] Total matched ${dbCount}/${legs.length} legs from DB`);
   return results;
 }
 
