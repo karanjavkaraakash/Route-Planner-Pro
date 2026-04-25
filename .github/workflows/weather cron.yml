@@ -61,14 +61,46 @@ jobs:
       - name: Debug mode
         run: echo "Pipeline mode is ${{ steps.mode.outputs.mode }}"
 
+      # ── Storage safety check ───────────────────────────────────────────────
+      # Query Supabase pg_total_relation_size before running ETL.
+      # If DB is already >= 450MB, abort to protect free tier limit.
+      # This catches cases where TRUNCATE RPC failed on a previous run.
+      - name: Check DB storage before run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python3 - << 'EOF'
+          import os, sys
+          from supabase import create_client
+
+          sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+
+          try:
+              # Get table size in MB via RPC
+              result = sb.rpc("get_weather_grid_size_mb", {}).execute()
+              size_mb = float(result.data or 0)
+              print(f"Current weather_grid size: {size_mb:.0f} MB")
+
+              if size_mb >= 450:
+                  print(f"::error::DB size {size_mb:.0f}MB >= 450MB limit — aborting to protect free tier")
+                  print("Run TRUNCATE TABLE weather_grid; in Supabase SQL Editor first")
+                  sys.exit(1)
+              else:
+                  print(f"Storage OK ({size_mb:.0f}MB < 450MB) — proceeding")
+          except Exception as e:
+              # If size check RPC doesn't exist yet, warn but proceed
+              print(f"Warning: storage check unavailable ({e}) — proceeding anyway")
+          EOF
+
       - name: Run weather ETL
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           cd weather-pipeline
-          python etl.py --mode ${{ steps.mode.outputs.mode }}
+          python etl_v2.py --mode ${{ steps.mode.outputs.mode }}
 
       - name: Report failure
         if: failure()
-        run: echo "::error::Weather pipeline failed"
+        run: echo "::error::Weather pipeline failed in mode=${{ steps.mode.outputs.mode }}"
