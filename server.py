@@ -1025,9 +1025,11 @@ def generate_route_map_image(waypoints, width=1200, height=520):
             try:
                 m = StaticMap(
                     width, height,
+                    padding_x=15, padding_y=15,
                     url_template=tile_url,
                     tile_size=256,
-                    request_timeout=20,
+                    tile_request_timeout=20,
+                    headers=TILE_HEADERS,
                 )
 
                 # Route glow (shadow) — dark thick layer underneath
