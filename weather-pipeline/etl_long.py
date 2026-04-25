@@ -282,11 +282,8 @@ def run_pipeline():
     log.info(f"DB2 Done | {total:,} rows | {duration:.0f}s")
     log_run(sb, total, duration, "success")
 
-    try:
-        sb.rpc("vacuum_weather_grid_long", {}).execute()
-        log.info("VACUUM completed ✓")
-    except Exception as e:
-        log.warning(f"VACUUM RPC failed (non-critical): {e}")
+    # Note: VACUUM cannot run inside Supabase RPC transaction blocks.
+    # Autovacuum handles cleanup automatically in the background.
 
 
 if __name__ == "__main__":
