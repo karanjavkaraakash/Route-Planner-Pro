@@ -2,70 +2,55 @@ name: Weather Pipeline
 
 on:
   schedule:
-    # Short run (0-5 day): every 6 hours
+    # DB1 short run (days 0-5, 0.5°): every 6 hours
     - cron: "0 5,11,17,23 * * *"
-    # Long run (5-16 day): every 12 hours
+    # DB2 long run (days 5-16, 1°): every 12 hours
     - cron: "30 5,17 * * *"
 
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Pipeline mode"
+      job:
+        description: "Which pipeline to run"
         required: true
         default: "short"
         type: choice
         options:
           - short
           - long
-          - all
+          - both
 
 jobs:
-  run-etl:
-    name: "ETL"
+
+  # ── DB1: Days 0-5, 0.5° resolution ─────────────────────────────────────────
+  etl-short:
+    name: "DB1 Short (days 0-5)"
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    if: |
+      github.event_name == 'schedule' && (
+        github.event.schedule == '0 5,11,17,23 * * *'
+      ) || (
+        github.event_name == 'workflow_dispatch' && (
+          github.event.inputs.job == 'short' || github.event.inputs.job == 'both'
+        )
+      )
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install eccodes system library
+      - name: Install eccodes
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libeccodes-dev libeccodes-tools
 
       - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r weather-pipeline/requirements.txt
+        run: pip install --upgrade pip && pip install -r weather-pipeline/requirements.txt
 
-      - name: Determine pipeline mode
-        id: mode
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-          else
-            MIN=$(date -u +%-M)
-            if [ "$MIN" -gt 15 ]; then
-              echo "mode=long" >> $GITHUB_OUTPUT
-            else
-              echo "mode=short" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      - name: Debug mode
-        run: echo "Pipeline mode is ${{ steps.mode.outputs.mode }}"
-
-      # ── Storage safety check ───────────────────────────────────────────────
-      # Query Supabase pg_total_relation_size before running ETL.
-      # If DB is already >= 450MB, abort to protect free tier limit.
-      # This catches cases where TRUNCATE RPC failed on a previous run.
-      - name: Check DB storage before run
+      - name: Storage safety check
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -73,34 +58,87 @@ jobs:
           python3 - << 'EOF'
           import os, sys
           from supabase import create_client
-
           sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
-
           try:
-              # Get table size in MB via RPC
               result = sb.rpc("get_weather_grid_size_mb", {}).execute()
               size_mb = float(result.data or 0)
-              print(f"Current weather_grid size: {size_mb:.0f} MB")
-
+              print(f"DB1 size: {size_mb:.0f}MB")
               if size_mb >= 450:
-                  print(f"::error::DB size {size_mb:.0f}MB >= 450MB limit — aborting to protect free tier")
-                  print("Run TRUNCATE TABLE weather_grid; in Supabase SQL Editor first")
+                  print(f"::error::DB1 size {size_mb:.0f}MB >= 450MB — aborting")
                   sys.exit(1)
-              else:
-                  print(f"Storage OK ({size_mb:.0f}MB < 450MB) — proceeding")
           except Exception as e:
-              # If size check RPC doesn't exist yet, warn but proceed
-              print(f"Warning: storage check unavailable ({e}) — proceeding anyway")
+              print(f"Size check unavailable ({e}) — proceeding")
           EOF
 
-      - name: Run weather ETL
+      - name: Run DB1 ETL (short)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           cd weather-pipeline
-          python etl.py --mode ${{ steps.mode.outputs.mode }}
+          python etl.py --mode short
 
       - name: Report failure
         if: failure()
-        run: echo "::error::Weather pipeline failed in mode=${{ steps.mode.outputs.mode }}"
+        run: echo "::error::DB1 short ETL failed"
+
+  # ── DB2: Days 5-16, 1° resolution ──────────────────────────────────────────
+  etl-long:
+    name: "DB2 Long (days 5-16)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: |
+      github.event_name == 'schedule' && (
+        github.event.schedule == '30 5,17 * * *'
+      ) || (
+        github.event_name == 'workflow_dispatch' && (
+          github.event.inputs.job == 'long' || github.event.inputs.job == 'both'
+        )
+      )
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install eccodes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libeccodes-dev libeccodes-tools
+
+      - name: Install Python dependencies
+        run: pip install --upgrade pip && pip install -r weather-pipeline/requirements.txt
+
+      - name: Storage safety check
+        env:
+          SUPABASE_URL_LONG: ${{ secrets.SUPABASE_URL_LONG }}
+          SUPABASE_SERVICE_KEY_LONG: ${{ secrets.SUPABASE_SERVICE_KEY_LONG }}
+        run: |
+          python3 - << 'EOF'
+          import os, sys
+          from supabase import create_client
+          sb = create_client(os.environ["SUPABASE_URL_LONG"], os.environ["SUPABASE_SERVICE_KEY_LONG"])
+          try:
+              result = sb.rpc("get_weather_grid_size_mb", {}).execute()
+              size_mb = float(result.data or 0)
+              print(f"DB2 size: {size_mb:.0f}MB")
+              if size_mb >= 450:
+                  print(f"::error::DB2 size {size_mb:.0f}MB >= 450MB — aborting")
+                  sys.exit(1)
+          except Exception as e:
+              print(f"Size check unavailable ({e}) — proceeding")
+          EOF
+
+      - name: Run DB2 ETL (long)
+        env:
+          SUPABASE_URL_LONG: ${{ secrets.SUPABASE_URL_LONG }}
+          SUPABASE_SERVICE_KEY_LONG: ${{ secrets.SUPABASE_SERVICE_KEY_LONG }}
+        run: |
+          cd weather-pipeline
+          python etl_long.py
+
+      - name: Report failure
+        if: failure()
+        run: echo "::error::DB2 long ETL failed"
