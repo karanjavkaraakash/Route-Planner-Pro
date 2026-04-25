@@ -263,9 +263,25 @@ def upsert_rows(sb, rows, label):
 
 def delete_old_runs(sb, run_time):
     """
-    Delete previous run data in small per-forecast-hour batches
-    to avoid Supabase free tier statement timeout (error 57014).
+    Use Supabase RPC to call TRUNCATE + REINDEX — instant space reclaim,
+    no index bloat. Falls back to batched DELETE if RPC unavailable.
+    TRUNCATE is safe here: weather data is regenerated every 6 hours.
+    The brief empty-table window (~seconds) is acceptable.
     """
+    # Strategy 1: TRUNCATE via raw SQL RPC (instant, no bloat)
+    for attempt in range(1, 4):
+        try:
+            sb.rpc("truncate_weather_grid", {}).execute()
+            log.info("weather_grid truncated via RPC ✓")
+            return
+        except Exception as e:
+            if attempt < 3:
+                log.warning(f"TRUNCATE RPC attempt {attempt} failed: {e} — retrying")
+                time.sleep(3)
+            else:
+                log.warning(f"TRUNCATE RPC failed after 3 attempts — falling back to batched DELETE")
+
+    # Strategy 2: Batched DELETE by forecast_hour (fallback)
     forecast_hours = list(range(0, 121, 6)) + list(range(126, 385, 6))
     deleted = 0
     for fhour in forecast_hours:
@@ -280,7 +296,7 @@ def delete_old_runs(sb, run_time):
                     time.sleep(5 * attempt)
                 else:
                     log.warning(f"Delete fhour={fhour} gave up after 3 attempts — skipping")
-    log.info(f"Old run deleted ({deleted} batches)")
+    log.info(f"Batched delete complete ({deleted} batches)")
 
 def log_run(sb, source, records, duration, status, error=None):
     try:
