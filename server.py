@@ -882,6 +882,11 @@ def route_searoute(olon,olat,dlon,dlat,restrictions):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import gzip, struct
+try:
+    from PIL import Image, ImageDraw
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 # ── Embedded coastline data ───────────────────────────────────────────────────
 # Simplified world coastlines — 32 polylines, scale factor 10
@@ -936,6 +941,142 @@ def _load_coastlines():
     _COASTLINE_CACHE = lines
     log.info('Coastlines loaded: %d polylines', len(lines))
     return lines
+
+
+# ── TILE SOURCES (tried in order until one succeeds) ─────────────────────────
+MAPTILER_KEY = os.environ.get('MAPTILER_KEY', 'XaQgaXRnIoyC1qZKH1xl')
+TILE_SOURCES = [
+    # ESRI World Ocean Base — maritime aesthetic, depth shading, ocean names
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+    # CartoDB Voyager — clean OSM fallback
+    'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+    # OpenStreetMap — final fallback
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+]
+TILE_HEADERS = {
+    'User-Agent': 'RoutePlannerPro/2.5 maritime voyage planning (https://voyagex-7i4j.onrender.com)',
+    'Accept': 'image/png,image/*',
+}
+
+
+def _check_staticmap():
+    try:
+        import staticmap
+        return True
+    except ImportError:
+        return False
+
+
+def _interp_gc(p1, p2, n=16):
+    """Interpolate n points along great circle arc between p1=[lon,lat] and p2."""
+    import math
+    lon1, lat1 = math.radians(p1[0]), math.radians(p1[1])
+    lon2, lat2 = math.radians(p2[0]), math.radians(p2[1])
+    d = 2 * math.asin(math.sqrt(
+        math.sin((lat2 - lat1) / 2) ** 2 +
+        math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    ))
+    pts = []
+    for i in range(n + 1):
+        f = i / n
+        if d < 1e-10:
+            pts.append(list(p1))
+            continue
+        a = math.sin((1 - f) * d) / math.sin(d)
+        b = math.sin(f * d) / math.sin(d)
+        x = a * math.cos(lat1) * math.cos(lon1) + b * math.cos(lat2) * math.cos(lon2)
+        y = a * math.cos(lat1) * math.sin(lon1) + b * math.cos(lat2) * math.sin(lon2)
+        z = a * math.sin(lat1) + b * math.sin(lat2)
+        lat = math.degrees(math.atan2(z, math.sqrt(x ** 2 + y ** 2)))
+        lon = math.degrees(math.atan2(y, x))
+        pts.append([lon, lat])
+    return pts
+
+
+def generate_route_map_image(waypoints, width=1200, height=520):
+    """
+    Generate a professional route map PNG using real map tiles.
+
+    Uses staticmap library to stitch real map tiles (ESRI Ocean / CartoDB),
+    then overlays the great-circle route using Pillow markers.
+
+    Returns: base64 PNG data URI string, or None on failure.
+    Falls back to SVG generator if tiles unavailable.
+    """
+    try:
+        from staticmap import StaticMap, Line, CircleMarker
+        import io as _io
+
+        if len(waypoints) < 2:
+            return None
+
+        # Build densified great-circle coords for smooth arcs
+        dense_coords = []
+        for i in range(len(waypoints) - 1):
+            seg = _interp_gc(waypoints[i], waypoints[i + 1], n=16)
+            if i > 0:
+                seg = seg[1:]  # avoid duplicate junction point
+            dense_coords.extend(seg)
+
+        route_pts = [(round(c[0], 5), round(c[1], 5)) for c in dense_coords]
+
+        last_err = None
+        for tile_url in TILE_SOURCES:
+            try:
+                m = StaticMap(
+                    width, height,
+                    url_template=tile_url,
+                    tile_size=256,
+                    request_timeout=20,
+                )
+
+                # Route glow (shadow) — dark thick layer underneath
+                m.add_line(Line(route_pts, '#001a33', 10))
+                # Glow layer — medium blue
+                m.add_line(Line(route_pts, '#0066cc', 7))
+                # Main route — bright cyan
+                m.add_line(Line(route_pts, '#00d4ff', 3))
+
+                # Intermediate waypoint dots
+                for wp in waypoints[1:-1]:
+                    m.add_marker(CircleMarker((round(wp[0], 5), round(wp[1], 5)), '#ffffff', 6))
+                    m.add_marker(CircleMarker((round(wp[0], 5), round(wp[1], 5)), '#00aadd', 3))
+
+                # Origin — green filled circle with white centre
+                m.add_marker(CircleMarker((round(waypoints[0][0], 5), round(waypoints[0][1], 5)), '#004400', 16))
+                m.add_marker(CircleMarker((round(waypoints[0][0], 5), round(waypoints[0][1], 5)), '#22c55e', 14))
+                m.add_marker(CircleMarker((round(waypoints[0][0], 5), round(waypoints[0][1], 5)), '#ffffff', 5))
+
+                # Destination — red filled circle with white centre
+                m.add_marker(CircleMarker((round(waypoints[-1][0], 5), round(waypoints[-1][1], 5)), '#440000', 16))
+                m.add_marker(CircleMarker((round(waypoints[-1][0], 5), round(waypoints[-1][1], 5)), '#ef4444', 14))
+                m.add_marker(CircleMarker((round(waypoints[-1][0], 5), round(waypoints[-1][1], 5)), '#ffffff', 5))
+
+                # Render
+                img = m.render()
+
+                # Encode as base64 PNG data URI
+                buf = _io.BytesIO()
+                img.save(buf, format='PNG', optimize=True)
+                buf.seek(0)
+                b64 = base64.b64encode(buf.read()).decode('ascii')
+                log.info('Route map image generated: %dx%d via %s', width, height, tile_url[:45])
+                return f'data:image/png;base64,{b64}'
+
+            except Exception as e:
+                last_err = e
+                log.warning('Tile source failed (%s...): %s', tile_url[:45], e)
+                continue
+
+        log.error('All tile sources failed. Last: %s', last_err)
+        return None
+
+    except ImportError as e:
+        log.warning('staticmap/PIL not available — falling back to SVG: %s', e)
+        return None
+    except Exception as e:
+        log.error('generate_route_map_image error: %s', e)
+        return None
 
 
 def generate_route_svg(waypoints, width=1200, height=520):
@@ -1157,9 +1298,13 @@ def cmems_status():
 @app.route("/api/route-map", methods=["POST"])
 def route_map():
     """
-    Generate an SVG map of the route for PDF embedding.
+    Generate a professional route map for PDF embedding.
+    Tries real map tiles first (ESRI Ocean / CartoDB via staticmap+Pillow).
+    Falls back to built-in SVG generator if tiles unavailable.
+
     Body: {"waypoints": [[lon, lat], ...], "width": 1200, "height": 520}
-    Returns: {"svg": "<svg...>", "format": "svg"}
+    Returns: {"dataUri": "data:image/png;base64,...", "format": "png"}
+         or: {"svg": "<svg...>", "format": "svg"}  (fallback)
     """
     try:
         data      = request.get_json(force=True)
@@ -1170,6 +1315,20 @@ def route_map():
         if len(waypoints) < 2:
             return jsonify({"error": "Need at least 2 waypoints"}), 400
 
+        # Try tile-based PNG first
+        data_uri = generate_route_map_image(waypoints, width, height)
+        if data_uri:
+            r = jsonify({
+                "dataUri": data_uri,
+                "format":  "png",
+                "width":   width,
+                "height":  height,
+            })
+            r.headers['Access-Control-Allow-Origin'] = '*'
+            return r
+
+        # Fallback: SVG generator (no external deps)
+        log.info('Falling back to SVG route map')
         svg = generate_route_svg(waypoints, width, height)
         r   = jsonify({"svg": svg, "format": "svg", "width": width, "height": height})
         r.headers['Access-Control-Allow-Origin'] = '*'
