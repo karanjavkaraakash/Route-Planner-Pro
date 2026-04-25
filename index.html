@@ -21104,7 +21104,7 @@ async function generateVoyageReport(){
   const adjEta         = new Date(dep.getTime() + adjTotalH * 3600 * 1000);
   const hasWeatherData = wxFiltered.length > 0;
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  const html_template = `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <title>Voyage Report — ${vessel}</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -21303,19 +21303,18 @@ async function generateVoyageReport(){
   </table>` : `<p style="color:#94a3b8;font-size:11px;margin-top:8px">No weather data available.</p>`}
 </div>
 
-${seaCondPages.join('\n')}
+__SEA_COND_PAGES_PLACEHOLDER__
 
 <div class="content">
   <div class="footer">RoutePlannerPro v2 · MapLibre GL JS / MapTiler · Routing: MARNET/searoute-py · Wind: GFS DB (Supabase) + Open-Meteo ECMWF fallback · Wave/Current: Open-Meteo Marine · Sea Condition: GFS MSLP rendered server-side · ${fmtDate(new Date())}</div>
 </div>
 </body></html>`;
 
-  // ── Sea Condition Charts (4 snapshots: 12h, 36h, 60h, 84h) ─────────────────
+  // ── Sea Condition Charts: fetch BEFORE building HTML (4 snapshots: 12h, 36h, 60h, 84h) ──
   setProgressStep(2, 'Generating sea condition charts…');
 
   const seaCondPages = [];
   if (hasWeatherData && wpCoords && wpCoords.length >= 2) {
-    // Build bbox from route with padding
     let scMinLon=180, scMaxLon=-180, scMinLat=90, scMaxLat=-90;
     wpCoords.forEach(([lo,la]) => {
       const nlo = normLon(lo);
@@ -21328,17 +21327,21 @@ ${seaCondPages.join('\n')}
       Math.min(180,  scMaxLon + scPad), Math.min(85,  scMaxLat + scPad),
     ];
 
-    const scOffsets = [12, 36, 60, 84]; // hours from departure
+    const scOffsets = [12, 36, 60, 84];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-    // Fetch all 4 charts in parallel
     const scResults = await Promise.all(scOffsets.map(async (offsetH, idx) => {
       const ts = new Date(dep.getTime() + offsetH * 3600000);
       const diffDays = (ts.getTime() - Date.now()) / 86400000;
-
-      // Only fetch if within DB range (0-5 days from now)
       if (diffDays > 5.5 || diffDays < -1) return null;
 
-      setProgressStep(2, `Generating sea condition charts… (${idx+1}/4)`);
+      setProgressStep(2, 'Generating sea condition charts (' + (idx+1) + '/4)...');
+
+      // Use UTC ISO format without timezone suffix — server parses as UTC
+      const tsISO = ts.getUTCFullYear() + '-'
+        + String(ts.getUTCMonth()+1).padStart(2,'0') + '-'
+        + String(ts.getUTCDate()).padStart(2,'0') + 'T'
+        + String(ts.getUTCHours()).padStart(2,'0') + ':00:00Z';
 
       try {
         const r = await fetch('/api/sea-condition', {
@@ -21346,56 +21349,59 @@ ${seaCondPages.join('\n')}
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             bbox:      scBbox,
-            timestamp: ts.toISOString(),
+            timestamp: tsISO,
             waypoints: wpCoords.map(([lo,la]) => [normLon(lo), la]),
+            vessel_pos: null,
             format:    'png',
             width:     1200,
             height:    620,
-            title:     `T+${offsetH}h from departure`,
+            title:     'T+' + offsetH + 'h from departure',
           }),
         });
-        if (!r.ok) return null;
+        if (!r.ok) {
+          console.warn('Sea condition ' + offsetH + 'h: HTTP ' + r.status);
+          return null;
+        }
         const data = await r.json();
         return data.png ? { png: data.png, ts, offsetH } : null;
       } catch (e) {
-        console.warn(`Sea condition chart ${offsetH}h failed:`, e);
+        console.warn('Sea condition chart ' + offsetH + 'h failed:', e);
         return null;
       }
     }));
 
-    // Build HTML pages for successful charts
-    const validCharts = scResults.filter(Boolean);
-    if (validCharts.length) {
-      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      validCharts.forEach(({ png, ts, offsetH }) => {
-        const tsLabel = `${String(ts.getUTCDate()).padStart(2,'0')} ${months[ts.getUTCMonth()]} ${ts.getUTCFullYear()}, ${String(ts.getUTCHours()).padStart(2,'0')}:00 UTC`;
-        seaCondPages.push(`
-<div class="content page-break" style="padding:20px 28px">
-  <div style="margin-bottom:10px;display:flex;align-items:baseline;gap:12px">
-    <div class="section-head" style="margin:0">Sea Condition</div>
-    <span style="font-size:10px;color:#64748b">Refer to the ${offsetH <= 24 ? 'Next 1 day' : offsetH <= 48 ? 'Next 2 days' : 'Next 3–4 days'} Sea Condition</span>
-  </div>
-  <div style="font-size:11px;color:#475569;margin-bottom:8px">
-    Visual overview of Total Wave height, Wind speed and Pressure at ${tsLabel}
-    <span style="margin-left:8px;font-size:10px;color:#94a3b8">(T+${offsetH}h from departure · estimated wave from wind speed)</span>
-  </div>
-  <div style="border-radius:8px;overflow:hidden;border:1px solid #d0d7e3;line-height:0">
-    <img src="data:image/png;base64,${png}" style="width:100%;display:block" alt="Sea condition at T+${offsetH}h"/>
-  </div>
-  <div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
-    <div style="display:flex;align-items:center;gap:6px;font-size:9px;color:#64748b">
-      <div style="width:30px;height:8px;background:linear-gradient(to right,#0033aa,#00aaff,#00cc88,#ffee00,#ff6600,#dd0044);border-radius:2px"></div>
-      Wave height gradient: 0 → 6+ m
-    </div>
-    <div style="font-size:9px;color:#ff4466">— Red isobars: low pressure (&lt;1004 hPa)</div>
-    <div style="font-size:9px;color:#666">— Grey/dark isobars: normal/high pressure</div>
-    <div style="font-size:9px;color:#00ff9d">-- Dashed green: vessel route</div>
-    <div style="font-size:9px;color:#ffdd00">◆ Yellow diamond: vessel position at T+${offsetH}h</div>
-  </div>
-</div>`);
-      });
-    }
+    // Build chart pages
+    scResults.filter(Boolean).forEach(({ png, ts, offsetH }) => {
+      const tsLabel = String(ts.getUTCDate()).padStart(2,'0') + ' '
+        + months[ts.getUTCMonth()] + ' ' + ts.getUTCFullYear()
+        + ', ' + String(ts.getUTCHours()).padStart(2,'0') + ':00 UTC';
+      const dayRange = offsetH <= 24 ? 'Next 1 day' : offsetH <= 48 ? 'Next 2 days' : 'Next 3-4 days';
+      seaCondPages.push(
+        '<div class="content page-break" style="padding:20px 28px">'
+        + '<div style="margin-bottom:10px;display:flex;align-items:baseline;gap:12px">'
+        + '<div class="section-head" style="margin:0">Sea Condition</div>'
+        + '<span style="font-size:10px;color:#64748b">Refer to the ' + dayRange + ' Sea Condition</span>'
+        + '</div>'
+        + '<div style="font-size:11px;color:#475569;margin-bottom:8px">'
+        + 'Visual overview of Total Wave height, Wind speed and Pressure at ' + tsLabel
+        + '<span style="margin-left:8px;font-size:10px;color:#94a3b8">(T+' + offsetH + 'h from departure)</span>'
+        + '</div>'
+        + '<div style="border-radius:8px;overflow:hidden;border:1px solid #d0d7e3;line-height:0">'
+        + '<img src="data:image/png;base64,' + png + '" style="width:100%;display:block" alt="Sea condition T+' + offsetH + 'h"/>'
+        + '</div>'
+        + '<div style="display:flex;gap:20px;margin-top:8px;flex-wrap:wrap;font-size:9px">'
+        + '<span style="color:#64748b">Wave gradient: 0-6m blue→red</span>'
+        + '<span style="color:#ff4466">- Red: low pressure</span>'
+        + '<span style="color:#666">- Grey/dark: high pressure</span>'
+        + '<span style="color:#00cc66">-- Dashed: route</span>'
+        + '</div>'
+        + '</div>'
+      );
+    });
   }
+
+  // Now inject seaCondPages into HTML (must be after they are populated)
+  const html = html_template.replace('__SEA_COND_PAGES_PLACEHOLDER__', seaCondPages.join('\n'));
 
   setProgressStep(3, 'Opening report in new tab…');
   try {
