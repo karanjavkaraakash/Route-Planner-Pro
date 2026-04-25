@@ -20964,10 +20964,46 @@ async function generateVoyageReport(){
 
   closeModal('export-modal');
 
-  // ── Weather data is already fully loaded by fetchRouteWeather (called after route calc) ──
-  // The Export button is only enabled once fetchRouteWeather completes, so _wxResults
-  // is guaranteed to be populated with complete wind+wave+current data.
+  // ── Weather data is already fully loaded by fetchRouteWeather ──────────────
   const wxResults = window._wxResults || [];
+
+  // ── Capture route map BEFORE showing progress overlay ─────────────────────
+  // backdrop-filter: blur() on the progress overlay corrupts WebGL toDataURL()
+  // so we capture the MapLibre canvas NOW, before showProgress() is called.
+  let routeMapPng = null;
+  const routeMapSVG = window._routeMapSVG || null;
+  try {
+    if (window.map && typeof window.map.getCanvas === 'function') {
+      // Fit map to route bounds (instant, no animation)
+      if (wpCoords && wpCoords.length >= 2) {
+        let minLon=180, maxLon=-180, minLat=90, maxLat=-90;
+        wpCoords.forEach(([lo,la]) => {
+          minLon=Math.min(minLon,lo); maxLon=Math.max(maxLon,lo);
+          minLat=Math.min(minLat,la); maxLat=Math.max(maxLat,la);
+        });
+        window.map.fitBounds([[minLon,minLat],[maxLon,maxLat]], {
+          padding: {top:30, bottom:30, left:30, right:30},
+          duration: 0, maxZoom: 12
+        });
+      }
+      // Wait for map to finish rendering (tiles loaded, route drawn)
+      await new Promise(resolve => {
+        const done = () => { clearTimeout(fallback); resolve(); };
+        const fallback = setTimeout(done, 2000);
+        if (window.map.isStyleLoaded()) { window.map.once('idle', done); }
+        else { setTimeout(done, 2000); }
+      });
+      routeMapPng = window.map.getCanvas().toDataURL('image/png');
+      if (routeMapPng && routeMapPng.length > 10000) {
+        console.log('[PDF] Route map captured from MapLibre canvas:', routeMapPng.length, 'bytes');
+      } else {
+        routeMapPng = null; // reject blank captures
+        console.warn('[PDF] Canvas capture returned blank, falling back to SVG');
+      }
+    }
+  } catch(mapErr) {
+    console.warn('[PDF] Map canvas capture failed:', mapErr);
+  }
 
   showProgress({
     icon: '📄',
@@ -20980,39 +21016,6 @@ async function generateVoyageReport(){
     ]
   });
   setProgressStep(0, 'Building waypoint and weather tables…');
-
-  // ── Capture live map as PNG snapshot (far better than server-side SVG) ──────
-  // The MapLibre canvas is already rendered at full quality with real tiles,
-  // weather-coloured route, and all layers. preserveDrawingBuffer:true is set.
-  let routeMapPng = null;
-  try {
-    if (window.map && typeof window.map.getCanvas === 'function') {
-      // Fit map to route bounds for the capture (instant, no animation)
-      if (wpCoords && wpCoords.length >= 2) {
-        let minLon=180,maxLon=-180,minLat=90,maxLat=-90;
-        wpCoords.forEach(([lo,la]) => {
-          minLon=Math.min(minLon,lo); maxLon=Math.max(maxLon,lo);
-          minLat=Math.min(minLat,la); maxLat=Math.max(maxLat,la);
-        });
-        window.map.fitBounds([[minLon,minLat],[maxLon,maxLat]], {
-          padding: {top:30, bottom:30, left:30, right:30},
-          duration: 0, maxZoom: 12
-        });
-      }
-      // Wait for tiles and route to finish rendering
-      await new Promise(resolve => {
-        const done = () => { clearTimeout(fallback); resolve(); };
-        const fallback = setTimeout(done, 1500);
-        if (window.map.isStyleLoaded()) { window.map.once('idle', done); }
-        else { setTimeout(done, 1500); }
-      });
-      routeMapPng = window.map.getCanvas().toDataURL('image/png');
-    }
-  } catch(mapErr) {
-    console.warn('Map canvas capture failed:', mapErr);
-  }
-  // Fallback: server-rendered SVG if canvas capture unavailable
-  const routeMapSVG = window._routeMapSVG || null;
 
   // ── Build data ───────────────────────────────────────────────────────────────
   setProgressStep(0, 'Building waypoint and weather tables…');
@@ -21351,7 +21354,7 @@ __SEA_COND_PAGES_PLACEHOLDER__
             bbox:      scBbox,
             timestamp: tsISO,
             waypoints: wpCoords.map(([lo,la]) => [normLon(lo), la]),
-            vessel_pos: null,
+            vessel_pos: _vesselPosAtTime(ts.getTime()),
             format:    'png',
             width:     1200,
             height:    620,
