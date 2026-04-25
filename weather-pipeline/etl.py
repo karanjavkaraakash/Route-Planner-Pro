@@ -317,13 +317,8 @@ def run_pipeline(mode):
     log.info(f"Done | GFS={total_gfs:,} rows | {duration:.0f}s")
     log_run(sb, f"GFS/{mode}", total_gfs, duration, "success")
 
-    # Run VACUUM after each pipeline cycle to reclaim WAL space
-    # Prevents cumulative WAL bloat from TRUNCATE+INSERT cycles
-    try:
-        sb.rpc("vacuum_weather_grid", {}).execute()
-        log.info("VACUUM ANALYZE completed ✓")
-    except Exception as e:
-        log.warning(f"VACUUM RPC failed (non-critical): {e}")
+    # Note: VACUUM cannot run inside Supabase RPC transaction blocks.
+    # Autovacuum handles cleanup automatically in the background.
 
 
 if __name__ == "__main__":
