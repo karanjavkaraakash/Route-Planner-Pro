@@ -221,12 +221,40 @@ def build_gfs_rows(wind_parsed, mslp_parsed, valid_time, fhour, run_time, ocean_
 
 def build_ww3_rows(parsed, valid_time, fhour, run_time, ocean_mask):
     rows = {}
+
+    # Log what variables were actually parsed — critical for debugging
+    if parsed:
+        log.info(f"    WW3 parsed vars: {list(parsed.keys())}")
+    else:
+        log.warning(f"    WW3: no variables parsed")
+        return []
+
+    # Map eccodes shortNames → DB columns
+    # Multiple shortName variants listed per variable (eccodes version dependent)
     mapping = {
-        "swh":   ("wave_hs",   scale_wave_hs),
-        "perpw": ("wave_tp",   scale_wave_tp),
-        "dirpw": ("wave_dir",  scale_dir),
-        "swell": ("swell_hs",  scale_wave_hs),
-        "swdir": ("swell_dir", scale_dir),
+        # Significant wave height (HTSGW)
+        "swh":    ("wave_hs",   scale_wave_hs),
+        "HTSGW":  ("wave_hs",   scale_wave_hs),
+        # Peak/primary wave period (PERPW)
+        "perpw":  ("wave_tp",   scale_wave_tp),
+        "pp1d":   ("wave_tp",   scale_wave_tp),
+        "mwp":    ("wave_tp",   scale_wave_tp),
+        "PERPW":  ("wave_tp",   scale_wave_tp),
+        # Primary wave direction (DIRPW)
+        "dirpw":  ("wave_dir",  scale_dir),
+        "mwd":    ("wave_dir",  scale_dir),
+        "pdirw":  ("wave_dir",  scale_dir),
+        "DIRPW":  ("wave_dir",  scale_dir),
+        # Swell height (SWELL)
+        "swell":  ("swell_hs",  scale_wave_hs),
+        "shts":   ("swell_hs",  scale_wave_hs),
+        "swh1":   ("swell_hs",  scale_wave_hs),
+        "SWELL":  ("swell_hs",  scale_wave_hs),
+        # Swell direction (SWDIR)
+        "swdir":  ("swell_dir", scale_dir),
+        "sdir":   ("swell_dir", scale_dir),
+        "mdts":   ("swell_dir", scale_dir),
+        "SWDIR":  ("swell_dir", scale_dir),
     }
     for src, (dst, scaler) in mapping.items():
         if src not in parsed: continue
