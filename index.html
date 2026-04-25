@@ -18726,15 +18726,31 @@ async function fetchRouteWeather(){
   const omFallbackLegs = legs.map((l, i) => dbWindResults[i] == null ? l : null);
   const needsFallback  = omFallbackLegs.some(l => l !== null);
 
-  // ── Step B: Open-Meteo wind fallback for legs not in DB ──────────────────────
-  // This covers: legs beyond 16-day DB range, or if DB query failed entirely.
+  // ── Step B: Open-Meteo wind fallback — ONLY for legs not covered by DB ──────
+  // Builds a compact list of only the unmatched legs, calls Open-Meteo once,
+  // then maps results back to the original leg indices.
+  // DB-matched legs are never sent to Open-Meteo.
   setWxaStep(3);
   let omWindResults = new Array(legs.length).fill(null);
   if (needsFallback) {
-    const fallbackInput = legs.map(l => ({ lat: l.midLat, lon: l.midLon, date: l.tArr }));
-    const omAll = await fetchOpenMeteoWindDirBatch(fallbackInput);
-    // Only use OM results where DB had no data
-    omWindResults = omAll.map((r, i) => dbWindResults[i] == null ? r : null);
+    // Collect only the legs DB didn't cover, preserving original index
+    const unmatched = legs
+      .map((l, i) => dbWindResults[i] == null ? { leg: l, origIdx: i } : null)
+      .filter(x => x !== null);
+
+    const fallbackInput = unmatched.map(({ leg }) => ({
+      lat:  leg.midLat,
+      lon:  leg.midLon,
+      date: leg.tArr,
+    }));
+
+    console.log(`[WeatherDB] Open-Meteo fallback for ${fallbackInput.length}/${legs.length} unmatched legs`);
+    const omPartial = await fetchOpenMeteoWindDirBatch(fallbackInput);
+
+    // Map compact results back to full legs array by original index
+    omPartial.forEach((r, i) => {
+      omWindResults[unmatched[i].origIdx] = r;
+    });
   }
 
   // ── Step C: Marine (waves + currents) — always Open-Meteo ────────────────────
@@ -21048,7 +21064,7 @@ function showScreen(id) {
     const wrap = document.getElementById('edit-map-wrap');
     if (wrap && mapEl.parentElement !== wrap) wrap.insertBefore(mapEl, wrap.firstChild);
   }
-  if (window.map) setTimeout(() => window.map.resize(), 50);
+  if (window.map && typeof window.map.resize === 'function') setTimeout(() => window.map.resize(), 50);
 }
 
 // Welcome screen
@@ -21279,7 +21295,7 @@ function toggleRouteSidebar() {
   // Show backdrop on mobile when sidebar is open (overlay mode)
   if (bd) bd.classList.toggle('open', !_sidebarCollapsed && window.innerWidth <= 768);
   // Resize map to use newly freed/given space
-  if (window.map) setTimeout(() => window.map.resize(), 260);
+  if (window.map && typeof window.map.resize === 'function') setTimeout(() => window.map.resize(), 260);
 }
 
 // Inject backdrop element and wiring on DOMContentLoaded
