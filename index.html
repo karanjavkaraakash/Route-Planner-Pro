@@ -18118,96 +18118,93 @@ async function fetchWindFromDB(legs) {
   // ── Helpers ────────────────────────────────────────────────────────────────
   const snap = v => Math.round(v / 0.5) * 0.5;
 
+  // Round to nearest 6h GFS step, return as UTC ISO with Z suffix
+  // Z suffix is required for Supabase timestamptz IN queries
   const snapToGFS = date => {
-    // Round to nearest 6h step: 00, 06, 12, 18 UTC
     const d = new Date(date);
     const h = d.getUTCHours();
     const snapped = Math.round(h / 6) * 6;
     d.setUTCHours(snapped % 24, 0, 0, 0);
     if (snapped >= 24) d.setUTCDate(d.getUTCDate() + 1);
-    return d.toISOString().slice(0, 19) + '+00:00';
+    return d.toISOString(); // "2026-04-25T06:00:00.000Z" — Z suffix for Supabase
   };
 
-  // ── Build unique timestamps and bbox ───────────────────────────────────────
+  // Normalise any timestamp to same Z format for lookup keying
+  const normT = t => new Date(t).toISOString();
+
+  // ── Filter to forecast range ───────────────────────────────────────────────
   const now = new Date();
   const forecastLegs = legs.filter(l => {
     const diffDays = (l.tArr - now) / 86400000;
     return diffDays <= 16 && diffDays >= -1;
   });
-
   if (!forecastLegs.length) return results;
 
+  // ── Build unique timestamps and bounding box ───────────────────────────────
   const timestamps = [...new Set(forecastLegs.map(l => snapToGFS(l.tArr)))];
-  const lats = forecastLegs.map(l => snap(l.midLat));
-  const lons = forecastLegs.map(l => {
-    const n = normLon(l.midLon);
-    return snap(n);
-  });
+  const snapLats = forecastLegs.map(l => snap(l.midLat));
+  const snapLons = forecastLegs.map(l => snap(normLon(l.midLon)));
 
-  // Add 0.5° padding to bbox so edge legs aren't missed
-  const minLat = Math.min(...lats) - 0.5;
-  const maxLat = Math.max(...lats) + 0.5;
-  const minLon = Math.min(...lons) - 0.5;
-  const maxLon = Math.max(...lons) + 0.5;
+  const minLat = (Math.min(...snapLats) - 0.5).toFixed(1);
+  const maxLat = (Math.max(...snapLats) + 0.5).toFixed(1);
+  const minLon = (Math.min(...snapLons) - 0.5).toFixed(1);
+  const maxLon = (Math.max(...snapLons) + 0.5).toFixed(1);
 
-  // ── Single Supabase query ──────────────────────────────────────────────────
+  // Timestamps for IN clause — Z suffix, no encoding needed
+  const tsClause = `(${timestamps.join(',')})`;
+
+  // ── Single Supabase REST query ─────────────────────────────────────────────
+  // Range header: bypasses Supabase default 1000-row cap
+  // Prefer: count=none: skip expensive COUNT, faster response
   let dbRows = [];
   try {
-    const params = new URLSearchParams({
-      select:    'lat,lon,valid_time,wind_speed,wind_dir,mslp',
-      lat:       `gte.${minLat.toFixed(1)}`,
-      and:       `(lat.lte.${maxLat.toFixed(1)},lon.gte.${minLon.toFixed(1)},lon.lte.${maxLon.toFixed(1)})`,
-      valid_time: `in.(${timestamps.join(',')})`,
-      limit:     '100000',
-    });
-
-    // Supabase REST API — filter with multiple conditions
-    const url = `${SUPABASE_URL}/rest/v1/weather_grid?select=lat,lon,valid_time,wind_speed,wind_dir,mslp` +
-      `&lat=gte.${minLat.toFixed(1)}&lat=lte.${maxLat.toFixed(1)}` +
-      `&lon=gte.${minLon.toFixed(1)}&lon=lte.${maxLon.toFixed(1)}` +
-      `&valid_time=in.(${timestamps.map(t => encodeURIComponent(t)).join(',')})` +
-      `&limit=100000`;
+    const url = `${SUPABASE_URL}/rest/v1/weather_grid` +
+      `?select=lat,lon,valid_time,wind_speed,wind_dir,mslp` +
+      `&lat=gte.${minLat}&lat=lte.${maxLat}` +
+      `&lon=gte.${minLon}&lon=lte.${maxLon}` +
+      `&valid_time=in.${tsClause}`;
 
     const r = await fetch(url, {
       headers: {
         'apikey':        SUPABASE_ANON,
         'Authorization': `Bearer ${SUPABASE_ANON}`,
+        'Range':         '0-99999',
+        'Prefer':        'count=none',
       }
     });
 
     if (r.ok) {
       dbRows = await r.json();
-      console.log(`[WeatherDB] ${dbRows.length} rows fetched for ${legs.length} legs`);
+      console.log(`[WeatherDB] ${dbRows.length} rows fetched for ${legs.length} legs (${timestamps.length} timestamps)`);
     } else {
       console.warn('[WeatherDB] Query failed:', r.status, await r.text());
     }
   } catch (e) {
     console.warn('[WeatherDB] Fetch error:', e.message);
-    return results; // full fallback — Open-Meteo will fill in
+    return results;
   }
 
   if (!dbRows.length) return results;
 
-  // ── Build lookup: "lat|lon|valid_time" → row ───────────────────────────────
+  // ── Build lookup map: "lat|lon|timestamp" → row ───────────────────────────
   const lookup = new Map();
   for (const row of dbRows) {
-    // Normalise valid_time key to match snapToGFS output format
-    const tKey = new Date(row.valid_time).toISOString().slice(0, 19) + '+00:00';
+    const tKey = normT(row.valid_time); // normalise to Z format
     const key  = `${parseFloat(row.lat).toFixed(1)}|${parseFloat(row.lon).toFixed(1)}|${tKey}`;
     lookup.set(key, row);
   }
 
-  // ── Match each leg to nearest DB grid point ───────────────────────────────
+  // ── Match each leg ─────────────────────────────────────────────────────────
   for (let idx = 0; idx < legs.length; idx++) {
     const leg = legs[idx];
     const diffDays = (leg.tArr - now) / 86400000;
-    if (diffDays > 16 || diffDays < -1) continue; // outside DB range
+    if (diffDays > 16 || diffDays < -1) continue;
 
-    const snapLat = snap(leg.midLat).toFixed(1);
-    const snapLon = snap(normLon(leg.midLon)).toFixed(1);
-    const snapT   = snapToGFS(leg.tArr);
-    const key     = `${snapLat}|${snapLon}|${snapT}`;
-    const row     = lookup.get(key);
+    const sLat = snap(leg.midLat).toFixed(1);
+    const sLon = snap(normLon(leg.midLon)).toFixed(1);
+    const sT   = snapToGFS(leg.tArr);
+    const key  = `${sLat}|${sLon}|${sT}`;
+    const row  = lookup.get(key);
 
     if (row && row.wind_speed != null) {
       results[idx] = {
@@ -18217,7 +18214,6 @@ async function fetchWindFromDB(legs) {
         _source: 'db',
       };
     }
-    // null = no DB data for this leg → fetchRouteWeather falls back to Open-Meteo
   }
 
   const dbCount = results.filter(r => r?._source === 'db').length;
