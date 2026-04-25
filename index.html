@@ -20197,8 +20197,8 @@ function buildHeavyWeatherRiskBlock(wxResults, orderedKn){
 function buildWindWaveChart(wxResults, orderedKn) {
   if (!wxResults || wxResults.length < 2) return '';
 
-  const W = 760, H = 160;
-  const PAD = { top: 28, right: 52, bottom: 36, left: 48 };
+  const W = 1060, H = 200;
+  const PAD = { top: 32, right: 60, bottom: 40, left: 54 };
   const PW = W - PAD.left - PAD.right;
   const PH = H - PAD.top  - PAD.bottom;
 
@@ -20223,7 +20223,7 @@ function buildWindWaveChart(wxResults, orderedKn) {
   const waveY = v => PAD.top + PH - (v / maxWv) * PH;
 
   const svgParts = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="font-family:'DM Sans',sans-serif">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="100%" style="display:block;font-family:'DM Sans',sans-serif">`,
     // Background
     `<rect width="${W}" height="${H}" fill="#f8f9fb" rx="6"/>`,
     // Risk bands (background colour zones)
@@ -20338,15 +20338,15 @@ function buildSpeedWaterfallChart(wxResults, orderedKn) {
   const basinNames = Object.keys(basins).filter(b => basins[b].distNm > 20);
   if (basinNames.length === 0) return '';
 
-  const W = 760, barH = 28, gap = 6;
-  const PAD = { top: 30, right: 120, bottom: 28, left: 160 };
+  const W = 1060, barH = 30, gap = 7;
+  const PAD = { top: 34, right: 140, bottom: 32, left: 180 };
   const H = PAD.top + basinNames.length * (barH + gap) - gap + PAD.bottom;
   const PW = W - PAD.left - PAD.right;
 
   const maxDist = Math.max(...basinNames.map(b => basins[b].distNm));
 
   const svgParts = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="font-family:'DM Sans',sans-serif">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="100%" style="display:block;font-family:'DM Sans',sans-serif">`,
     `<rect width="${W}" height="${H}" fill="#f8f9fb" rx="6"/>`,
     // Title
     `<text x="${PAD.left}" y="18" font-size="9" font-weight="700" fill="#0c1628" letter-spacing="0.5">WEATHER IMPACT BY OCEAN BASIN</text>`,
@@ -20713,8 +20713,8 @@ async function generateVoyageReport(){
     <div style="font-size:10px;font-weight:700;color:#0c1628;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px;padding-bottom:5px;border-bottom:1.5px solid #d0d7e3">
       ⛅ Weather Analysis Charts
     </div>
-    ${windWaveSvg ? `<div style="margin-bottom:10px;border-radius:8px;overflow:hidden;border:1px solid #e4e8ef">${windWaveSvg}</div>` : ''}
-    ${waterfallSvg ? `<div style="border-radius:8px;overflow:hidden;border:1px solid #e4e8ef">${waterfallSvg}</div>` : ''}
+    ${windWaveSvg ? `<div style="margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid #e4e8ef;width:100%">${windWaveSvg}</div>` : ''}
+    ${waterfallSvg ? `<div style="border-radius:8px;overflow:hidden;border:1px solid #e4e8ef;width:100%">${waterfallSvg}</div>` : ''}
   </div>`;
   })() : ''}
 </div>
