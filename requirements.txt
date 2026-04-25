@@ -4,3 +4,6 @@ requests
 searoute
 staticmap
 Pillow
+matplotlib
+scipy
+numpy
