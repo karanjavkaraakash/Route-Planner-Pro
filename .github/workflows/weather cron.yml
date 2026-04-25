@@ -63,9 +63,12 @@ jobs:
               result = sb.rpc("get_weather_grid_size_mb", {}).execute()
               size_mb = float(result.data or 0)
               print(f"DB1 size: {size_mb:.0f}MB")
-              if size_mb >= 450:
-                  print(f"::error::DB1 size {size_mb:.0f}MB >= 450MB — aborting")
+              if size_mb >= 490:
+                  print(f"::error::DB1 size {size_mb:.0f}MB >= 490MB — aborting")
+                  print("Run TRUNCATE TABLE weather_grid; REINDEX TABLE weather_grid; in Supabase SQL Editor")
                   sys.exit(1)
+              elif size_mb >= 460:
+                  print(f"Warning: DB1 size {size_mb:.0f}MB is high but proceeding (TRUNCATE will run first)")
           except Exception as e:
               print(f"Size check unavailable ({e}) — proceeding")
           EOF
@@ -124,8 +127,8 @@ jobs:
               result = sb.rpc("get_weather_grid_size_mb", {}).execute()
               size_mb = float(result.data or 0)
               print(f"DB2 size: {size_mb:.0f}MB")
-              if size_mb >= 450:
-                  print(f"::error::DB2 size {size_mb:.0f}MB >= 450MB — aborting")
+              if size_mb >= 490:
+                  print(f"::error::DB2 size {size_mb:.0f}MB >= 490MB — aborting")
                   sys.exit(1)
           except Exception as e:
               print(f"Size check unavailable ({e}) — proceeding")
