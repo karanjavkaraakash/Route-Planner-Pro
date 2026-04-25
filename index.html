@@ -17509,17 +17509,9 @@ async function calculateRoute(){
       goToRouteView();
     }
 
-    // ── Background route map generation ─────────────────────────────────────
-    // Fetches a server-rendered SVG of the route for PDF embedding.
-    // Runs silently in background — doesn't block the UI.
+    // Route map is now generated at PDF export time (not pre-fetched here)
+    // This ensures the map always reflects the final route + correct tile imagery
     window._routeMapSVG = null;
-    fetch('/api/route-map', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ waypoints: wpCoords, width: 1200, height: 520 })
-    }).then(r => r.ok ? r.json() : null)
-      .then(d => { if(d?.svg) window._routeMapSVG = d.svg; })
-      .catch(() => {}); // silent — map is optional, PDF generates fine without it
   } catch(e){
     hideProgress();
     notify('Route error: '+e.message,'err');
@@ -20443,38 +20435,31 @@ async function generateVoyageReport(){
   });
   setProgressStep(0, 'Building waypoint and weather tables…');
 
-  // ── Capture live map as PNG snapshot (far better than server-side SVG) ──────
-  // The MapLibre canvas is already rendered at full quality with real tiles,
-  // weather-coloured route, and all layers. preserveDrawingBuffer:true is set.
-  let routeMapPng = null;
+  // ── Fetch professional route map from server (real map tiles via staticmap) ──
+  // Server uses ESRI Ocean / CartoDB tiles + Pillow to render a PNG with the
+  // great-circle route overlaid. Falls back to SVG if tiles unavailable.
+  // This always shows the correct view — independent of current map state.
+  let routeMapPng  = null;
+  let routeMapSVG  = null;
+
   try {
-    if (window.map && typeof window.map.getCanvas === 'function') {
-      // Fit map to route bounds for the capture (instant, no animation)
-      if (wpCoords && wpCoords.length >= 2) {
-        let minLon=180,maxLon=-180,minLat=90,maxLat=-90;
-        wpCoords.forEach(([lo,la]) => {
-          minLon=Math.min(minLon,lo); maxLon=Math.max(maxLon,lo);
-          minLat=Math.min(minLat,la); maxLat=Math.max(maxLat,la);
-        });
-        window.map.fitBounds([[minLon,minLat],[maxLon,maxLat]], {
-          padding: {top:30, bottom:30, left:30, right:30},
-          duration: 0, maxZoom: 12
-        });
+    setProgressStep(0, 'Generating route chart…');
+    const mapResp = await fetch('/api/route-map', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ waypoints: wpCoords, width: 1200, height: 520 }),
+    });
+    if (mapResp.ok) {
+      const mapData = await mapResp.json();
+      if (mapData.format === 'png' && mapData.dataUri) {
+        routeMapPng = mapData.dataUri;   // data:image/png;base64,...
+      } else if (mapData.format === 'svg' && mapData.svg) {
+        routeMapSVG = mapData.svg;
       }
-      // Wait for tiles and route to finish rendering
-      await new Promise(resolve => {
-        const done = () => { clearTimeout(fallback); resolve(); };
-        const fallback = setTimeout(done, 1500);
-        if (window.map.isStyleLoaded()) { window.map.once('idle', done); }
-        else { setTimeout(done, 1500); }
-      });
-      routeMapPng = window.map.getCanvas().toDataURL('image/png');
     }
   } catch(mapErr) {
-    console.warn('Map canvas capture failed:', mapErr);
+    console.warn('Route map fetch failed:', mapErr);
   }
-  // Fallback: server-rendered SVG if canvas capture unavailable
-  const routeMapSVG = window._routeMapSVG || null;
 
   // ── Build data ───────────────────────────────────────────────────────────────
   setProgressStep(0, 'Building waypoint and weather tables…');
