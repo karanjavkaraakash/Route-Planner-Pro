@@ -7,7 +7,7 @@ Environment variables required:
   CMEMS_USER  — Copernicus Marine username (email)
   CMEMS_PASS  — Copernicus Marine password
 
-pip install flask searoute gunicorn requests staticmap Pillow
+pip install flask searoute gunicorn requests staticmap Pillow matplotlib scipy numpy
 """
 import math, os, json, time, threading, base64, logging, io
 from pathlib import Path
@@ -20,6 +20,10 @@ log = logging.getLogger(__name__)
 app = Flask(__name__, static_folder=".")
 ENGINE = None
 GRAPH  = None
+
+# ── SUPABASE CONFIG (sea condition charts) ───────────────────────────────────
+SUPABASE_URL  = os.environ.get('SUPABASE_URL',  '')
+SUPABASE_ANON = os.environ.get('SUPABASE_ANON', '')
 
 # ── COPERNICUS MARINE CONFIG ──────────────────────────────────────────────────
 CMEMS_USER = os.environ.get('CMEMS_USER', '')
@@ -882,11 +886,20 @@ def route_searoute(olon,olat,dlon,dlat,restrictions):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import gzip, struct
+
+# ── Optional scientific rendering (sea condition charts) ─────────────────────
 try:
-    from PIL import Image, ImageDraw
-    HAS_PIL = True
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')  # non-interactive backend — must be set before pyplot import
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    import matplotlib.contour as mcontour
+    from scipy.ndimage import gaussian_filter
+    HAS_SCIPY = True
 except ImportError:
-    HAS_PIL = False
+    HAS_SCIPY = False
+    log.warning("scipy/matplotlib not installed — sea condition charts unavailable")
 
 # ── Embedded coastline data ───────────────────────────────────────────────────
 # Simplified world coastlines — 32 polylines, scale factor 10
@@ -941,144 +954,6 @@ def _load_coastlines():
     _COASTLINE_CACHE = lines
     log.info('Coastlines loaded: %d polylines', len(lines))
     return lines
-
-
-# ── TILE SOURCES (tried in order until one succeeds) ─────────────────────────
-MAPTILER_KEY = os.environ.get('MAPTILER_KEY', 'XaQgaXRnIoyC1qZKH1xl')
-TILE_SOURCES = [
-    # ESRI World Ocean Base — maritime aesthetic, depth shading, ocean names
-    'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-    # CartoDB Voyager — clean OSM fallback
-    'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-    # OpenStreetMap — final fallback
-    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-]
-TILE_HEADERS = {
-    'User-Agent': 'RoutePlannerPro/2.5 maritime voyage planning (https://voyagex-7i4j.onrender.com)',
-    'Accept': 'image/png,image/*',
-}
-
-
-def _check_staticmap():
-    try:
-        import staticmap
-        return True
-    except ImportError:
-        return False
-
-
-def _interp_gc(p1, p2, n=16):
-    """Interpolate n points along great circle arc between p1=[lon,lat] and p2."""
-    import math
-    lon1, lat1 = math.radians(p1[0]), math.radians(p1[1])
-    lon2, lat2 = math.radians(p2[0]), math.radians(p2[1])
-    d = 2 * math.asin(math.sqrt(
-        math.sin((lat2 - lat1) / 2) ** 2 +
-        math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
-    ))
-    pts = []
-    for i in range(n + 1):
-        f = i / n
-        if d < 1e-10:
-            pts.append(list(p1))
-            continue
-        a = math.sin((1 - f) * d) / math.sin(d)
-        b = math.sin(f * d) / math.sin(d)
-        x = a * math.cos(lat1) * math.cos(lon1) + b * math.cos(lat2) * math.cos(lon2)
-        y = a * math.cos(lat1) * math.sin(lon1) + b * math.cos(lat2) * math.sin(lon2)
-        z = a * math.sin(lat1) + b * math.sin(lat2)
-        lat = math.degrees(math.atan2(z, math.sqrt(x ** 2 + y ** 2)))
-        lon = math.degrees(math.atan2(y, x))
-        pts.append([lon, lat])
-    return pts
-
-
-def generate_route_map_image(waypoints, width=1200, height=520):
-    """
-    Generate a professional route map PNG using real map tiles.
-
-    Uses staticmap library to stitch real map tiles (ESRI Ocean / CartoDB),
-    then overlays the great-circle route using Pillow markers.
-
-    Returns: base64 PNG data URI string, or None on failure.
-    Falls back to SVG generator if tiles unavailable.
-    """
-    try:
-        from staticmap import StaticMap, Line, CircleMarker
-        import io as _io
-
-        if len(waypoints) < 2:
-            return None
-
-        # Build densified great-circle coords for smooth arcs
-        dense_coords = []
-        for i in range(len(waypoints) - 1):
-            seg = _interp_gc(waypoints[i], waypoints[i + 1], n=16)
-            if i > 0:
-                seg = seg[1:]  # avoid duplicate junction point
-            dense_coords.extend(seg)
-
-        route_pts = [(round(c[0], 5), round(c[1], 5)) for c in dense_coords]
-
-        last_err = None
-        for tile_url in TILE_SOURCES:
-            try:
-                m = StaticMap(
-                    width, height,
-                    padding_x=15, padding_y=15,
-                    url_template=tile_url,
-                    tile_size=256,
-                    tile_request_timeout=20,
-                    headers=TILE_HEADERS,
-                )
-
-                # Route glow (shadow) — dark thick layer underneath
-                m.add_line(Line(route_pts, '#001a33', 10))
-                # Glow layer — medium blue
-                m.add_line(Line(route_pts, '#0066cc', 7))
-                # Main route — bright cyan
-                m.add_line(Line(route_pts, '#00d4ff', 3))
-
-                # Intermediate waypoint dots
-                for wp in waypoints[1:-1]:
-                    m.add_marker(CircleMarker((round(wp[0], 5), round(wp[1], 5)), '#ffffff', 6))
-                    m.add_marker(CircleMarker((round(wp[0], 5), round(wp[1], 5)), '#00aadd', 3))
-
-                # Origin — green filled circle with white centre
-                m.add_marker(CircleMarker((round(waypoints[0][0], 5), round(waypoints[0][1], 5)), '#004400', 16))
-                m.add_marker(CircleMarker((round(waypoints[0][0], 5), round(waypoints[0][1], 5)), '#22c55e', 14))
-                m.add_marker(CircleMarker((round(waypoints[0][0], 5), round(waypoints[0][1], 5)), '#ffffff', 5))
-
-                # Destination — red filled circle with white centre
-                m.add_marker(CircleMarker((round(waypoints[-1][0], 5), round(waypoints[-1][1], 5)), '#440000', 16))
-                m.add_marker(CircleMarker((round(waypoints[-1][0], 5), round(waypoints[-1][1], 5)), '#ef4444', 14))
-                m.add_marker(CircleMarker((round(waypoints[-1][0], 5), round(waypoints[-1][1], 5)), '#ffffff', 5))
-
-                # Render
-                img = m.render()
-
-                # Encode as base64 PNG data URI
-                buf = _io.BytesIO()
-                img.save(buf, format='PNG', optimize=True)
-                buf.seek(0)
-                b64 = base64.b64encode(buf.read()).decode('ascii')
-                log.info('Route map image generated: %dx%d via %s', width, height, tile_url[:45])
-                return f'data:image/png;base64,{b64}'
-
-            except Exception as e:
-                last_err = e
-                log.warning('Tile source failed (%s...): %s', tile_url[:45], e)
-                continue
-
-        log.error('All tile sources failed. Last: %s', last_err)
-        return None
-
-    except ImportError as e:
-        log.warning('staticmap/PIL not available — falling back to SVG: %s', e)
-        return None
-    except Exception as e:
-        log.error('generate_route_map_image error: %s', e)
-        return None
 
 
 def generate_route_svg(waypoints, width=1200, height=520):
@@ -1295,18 +1170,522 @@ def cmems_status():
     return r
 
 
+
+# ── SEA CONDITION CHART ENGINE ────────────────────────────────────────────────
+# Generates professional synoptic weather charts (isobars + wind barbs + wave fill)
+# matching Geoserve/ZeroNorth quality for PDF embedding and interactive map overlay.
+#
+# Data flow:
+#   1. Fetch MSLP + wind grid from Supabase DB1 for given bbox + timestamp
+#   2. scipy.ndimage.gaussian_filter fills land gaps → smooth contours
+#   3. matplotlib renders: wave gradient fill + isobar lines + wind barbs + route
+#   4. Returns base64 PNG (for PDF) or GeoJSON LineStrings (for MapLibre)
+
+# Colour scale matching Geoserve: blue(0m) → cyan → green → yellow → orange → red → magenta(15m+)
+_WAVE_COLORS = [
+    (0.0,  '#0033aa'), (0.07, '#0055cc'), (0.13, '#0077ee'),
+    (0.20, '#00aaff'), (0.27, '#00ccdd'), (0.33, '#00cc88'),
+    (0.40, '#44dd00'), (0.47, '#aaee00'), (0.53, '#ffee00'),
+    (0.60, '#ffaa00'), (0.67, '#ff6600'), (0.73, '#ff2200'),
+    (0.80, '#dd0033'), (0.87, '#bb0066'), (0.93, '#990099'),
+    (1.00, '#770099'),
+]
+_WAVE_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    'geoserve_wave',
+    [(v, c) for v, c in _WAVE_COLORS]
+) if HAS_SCIPY else None
+
+
+def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
+    """
+    Fetch MSLP + wind grid from Supabase DB1 for a bounding box + timestamp.
+    Uses paginated REST requests to bypass 1000-row limit.
+    Returns list of dicts: {lat, lon, mslp, wind_speed, wind_dir}
+    """
+    if not SUPABASE_URL or not SUPABASE_ANON:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_ANON env vars not set")
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+
+    # Snap timestamp to nearest 6h GFS step
+    from datetime import datetime, timezone
+    try:
+        d = datetime.fromisoformat(snap_ts_iso.replace('Z', '+00:00'))
+    except Exception:
+        d = datetime.now(timezone.utc)
+    epoch = d.timestamp()
+    snapped = round(epoch / 21600) * 21600
+    snap_dt = datetime.fromtimestamp(snapped, tz=timezone.utc)
+    snap_str = snap_dt.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+
+    base_url = (
+        f"{SUPABASE_URL}/rest/v1/weather_grid"
+        f"?select=lat,lon,mslp,wind_speed,wind_dir"
+        f"&lat=gte.{min_lat:.1f}&lat=lte.{max_lat:.1f}"
+        f"&lon=gte.{min_lon:.1f}&lon=lte.{max_lon:.1f}"
+        f"&valid_time=eq.{snap_str}"
+    )
+    headers = {
+        'apikey':        SUPABASE_ANON,
+        'Authorization': f'Bearer {SUPABASE_ANON}',
+        'Prefer':        'count=none',
+    }
+
+    all_rows = []
+    offset, page = 0, 1000
+    while True:
+        url = base_url + f"&limit={page}&offset={offset}"
+        r = req_lib.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            raise RuntimeError(f"Supabase query failed: HTTP {r.status_code} — {r.text[:200]}")
+        rows = r.json()
+        all_rows.extend(rows)
+        if len(rows) < page:
+            break
+        offset += page
+
+    # Decode scaled values
+    decoded = []
+    for row in all_rows:
+        decoded.append({
+            'lat':        float(row['lat']),
+            'lon':        float(row['lon']),
+            'mslp':       (float(row['mslp']) + 950.0) if row['mslp'] is not None else None,
+            'wind_speed': (float(row['wind_speed']) / 10.0) if row['wind_speed'] is not None else None,
+            'wind_dir':   float(row['wind_dir']) if row['wind_dir'] is not None else None,
+        })
+    log.info(f"Sea condition: fetched {len(decoded)} grid points for {snap_str}")
+    return decoded, snap_dt
+
+
+def _build_regular_grid(rows, bbox, resolution=0.5):
+    """
+    Convert sparse ocean-masked rows into a regular rectangular grid.
+    Land points (missing from ocean mask) are filled with NaN,
+    then smoothed with gaussian_filter to produce continuous contours.
+    Returns (lats_1d, lons_1d, mslp_grid_2d, wind_speed_2d, wind_dir_2d)
+    """
+    import numpy as np
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+
+    # Build regular coordinate axes
+    lats = np.arange(min_lat, max_lat + resolution/2, resolution)
+    lons = np.arange(min_lon, max_lon + resolution/2, resolution)
+    nla, nlo = len(lats), len(lons)
+
+    mslp_g  = np.full((nla, nlo), np.nan)
+    wsp_g   = np.full((nla, nlo), np.nan)
+    wdir_g  = np.full((nla, nlo), np.nan)
+
+    # Index rows into grid
+    for row in rows:
+        la_idx = round((row['lat'] - min_lat) / resolution)
+        lo_idx = round((row['lon'] - min_lon) / resolution)
+        if 0 <= la_idx < nla and 0 <= lo_idx < nlo:
+            if row['mslp']       is not None: mslp_g[la_idx, lo_idx] = row['mslp']
+            if row['wind_speed'] is not None: wsp_g [la_idx, lo_idx] = row['wind_speed']
+            if row['wind_dir']   is not None: wdir_g[la_idx, lo_idx] = row['wind_dir']
+
+    # Fill NaN land gaps via interpolation then smooth
+    # Strategy: replace NaN with nearest valid value, then gaussian smooth
+    from scipy.ndimage import gaussian_filter, label
+
+    def fill_and_smooth(grid, sigma=1.5):
+        filled = grid.copy()
+        nan_mask = np.isnan(filled)
+        if not nan_mask.any():
+            return gaussian_filter(filled, sigma=sigma)
+        # Simple nearest-neighbour fill for NaN cells
+        from scipy.ndimage import distance_transform_edt
+        ind = distance_transform_edt(nan_mask, return_distances=False, return_indices=True)
+        filled = filled[tuple(ind)]
+        return gaussian_filter(filled, sigma=sigma)
+
+    mslp_smooth = fill_and_smooth(mslp_g, sigma=1.2)
+    wsp_smooth  = fill_and_smooth(wsp_g,  sigma=0.8)
+    wdir_smooth = fill_and_smooth(wdir_g, sigma=0.8)
+
+    return lats, lons, mslp_smooth, mslp_g, wsp_smooth, wsp_g, wdir_smooth
+
+
+def generate_sea_condition_png(
+    bbox, timestamp_iso, waypoints=None,
+    vessel_pos=None, width_px=1200, height_px=680,
+    title_suffix=''
+):
+    """
+    Render a professional sea condition PNG matching Geoserve quality.
+
+    Elements:
+    - Wave height gradient fill (PM-estimated from wind speed)
+    - Smooth isobar contour lines (4 hPa interval, colour-coded by pressure)
+    - Wind barbs on regular grid (met standard: half/full/pennant)
+    - Route overlay as dashed line with markers
+    - Vessel position marker (optional)
+    - Land fill from embedded coastline data
+    - Graticule, colour bar, title
+
+    Returns: base64-encoded PNG string (for <img src="data:image/png;base64,...">)
+    """
+    if not HAS_SCIPY:
+        raise RuntimeError("scipy/matplotlib not installed")
+
+    import numpy as np
+
+    rows, snap_dt = _fetch_mslp_wind_grid(bbox, timestamp_iso)
+    if not rows:
+        raise RuntimeError(f"No data in DB for timestamp {timestamp_iso} / bbox {bbox}")
+
+    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s =         _build_regular_grid(rows, bbox)
+
+    nla, nlo = len(lats), len(lons)
+    min_lon, min_lat, max_lon, max_lat = bbox
+
+    # ── Figure setup ──────────────────────────────────────────────────────────
+    fig_w = width_px / 100
+    fig_h = height_px / 100
+    fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h), dpi=100)
+    fig.patch.set_facecolor('#0c1829')
+    ax.set_facecolor('#0c1829')
+
+    # Use simple equirectangular for the chart extent
+    ax.set_xlim(min_lon, max_lon)
+    ax.set_ylim(min_lat, max_lat)
+    ax.set_aspect('equal', adjustable='box')
+
+    LON_G, LAT_G = np.meshgrid(lons, lats)
+
+    # ── 1. Wave height fill (PM estimate from wind speed) ─────────────────────
+    vms = wsp_s * 0.5144  # kts → m/s
+    wave_est = np.clip(0.0248 * vms ** 2, 0, 15)
+
+    wave_img = ax.pcolormesh(
+        LON_G, LAT_G, wave_est,
+        cmap=_WAVE_CMAP, vmin=0, vmax=6,
+        shading='nearest', zorder=1, alpha=0.85
+    )
+
+    # ── 2. Isobar contours (MSLP) ─────────────────────────────────────────────
+    mslp_min = np.nanmin(mslp_raw[~np.isnan(mslp_raw)]) if not np.all(np.isnan(mslp_raw)) else 990
+    mslp_max = np.nanmax(mslp_raw[~np.isnan(mslp_raw)]) if not np.all(np.isnan(mslp_raw)) else 1030
+    p_min = int(math.floor(mslp_min / 4) * 4)
+    p_max = int(math.ceil(mslp_max  / 4) * 4)
+    levels = list(range(p_min, p_max + 4, 4))
+
+    # Draw contours with pressure-dependent colour
+    for level in levels:
+        if level <= 996:
+            col, lw = '#ff2244', 1.2
+        elif level <= 1004:
+            col, lw = '#ff6688', 0.9
+        elif level <= 1012:
+            col, lw = '#aaaaaa', 0.7
+        elif level <= 1020:
+            col, lw = '#666666', 0.8
+        else:
+            col, lw = '#333333', 1.0
+
+        try:
+            cs = ax.contour(LON_G, LAT_G, mslp_s,
+                            levels=[level], colors=[col],
+                            linewidths=lw, zorder=3)
+            # Label every 8 hPa on longer contours
+            if level % 8 == 0:
+                ax.clabel(cs, fmt='%d', fontsize=7, colors=[col],
+                          inline=True, inline_spacing=4)
+        except Exception:
+            pass
+
+    # ── 3. Wind barbs ─────────────────────────────────────────────────────────
+    # Sample every 4 grid points (~2° at 0.5° resolution)
+    step = max(1, min(nla, nlo) // 18)
+    barb_lats = lats[::step]
+    barb_lons = lons[::step]
+    BLO_G, BLA_G = np.meshgrid(barb_lons, barb_lats)
+
+    # Sample wind at barb positions
+    la_idx = [min(round((la - min_lat) / 0.5), nla-1) for la in barb_lats]
+    lo_idx = [min(round((lo - min_lon) / 0.5), nlo-1) for lo in barb_lons]
+
+    u_barbs = np.full((len(barb_lats), len(barb_lons)), np.nan)
+    v_barbs = np.full_like(u_barbs, np.nan)
+
+    for bi, li in enumerate(la_idx):
+        for bj, lj in enumerate(lo_idx):
+            ws  = wsp_raw[li, lj]
+            wd  = wdir_s[li, lj]
+            if not np.isnan(ws) and not np.isnan(wd) and ws > 0.5:
+                # Wind dir = direction FROM → convert to U,V components
+                wd_rad = math.radians(wd)
+                spd_ms = ws * 0.5144  # kt → m/s for barb scaling
+                u_barbs[bi, bj] = -spd_ms * math.sin(wd_rad)
+                v_barbs[bi, bj] = -spd_ms * math.cos(wd_rad)
+
+    valid = ~(np.isnan(u_barbs) | np.isnan(v_barbs))
+    if valid.any():
+        ax.barbs(
+            BLO_G[valid], BLA_G[valid],
+            u_barbs[valid], v_barbs[valid],
+            length=5, linewidth=0.7,
+            barb_increments={'half': 2.572, 'full': 5.144, 'flag': 25.72},  # m/s equivalents
+            color='#dddddd', zorder=5, alpha=0.85
+        )
+
+    # ── 4. Land fill (from embedded coastline data) ───────────────────────────
+    coastlines = _load_coastlines()
+    from matplotlib.patches import Polygon as MplPolygon
+    from matplotlib.collections import PatchCollection
+
+    land_patches = []
+    for line in coastlines:
+        # Only draw coastlines within view
+        visible = [(lo, la) for lo, la in line
+                   if min_lon - 10 <= lo <= max_lon + 10
+                   and min_lat - 5  <= la <= max_lat + 5]
+        if len(visible) >= 3:
+            try:
+                patch = MplPolygon(visible, closed=True)
+                land_patches.append(patch)
+            except Exception:
+                pass
+
+    if land_patches:
+        pc = PatchCollection(land_patches, facecolor='#1a2e44',
+                             edgecolor='#2a4a6a', linewidth=0.6, zorder=4)
+        ax.add_collection(pc)
+
+    # ── 5. Route overlay ──────────────────────────────────────────────────────
+    if waypoints and len(waypoints) >= 2:
+        route_lons = [p[0] for p in waypoints]
+        route_lats = [p[1] for p in waypoints]
+
+        ax.plot(route_lons, route_lats,
+                color='#00ff9d', linewidth=1.8, linestyle='--',
+                dashes=(8, 5), zorder=6, alpha=0.9, solid_capstyle='round')
+
+        # Origin marker
+        ax.plot(route_lons[0], route_lats[0], 'o',
+                color='#00ff9d', markersize=8, zorder=7,
+                markeredgecolor='white', markeredgewidth=1.5)
+        # Destination marker
+        ax.plot(route_lons[-1], route_lats[-1], 'o',
+                color='#ff4466', markersize=8, zorder=7,
+                markeredgecolor='white', markeredgewidth=1.5)
+
+    # ── 6. Vessel position marker ─────────────────────────────────────────────
+    if vessel_pos:
+        vlo, vla = vessel_pos
+        ax.plot(vlo, vla, marker='D', color='#ffdd00', markersize=9,
+                zorder=8, markeredgecolor='#0c1829', markeredgewidth=1.5)
+
+    # ── 7. Graticule ──────────────────────────────────────────────────────────
+    lon_span = max_lon - min_lon
+    lat_span = max_lat - min_lat
+    lon_step = 30 if lon_span > 90 else 20 if lon_span > 50 else 10
+    lat_step = 20 if lat_span > 50 else 10
+
+    for glo in range(int(math.ceil(min_lon / lon_step)) * lon_step,
+                     int(math.ceil(max_lon / lon_step)) * lon_step + 1, lon_step):
+        ax.axvline(glo, color='#1e3050', linewidth=0.4, zorder=2)
+        label = f"{abs(glo)}{'W' if glo < 0 else 'E'}"
+        ax.text(glo, min_lat + 0.5, label, fontsize=6.5,
+                color='#4a6a8a', ha='center', va='bottom', zorder=9)
+
+    for gla in range(int(math.ceil(min_lat / lat_step)) * lat_step,
+                     int(math.ceil(max_lat / lat_step)) * lat_step + 1, lat_step):
+        ax.axhline(gla, color='#1e3050', linewidth=0.4, zorder=2)
+        label = f"{abs(gla)}{'S' if gla < 0 else 'N'}"
+        ax.text(min_lon + 0.5, gla, label, fontsize=6.5,
+                color='#4a6a8a', ha='left', va='center', zorder=9)
+
+    # ── 8. Colour bar ─────────────────────────────────────────────────────────
+    cbar = fig.colorbar(wave_img, ax=ax, orientation='horizontal',
+                        pad=0.04, fraction=0.025, aspect=50)
+    cbar.set_label('Estimated Wave Height (m)', fontsize=8, color='#94a3b8')
+    cbar.ax.tick_params(labelsize=7, colors='#94a3b8')
+    cbar.outline.set_edgecolor('#334466')
+    cbar.set_ticks([0, 1, 2, 3, 4, 5, 6])
+
+    # ── 9. Title and axes ─────────────────────────────────────────────────────
+    ts_label = snap_dt.strftime('%d %b %Y, %H:%M UTC')
+    ax.set_title(
+        f'Sea Condition — Visual overview of Total Wave height, Wind speed and Pressure
+'
+        f'at {ts_label}{(" · " + title_suffix) if title_suffix else ""}',
+        fontsize=9, color='#94a3b8', pad=8, loc='left'
+    )
+    ax.tick_params(colors='#4a6a8a', labelsize=7)
+    for spine in ax.spines.values():
+        spine.set_edgecolor('#1e3050')
+
+    plt.tight_layout(pad=0.8)
+
+    # ── Encode to base64 PNG ──────────────────────────────────────────────────
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
+                facecolor='#0c1829', edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode('utf-8')
+    return b64
+
+
+def generate_sea_condition_geojson(bbox, timestamp_iso):
+    """
+    Generate isobar GeoJSON for MapLibre rendering.
+    Returns {type: FeatureCollection, features: [...LineString features]}
+    Each feature has properties: {pressure, color, width}
+    """
+    if not HAS_SCIPY:
+        raise RuntimeError("scipy/matplotlib not installed")
+
+    import numpy as np
+
+    rows, snap_dt = _fetch_mslp_wind_grid(bbox, timestamp_iso)
+    if not rows:
+        return {'type': 'FeatureCollection', 'features': [], 'timestamp': timestamp_iso}
+
+    lats, lons, mslp_s, mslp_raw, wsp_s, _, wdir_s =         _build_regular_grid(rows, bbox)
+
+    mslp_data = mslp_raw[~np.isnan(mslp_raw)]
+    if len(mslp_data) == 0:
+        return {'type': 'FeatureCollection', 'features': [], 'timestamp': timestamp_iso}
+
+    p_min = int(math.floor(np.min(mslp_data) / 4) * 4)
+    p_max = int(math.ceil( np.max(mslp_data) / 4) * 4)
+    levels = list(range(p_min, p_max + 4, 4))
+
+    LON_G, LAT_G = np.meshgrid(lons, lats)
+
+    features = []
+    fig_tmp, ax_tmp = plt.subplots()
+
+    for level in levels:
+        try:
+            cs = ax_tmp.contour(LON_G, LAT_G, mslp_s, levels=[level])
+            for path in cs.get_paths():
+                coords = path.vertices.tolist()
+                if len(coords) < 2:
+                    continue
+                # Colour coding
+                if level <= 996:   col, width = '#ff2244', 2.0
+                elif level <= 1004: col, width = '#ff6688', 1.5
+                elif level <= 1012: col, width = '#888888', 1.0
+                elif level <= 1020: col, width = '#555555', 1.2
+                else:               col, width = '#333333', 1.4
+
+                features.append({
+                    'type': 'Feature',
+                    'geometry': {'type': 'LineString', 'coordinates': coords},
+                    'properties': {
+                        'pressure': level,
+                        'color':    col,
+                        'width':    width,
+                        'label':    str(level) if level % 8 == 0 else '',
+                    }
+                })
+        except Exception:
+            pass
+
+    plt.close(fig_tmp)
+
+    # Also include wind vectors for barb rendering in JS
+    step = max(1, min(len(lats), len(lons)) // 20)
+    wind_pts = []
+    for bi, la in enumerate(lats[::step]):
+        for bj, lo in enumerate(lons[::step]):
+            la_i = min(round((la - lats[0]) / 0.5), len(lats)-1)
+            lo_j = min(round((lo - lons[0]) / 0.5), len(lons)-1)
+            ws  = float(wsp_raw[la_i, lo_j]) if not np.isnan(wsp_s[la_i, lo_j]) else None
+            wd  = float(wdir_s[la_i, lo_j])  if not np.isnan(wdir_s[la_i, lo_j]) else None
+            if ws is not None and ws > 1:
+                wind_pts.append({'lat': la, 'lon': lo, 'speed': round(ws, 1), 'dir': round(wd or 0)})
+
+    return {
+        'type':      'FeatureCollection',
+        'features':  features,
+        'timestamp': snap_dt.isoformat(),
+        'wind':      wind_pts,
+    }
+
+
+# ── SEA CONDITION ENDPOINT ────────────────────────────────────────────────────
+
+@app.route("/api/sea-condition", methods=["POST", "OPTIONS"])
+def sea_condition():
+    """
+    Generate sea condition chart.
+
+    Body (JSON):
+      bbox:       [minLon, minLat, maxLon, maxLat]
+      timestamp:  ISO 8601 string (snapped to nearest 6h internally)
+      waypoints:  [[lon, lat], ...]  optional route overlay
+      vessel_pos: [lon, lat]         optional vessel marker
+      format:     "png" (default, for PDF) | "geojson" (for MapLibre)
+      width:      px (default 1200, PNG only)
+      height:     px (default 680,  PNG only)
+      title:      string appended to chart title
+
+    Returns:
+      format=png:     {"png": "<base64>", "timestamp": "..."}
+      format=geojson: GeoJSON FeatureCollection + wind array
+    """
+    if request.method == 'OPTIONS':
+        r = jsonify({'ok': True})
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return r
+
+    if not HAS_SCIPY:
+        r = jsonify({'error': 'scipy/matplotlib not installed on server'})
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r, 503
+
+    try:
+        data      = request.get_json(force=True) or {}
+        bbox      = data.get('bbox')
+        ts        = data.get('timestamp', '')
+        waypoints = data.get('waypoints')
+        vpos      = data.get('vessel_pos')
+        fmt       = data.get('format', 'png')
+        width     = min(int(data.get('width',  1200)), 2400)
+        height    = min(int(data.get('height',  680)),  900)
+        title     = data.get('title', '')
+
+        if not bbox or len(bbox) != 4:
+            return jsonify({'error': 'bbox required: [minLon, minLat, maxLon, maxLat]'}), 400
+        if not ts:
+            return jsonify({'error': 'timestamp required (ISO 8601)'}), 400
+
+        if fmt == 'geojson':
+            result = generate_sea_condition_geojson(bbox, ts)
+            r = jsonify(result)
+        else:
+            b64 = generate_sea_condition_png(
+                bbox, ts, waypoints=waypoints, vessel_pos=vpos,
+                width_px=width, height_px=height, title_suffix=title
+            )
+            r = jsonify({'png': b64, 'timestamp': ts})
+
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r
+
+    except Exception as e:
+        log.error('sea-condition error: %s', e, exc_info=True)
+        r = jsonify({'error': str(e)})
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r, 500
+
+
 # ── ROUTE MAP ENDPOINT ───────────────────────────────────────────────────────
 
 @app.route("/api/route-map", methods=["POST"])
 def route_map():
     """
-    Generate a professional route map for PDF embedding.
-    Tries real map tiles first (ESRI Ocean / CartoDB via staticmap+Pillow).
-    Falls back to built-in SVG generator if tiles unavailable.
-
+    Generate an SVG map of the route for PDF embedding.
     Body: {"waypoints": [[lon, lat], ...], "width": 1200, "height": 520}
-    Returns: {"dataUri": "data:image/png;base64,...", "format": "png"}
-         or: {"svg": "<svg...>", "format": "svg"}  (fallback)
+    Returns: {"svg": "<svg...>", "format": "svg"}
     """
     try:
         data      = request.get_json(force=True)
@@ -1317,20 +1696,6 @@ def route_map():
         if len(waypoints) < 2:
             return jsonify({"error": "Need at least 2 waypoints"}), 400
 
-        # Try tile-based PNG first
-        data_uri = generate_route_map_image(waypoints, width, height)
-        if data_uri:
-            r = jsonify({
-                "dataUri": data_uri,
-                "format":  "png",
-                "width":   width,
-                "height":  height,
-            })
-            r.headers['Access-Control-Allow-Origin'] = '*'
-            return r
-
-        # Fallback: SVG generator (no external deps)
-        log.info('Falling back to SVG route map')
         svg = generate_route_svg(waypoints, width, height)
         r   = jsonify({"svg": svg, "format": "svg", "width": width, "height": height})
         r.headers['Access-Control-Allow-Origin'] = '*'
