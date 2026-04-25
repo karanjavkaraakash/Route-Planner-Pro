@@ -1187,6 +1187,31 @@ html, body {
 #sim-bar.open { display: block; }
 #sim-bar-fill { height: 100%; background: var(--accent); transition: width .5s; }
 #sim-vessel { display: none; position: absolute; width: 28px; height: 28px; z-index: 500; pointer-events: none; transform-origin: center; }
+
+/* ── Sea Condition Scrubber ──────────────────────────────────── */
+.scrub-step {
+  background: rgba(30,48,80,0.8);
+  border: 1px solid #1e3050;
+  border-radius: 4px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  padding: 4px 7px;
+  white-space: nowrap;
+  transition: all .15s;
+  text-align: center;
+  min-width: 44px;
+  flex-shrink: 0;
+}
+.scrub-step:hover { background: rgba(0,200,255,0.15); border-color: #00c8ff; color: #e2e8f0; }
+.scrub-step.scrub-active {
+  background: rgba(0,200,255,0.25);
+  border-color: #00c8ff;
+  color: #00c8ff;
+  font-weight: 700;
+  box-shadow: 0 0 8px rgba(0,200,255,0.3);
+}
 #sim-vessel.open { display: block; }
 #sim-hud {
   display: none; position: absolute; top: 12px; left: 12px; z-index: 400;
@@ -1781,7 +1806,18 @@ html, body {
     <div id="route-map-wrap">
       <div id="map"></div>
 
+      <!-- ── Sea Condition Time Scrubber ──────────────────────────── -->
+      <div id="sea-cond-scrubber" style="display:none;position:absolute;bottom:36px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(10,18,33,0.92);border:1px solid #1e3050;border-radius:8px;padding:7px 10px;backdrop-filter:blur(8px);max-width:94%;overflow-x:auto;box-shadow:0 4px 20px rgba(0,0,0,0.5)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+          <span style="font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#00c8ff;white-space:nowrap">🌊 Sea Condition</span>
+          <span style="font-size:9px;color:#64748b;white-space:nowrap">Scroll to select time · vessel position updates</span>
+          <button onclick="removeSeaConditionOverlay()" style="margin-left:auto;background:none;border:none;color:#64748b;cursor:pointer;font-size:12px;padding:0 4px;line-height:1" title="Close overlay">✕</button>
+        </div>
+        <div id="sea-cond-steps" style="display:flex;gap:3px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px"></div>
+      </div>
+
       <!-- Floating toolbar -->
+
       <div id="toolbar">
         <button class="tool-btn" id="tb-osm"     title="OpenSeaMap"   onclick="toggleOpenSeaMapBtn()">🧭</button>
         <button class="tool-btn" id="tb-wind"    title="Wind"          onclick="toggleWx('wind')">💨</button>
@@ -18109,6 +18145,372 @@ function fmtLon(lon){ lon = normLon(lon); return `${Math.abs(lon).toFixed(4)}°$
 // Only samples speedMetersPerSecond. Direction comes separately from Open-Meteo.
 // This avoids the vector-field timing issue that caused directionDegrees = null.
 
+
+/* ═══════════════════════════════════════════════════════════════
+   SEA CONDITION OVERLAY — isobar + wind barb + wave fill
+   ---------------------------------------------------------------
+   - Auto-loads after fetchRouteWeather() completes
+   - Renders GeoJSON isobar lines from /api/sea-condition on MapLibre
+   - Time scrubber UI at bottom of map (6h steps, 0-5 day range)
+   - Vessel position updates as scrubber moves
+   ═══════════════════════════════════════════════════════════════ */
+
+let _seaCondLayer    = null;  // MapLibre GeoJSON source ID
+let _seaCondLabels   = null;  // label layer
+let _seaCondVessel   = null;  // vessel marker element
+let _seaCondData     = null;  // last fetched GeoJSON
+let _seaCondTs       = null;  // current displayed timestamp
+let _seaCondScrubTs  = null;  // scrubber selected timestamp
+
+const SEA_COND_SOURCE = 'sea-cond-isobars';
+const SEA_COND_LAYER  = 'sea-cond-lines';
+const SEA_COND_LABEL  = 'sea-cond-pressure-labels';
+
+// ── Compute route bbox + snap timestamp ────────────────────────────────────
+function _seaCondBbox() {
+  if (!wpCoords || wpCoords.length < 2) return null;
+  let minLon=180, maxLon=-180, minLat=90, maxLat=-90;
+  wpCoords.forEach(([lo, la]) => {
+    const nlo = normLon(lo);
+    minLon = Math.min(minLon, nlo); maxLon = Math.max(maxLon, nlo);
+    minLat = Math.min(minLat, la);  maxLat = Math.max(maxLat, la);
+  });
+  const pad = 3;
+  return [
+    Math.max(-180, minLon - pad), Math.max(-85, minLat - pad),
+    Math.min(180,  maxLon + pad), Math.min(85,  maxLat + pad),
+  ];
+}
+
+function _snapToGFS6h(date) {
+  const epoch = Math.round(date.getTime() / 21600000) * 21600000;
+  return new Date(epoch);
+}
+
+function _vesselPosAtTime(targetMs) {
+  // Interpolate vessel position from _wxResults at given timestamp
+  const wxr = window._wxResults;
+  if (!wxr || !wxr.length) return null;
+  const depStr = document.getElementById('dep-time').value;
+  const dep = depStr ? new Date(depStr) : new Date();
+
+  // Find the leg whose tArr brackets targetMs
+  for (let i = 0; i < wxr.length; i++) {
+    const tArr = wxr[i].adjustedTArr ?? wxr[i].tArr;
+    if (!tArr) continue;
+    if (tArr.getTime() >= targetMs) {
+      // Interpolate between previous and this leg midpoint
+      if (i === 0) return [wxr[0].midLon, wxr[0].midLat];
+      const prev = wxr[i - 1];
+      const prevT = (prev.adjustedTArr ?? prev.tArr)?.getTime() ?? dep.getTime();
+      const currT = tArr.getTime();
+      const f = currT === prevT ? 0 : (targetMs - prevT) / (currT - prevT);
+      return [
+        prev.midLon + (wxr[i].midLon - prev.midLon) * f,
+        prev.midLat + (wxr[i].midLat - prev.midLat) * f,
+      ];
+    }
+  }
+  // Beyond last leg
+  const last = wxr[wxr.length - 1];
+  return [last.midLon, last.midLat];
+}
+
+// ── Main load function ──────────────────────────────────────────────────────
+async function loadSeaConditionOverlay(tsOverride) {
+  if (!window.map || !window._wxResults || !wpCoords || wpCoords.length < 2) return;
+
+  const bbox = _seaCondBbox();
+  if (!bbox) return;
+
+  const depStr = document.getElementById('dep-time').value;
+  const dep    = depStr ? new Date(depStr) : new Date();
+
+  // Default: departure time, snapped to nearest 6h
+  const ts = tsOverride ? new Date(tsOverride) : _snapToGFS6h(dep);
+
+  // Only load if within 0-5 day DB range
+  const nowMs = Date.now();
+  const diffDays = (ts.getTime() - nowMs) / 86400000;
+  if (diffDays > 5.5 || diffDays < -1) {
+    console.log('[SeaCond] Timestamp outside DB range, skipping overlay');
+    return;
+  }
+
+  _seaCondTs = ts;
+  _seaCondScrubTs = ts;
+
+  try {
+    const r = await fetch('/api/sea-condition', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bbox,
+        timestamp: ts.toISOString(),
+        format: 'geojson',
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const geojson = await r.json();
+    _seaCondData = geojson;
+
+    _renderIsobarLayer(geojson);
+    _renderWindBarbs(geojson.wind || []);
+    _updateScrubberUI(ts, dep);
+    _updateVesselMarker(ts.getTime());
+
+    // Show scrubber
+    document.getElementById('sea-cond-scrubber').style.display = 'flex';
+
+  } catch (e) {
+    console.warn('[SeaCond] Overlay load failed:', e.message);
+  }
+}
+
+function _renderIsobarLayer(geojson) {
+  if (!window.map) return;
+
+  // Remove existing layers/source
+  [SEA_COND_LABEL, SEA_COND_LAYER].forEach(id => {
+    try { if (window.map.getLayer(id))  window.map.removeLayer(id);  } catch(_){}
+  });
+  try { if (window.map.getSource(SEA_COND_SOURCE)) window.map.removeSource(SEA_COND_SOURCE); } catch(_){}
+
+  if (!geojson.features?.length) return;
+
+  window.map.addSource(SEA_COND_SOURCE, {
+    type: 'geojson',
+    data: geojson,
+  });
+
+  // Isobar lines — colour and width from feature properties
+  window.map.addLayer({
+    id:     SEA_COND_LAYER,
+    type:   'line',
+    source: SEA_COND_SOURCE,
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': ['get', 'width'],
+      'line-opacity': 0.85,
+    },
+  });
+
+  // Pressure labels on major isobars (every 8 hPa)
+  window.map.addLayer({
+    id:     SEA_COND_LABEL,
+    type:   'symbol',
+    source: SEA_COND_SOURCE,
+    filter: ['!=', ['get', 'label'], ''],
+    layout: {
+      'symbol-placement': 'line',
+      'text-field':       ['get', 'label'],
+      'text-size':        10,
+      'text-font':        ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+      'text-max-angle':   40,
+      'symbol-spacing':   200,
+    },
+    paint: {
+      'text-color':       ['get', 'color'],
+      'text-halo-color':  'rgba(12,24,41,0.8)',
+      'text-halo-width':  1.5,
+    },
+  });
+}
+
+// ── Wind barb canvas overlay ────────────────────────────────────────────────
+// Rendered as MapLibre custom layer for performance
+let _windBarbsEl = null;
+function _renderWindBarbs(windPts) {
+  // Remove old canvas
+  if (_windBarbsEl) { _windBarbsEl.remove(); _windBarbsEl = null; }
+  if (!windPts.length || !window.map) return;
+
+  // Draw wind barbs on an overlay canvas using map.project()
+  const mapCanvas = window.map.getCanvas();
+  const canvas = document.createElement('canvas');
+  canvas.width  = mapCanvas.width;
+  canvas.height = mapCanvas.height;
+  canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:2;';
+  mapCanvas.parentElement.appendChild(canvas);
+  _windBarbsEl = canvas;
+
+  _drawBarbsOnCanvas(canvas, windPts);
+
+  // Redraw on map move
+  window.map.on('move', () => {
+    if (_windBarbsEl) _drawBarbsOnCanvas(_windBarbsEl, windPts);
+  });
+}
+
+function _drawBarbsOnCanvas(canvas, windPts) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!window.map) return;
+
+  windPts.forEach(({ lat, lon, speed, dir }) => {
+    if (speed < 1) return;
+    const pt = window.map.project([lon, lat]);
+    if (pt.x < -20 || pt.x > canvas.width + 20) return;
+    if (pt.y < -20 || pt.y > canvas.height + 20) return;
+    _drawBarb(ctx, pt.x, pt.y, speed, dir);
+  });
+}
+
+function _drawBarb(ctx, x, y, speedKt, dirDeg) {
+  const len = 20;
+  const rad = (Math.PI / 180) * (dirDeg + 180);
+  const dx = Math.sin(rad);
+  const dy = -Math.cos(rad);
+
+  ctx.save();
+  ctx.strokeStyle = '#dddddd';
+  ctx.fillStyle   = '#dddddd';
+  ctx.lineWidth   = 1.1;
+  ctx.globalAlpha = 0.8;
+
+  // Staff
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + dx * len, y + dy * len);
+  ctx.stroke();
+
+  let rem = speedKt, pos = 1.0;
+
+  // Pennants (50 kt)
+  while (rem >= 50) {
+    const px1 = x + dx * len * pos;
+    const py1 = y + dy * len * pos;
+    const px2 = x + dx * len * (pos - 0.2);
+    const py2 = y + dy * len * (pos - 0.2);
+    const nx = -dy * 9, ny = dx * 9;
+    ctx.beginPath();
+    ctx.moveTo(px1, py1);
+    ctx.lineTo(px1 + nx, py1 + ny);
+    ctx.lineTo(px2, py2);
+    ctx.closePath();
+    ctx.fill();
+    rem -= 50; pos -= 0.22;
+  }
+  // Full barbs (10 kt)
+  while (rem >= 10) {
+    const px = x + dx * len * pos;
+    const py = y + dy * len * pos;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px - dy * 8, py + dx * 8);
+    ctx.stroke();
+    rem -= 10; pos -= 0.16;
+  }
+  // Half barb (5 kt)
+  if (rem >= 5) {
+    const px = x + dx * len * (pos - 0.08);
+    const py = y + dy * len * (pos - 0.08);
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px - dy * 4, py + dx * 4);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── Vessel marker ─────────────────────────────────────────────────────────
+function _updateVesselMarker(targetMs) {
+  const pos = _vesselPosAtTime(targetMs);
+  if (!pos || !window.map) return;
+
+  if (!_seaCondVessel) {
+    const el = document.createElement('div');
+    el.style.cssText = [
+      'width:16px;height:16px',
+      'background:#ffdd00',
+      'border:2px solid #0c1829',
+      'border-radius:3px',
+      'transform:rotate(45deg)',
+      'cursor:default',
+      'box-shadow:0 0 6px rgba(255,220,0,0.7)',
+    ].join(';');
+    _seaCondVessel = new maptilersdk.Marker({ element: el, anchor: 'center' })
+      .setLngLat(pos)
+      .addTo(window.map);
+  } else {
+    _seaCondVessel.setLngLat(pos);
+  }
+}
+
+// ── Time scrubber UI ────────────────────────────────────────────────────────
+function _updateScrubberUI(currentTs, depTs) {
+  const scrubber = document.getElementById('sea-cond-scrubber');
+  if (!scrubber) return;
+
+  // Build 6h steps from departure to departure+5d (max DB range)
+  const steps = [];
+  const start = _snapToGFS6h(depTs);
+  for (let h = 0; h <= 120; h += 6) {
+    const t = new Date(start.getTime() + h * 3600000);
+    if ((t.getTime() - Date.now()) / 86400000 > 5.5) break;
+    steps.push(t);
+  }
+  if (!steps.length) return;
+
+  const inner = document.getElementById('sea-cond-steps');
+  if (!inner) return;
+
+  inner.innerHTML = steps.map((t, i) => {
+    const isActive = Math.abs(t.getTime() - currentTs.getTime()) < 60000;
+    const label = t.toISOString().slice(11, 16) + 'Z';
+    const dateLabel = (i === 0 || t.getUTCHours() === 0)
+      ? `<div style="font-size:8px;color:#64748b;margin-bottom:1px">${t.toISOString().slice(5,10)}</div>` : '';
+    return `<button
+      class="scrub-step${isActive ? ' scrub-active' : ''}"
+      onclick="scrubSeaCond('${t.toISOString()}')"
+      title="${t.toUTCString()}"
+    >${dateLabel}${label}</button>`;
+  }).join('');
+}
+
+async function scrubSeaCond(isoStr) {
+  const ts = new Date(isoStr);
+  _seaCondScrubTs = ts;
+
+  // Update active step highlight immediately
+  document.querySelectorAll('.scrub-step').forEach(el => {
+    el.classList.toggle('scrub-active',
+      el.getAttribute('onclick').includes(isoStr));
+  });
+
+  // Update vessel position
+  _updateVesselMarker(ts.getTime());
+
+  // Fetch new isobar data
+  const bbox = _seaCondBbox();
+  if (!bbox) return;
+
+  try {
+    const r = await fetch('/api/sea-condition', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox, timestamp: isoStr, format: 'geojson' }),
+    });
+    if (!r.ok) return;
+    const geojson = await r.json();
+    _seaCondData = geojson;
+    _renderIsobarLayer(geojson);
+    _renderWindBarbs(geojson.wind || []);
+  } catch (e) {
+    console.warn('[SeaCond] Scrub fetch failed:', e.message);
+  }
+}
+
+function removeSeaConditionOverlay() {
+  [SEA_COND_LABEL, SEA_COND_LAYER].forEach(id => {
+    try { if (window.map?.getLayer(id)) window.map.removeLayer(id); } catch(_){}
+  });
+  try { if (window.map?.getSource(SEA_COND_SOURCE)) window.map.removeSource(SEA_COND_SOURCE); } catch(_){}
+  if (_windBarbsEl) { _windBarbsEl.remove(); _windBarbsEl = null; }
+  if (_seaCondVessel) { _seaCondVessel.remove(); _seaCondVessel = null; }
+  document.getElementById('sea-cond-scrubber').style.display = 'none';
+}
+
 // ── Supabase DB wind fetch — replaces MapTiler + Open-Meteo wind ──────────────
 // Single bounding-box query fetches wind for ALL route legs at once (~50-200ms).
 // Decoding: wind_speed stored ×10 (divide by 10 for knots), wind_dir as 0-360.
@@ -18815,6 +19217,10 @@ async function fetchRouteWeather(){
   window._wxResults   = results;
   window._wxIntervalH = SUBLEGGING_INTERVAL_H; // store for PDF subtitle
   setWxaStep(6);
+
+  // ── Auto-trigger sea condition overlay after weather loads ──────────────────
+  // Defer slightly so route colouring completes first
+  setTimeout(() => loadSeaConditionOverlay(), 400);
 
   // Compute delay
   const orderedTotalH  = legs.reduce((s,l) => s + l.distNm / orderedKn, 0);
@@ -20566,7 +20972,12 @@ async function generateVoyageReport(){
   showProgress({
     icon: '📄',
     title: 'Generating Voyage Report',
-    steps: ['Building waypoint table', 'Building weather table', 'Assembling PDF']
+    steps: [
+      'Building waypoint table',
+      'Building weather table',
+      'Generating sea condition charts',
+      'Assembling PDF'
+    ]
   });
   setProgressStep(0, 'Building waypoint and weather tables…');
 
@@ -20892,12 +21303,101 @@ async function generateVoyageReport(){
   </table>` : `<p style="color:#94a3b8;font-size:11px;margin-top:8px">No weather data available.</p>`}
 </div>
 
+${seaCondPages.join('\n')}
+
 <div class="content">
-  <div class="footer">RoutePlannerPro v2 · MapLibre GL JS / MapTiler · Routing: MARNET/searoute-py · Wind: MapTiler GFS WindLayer · Wave/Current: Open-Meteo Marine / Copernicus · ${fmtDate(new Date())}</div>
+  <div class="footer">RoutePlannerPro v2 · MapLibre GL JS / MapTiler · Routing: MARNET/searoute-py · Wind: GFS DB (Supabase) + Open-Meteo ECMWF fallback · Wave/Current: Open-Meteo Marine · Sea Condition: GFS MSLP rendered server-side · ${fmtDate(new Date())}</div>
 </div>
 </body></html>`;
 
-  setProgressStep(2, 'Opening report in new tab…');
+  // ── Sea Condition Charts (4 snapshots: 12h, 36h, 60h, 84h) ─────────────────
+  setProgressStep(2, 'Generating sea condition charts…');
+
+  const seaCondPages = [];
+  if (hasWeatherData && wpCoords && wpCoords.length >= 2) {
+    // Build bbox from route with padding
+    let scMinLon=180, scMaxLon=-180, scMinLat=90, scMaxLat=-90;
+    wpCoords.forEach(([lo,la]) => {
+      const nlo = normLon(lo);
+      scMinLon=Math.min(scMinLon,nlo); scMaxLon=Math.max(scMaxLon,nlo);
+      scMinLat=Math.min(scMinLat,la);  scMaxLat=Math.max(scMaxLat,la);
+    });
+    const scPad  = 3;
+    const scBbox = [
+      Math.max(-180, scMinLon - scPad), Math.max(-85, scMinLat - scPad),
+      Math.min(180,  scMaxLon + scPad), Math.min(85,  scMaxLat + scPad),
+    ];
+
+    const scOffsets = [12, 36, 60, 84]; // hours from departure
+
+    // Fetch all 4 charts in parallel
+    const scResults = await Promise.all(scOffsets.map(async (offsetH, idx) => {
+      const ts = new Date(dep.getTime() + offsetH * 3600000);
+      const diffDays = (ts.getTime() - Date.now()) / 86400000;
+
+      // Only fetch if within DB range (0-5 days from now)
+      if (diffDays > 5.5 || diffDays < -1) return null;
+
+      setProgressStep(2, `Generating sea condition charts… (${idx+1}/4)`);
+
+      try {
+        const r = await fetch('/api/sea-condition', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bbox:      scBbox,
+            timestamp: ts.toISOString(),
+            waypoints: wpCoords.map(([lo,la]) => [normLon(lo), la]),
+            format:    'png',
+            width:     1200,
+            height:    620,
+            title:     `T+${offsetH}h from departure`,
+          }),
+        });
+        if (!r.ok) return null;
+        const data = await r.json();
+        return data.png ? { png: data.png, ts, offsetH } : null;
+      } catch (e) {
+        console.warn(`Sea condition chart ${offsetH}h failed:`, e);
+        return null;
+      }
+    }));
+
+    // Build HTML pages for successful charts
+    const validCharts = scResults.filter(Boolean);
+    if (validCharts.length) {
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      validCharts.forEach(({ png, ts, offsetH }) => {
+        const tsLabel = `${String(ts.getUTCDate()).padStart(2,'0')} ${months[ts.getUTCMonth()]} ${ts.getUTCFullYear()}, ${String(ts.getUTCHours()).padStart(2,'0')}:00 UTC`;
+        seaCondPages.push(`
+<div class="content page-break" style="padding:20px 28px">
+  <div style="margin-bottom:10px;display:flex;align-items:baseline;gap:12px">
+    <div class="section-head" style="margin:0">Sea Condition</div>
+    <span style="font-size:10px;color:#64748b">Refer to the ${offsetH <= 24 ? 'Next 1 day' : offsetH <= 48 ? 'Next 2 days' : 'Next 3–4 days'} Sea Condition</span>
+  </div>
+  <div style="font-size:11px;color:#475569;margin-bottom:8px">
+    Visual overview of Total Wave height, Wind speed and Pressure at ${tsLabel}
+    <span style="margin-left:8px;font-size:10px;color:#94a3b8">(T+${offsetH}h from departure · estimated wave from wind speed)</span>
+  </div>
+  <div style="border-radius:8px;overflow:hidden;border:1px solid #d0d7e3;line-height:0">
+    <img src="data:image/png;base64,${png}" style="width:100%;display:block" alt="Sea condition at T+${offsetH}h"/>
+  </div>
+  <div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:6px;font-size:9px;color:#64748b">
+      <div style="width:30px;height:8px;background:linear-gradient(to right,#0033aa,#00aaff,#00cc88,#ffee00,#ff6600,#dd0044);border-radius:2px"></div>
+      Wave height gradient: 0 → 6+ m
+    </div>
+    <div style="font-size:9px;color:#ff4466">— Red isobars: low pressure (&lt;1004 hPa)</div>
+    <div style="font-size:9px;color:#666">— Grey/dark isobars: normal/high pressure</div>
+    <div style="font-size:9px;color:#00ff9d">-- Dashed green: vessel route</div>
+    <div style="font-size:9px;color:#ffdd00">◆ Yellow diamond: vessel position at T+${offsetH}h</div>
+  </div>
+</div>`);
+      });
+    }
+  }
+
+  setProgressStep(3, 'Opening report in new tab…');
   try {
     const blob = new Blob([html], {type:'text/html'});
     const w    = window.open(URL.createObjectURL(blob), '_blank');
