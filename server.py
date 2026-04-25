@@ -1309,24 +1309,85 @@ def _build_regular_grid(rows, bbox, resolution=0.5):
     return lats, lons, mslp_smooth, mslp_g, wsp_smooth, wsp_g, wdir_smooth
 
 
+def normLon180(lon):
+    """Normalise longitude to -180..180."""
+    while lon > 180:  lon -= 360
+    while lon <= -180: lon += 360
+    return lon
+
+
+def _is_land_simple(lat, lon):
+    """
+    Fast land/ocean test for chart rendering.
+    lon must be in 0-360 range (as from GFS grid).
+    Returns True if the point is land.
+    """
+    # Convert 0-360 to -180..180 for the same logic as ETL is_land()
+    lo = lon if lon <= 180 else lon - 360
+
+    if lat < -75: return True
+
+    # North America with tiered Pacific coast carve-out
+    if 25 <= lat <= 72 and -168 <= lo <= -52:
+        if lat >= 60 and lo < -136: return False
+        if 48 <= lat < 60 and lo < -126: return False
+        if 35 <= lat < 48 and lo < -124: return False
+        if 25 <= lat < 35 and lo < -117: return False
+        if 15 <= lat <= 31 and -98 <= lo <= -60: return False
+        if 51 <= lat <= 65 and -95 <= lo <= -65: return False
+        return True
+
+    if 60 <= lat <= 84 and -57 <= lo <= -17: return True   # Greenland
+    if -56 <= lat <= 13 and -82 <= lo <= -34: return True  # S America
+    if 36 <= lat <= 71 and 0 < lo <= 30:
+        if 53 <= lat <= 66 and 4 <= lo <= 15: return False
+        return True
+    if 55 <= lat <= 71 and 5 <= lo <= 32: return True
+    if 10 <= lat <= 37 and -18 <= lo <= 52:
+        if 12 <= lat <= 30 and 32 <= lo <= 43: return False
+        return True
+    if -20 <= lat <= 10 and 2 <= lo <= 15: return True
+    if -20 <= lat <= 10 and 15 < lo <= 45:
+        if -20 <= lat <= -10 and 38 <= lo <= 45: return False
+        return True
+    if -35 <= lat <= -17 and 12 <= lo <= 36: return True
+    if 12 <= lat <= 42 and 26 <= lo <= 63:
+        if 5 <= lat <= 25 and 55 <= lo <= 63: return False
+        if 12 <= lat <= 30 and 32 <= lo <= 43: return False
+        return True
+    if 5 <= lat <= 55 and 60 <= lo <= 95:
+        if 5 <= lat <= 25 and 60 <= lo <= 75: return False
+        if 5 <= lat <= 22 and 78 <= lo <= 95: return False
+        return True
+    if 18 <= lat <= 55 and 95 <= lo <= 145:
+        if 24 <= lat <= 41 and 118 <= lo <= 130: return False
+        if 30 <= lat <= 46 and 130 <= lo <= 142: return False
+        return True
+    if 0 <= lat <= 28 and 95 <= lo <= 110:
+        if 0 <= lat <= 15 and 100 <= lo <= 110: return False
+        return True
+    if 50 <= lat <= 78 and 95 <= lo <= 180:
+        if 50 <= lat <= 62 and 140 <= lo <= 160: return False
+        return True
+    if -39 <= lat <= -10 and 113 <= lo <= 154: return True
+    if 63 <= lat <= 67 and -25 <= lo <= -12: return True
+    return False
+
+
 def generate_sea_condition_png(
     bbox, timestamp_iso, waypoints=None,
     vessel_pos=None, width_px=1200, height_px=680,
     title_suffix=''
 ):
     """
-    Render a professional sea condition PNG matching Geoserve quality.
-
+    Render a professional sea condition chart PNG.
     Elements:
-    - Wave height gradient fill (PM-estimated from wind speed)
-    - Smooth isobar contour lines (4 hPa interval, colour-coded by pressure)
-    - Wind barbs on regular grid (met standard: half/full/pennant)
-    - Route overlay as dashed line with markers
-    - Vessel position marker (optional)
-    - Land fill from embedded coastline data
-    - Graticule, colour bar, title
-
-    Returns: base64-encoded PNG string (for <img src="data:image/png;base64,...">)
+      - Wave height gradient fill (PM-estimated, ocean only, land masked)
+      - Smooth isobar contour lines (4 hPa interval, colour-coded by pressure)
+      - Route overlay as dashed line with departure/arrival markers
+      - Vessel position marker (optional)
+      - Land fill + coastline outlines
+      - Proper Mercator aspect ratio
     """
     if not HAS_SCIPY:
         raise RuntimeError("scipy/matplotlib not installed")
@@ -1337,198 +1398,174 @@ def generate_sea_condition_png(
     if not rows:
         raise RuntimeError(f"No data in DB for timestamp {timestamp_iso} / bbox {bbox}")
 
-    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s =         _build_regular_grid(rows, bbox)
+    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s = _build_regular_grid(rows, bbox)
 
     nla, nlo = len(lats), len(lons)
     min_lon, min_lat, max_lon, max_lat = bbox
+    mid_lat = (min_lat + max_lat) / 2.0
 
     # ── Figure setup ──────────────────────────────────────────────────────────
-    fig_w = width_px / 100
-    fig_h = height_px / 100
-    fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h), dpi=100)
+    fig_w = width_px / 100.0
+    fig_h = height_px / 100.0
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
     fig.patch.set_facecolor('#0c1829')
     ax.set_facecolor('#0c1829')
-
-    # Use simple equirectangular for the chart extent
     ax.set_xlim(min_lon, max_lon)
     ax.set_ylim(min_lat, max_lat)
-    ax.set_aspect('equal', adjustable='box')
+
+    # Mercator aspect: 1 degree lon = cos(midlat) degrees lat in distance
+    mercator_aspect = 1.0 / math.cos(math.radians(mid_lat))
+    ax.set_aspect(mercator_aspect, adjustable='box')
 
     LON_G, LAT_G = np.meshgrid(lons, lats)
 
-    # ── 1. Wave height fill (PM estimate from wind speed) ─────────────────────
-    vms = wsp_s * 0.5144  # kts → m/s
-    wave_est = np.clip(0.0248 * vms ** 2, 0, 15)
+    # ── 1. Build pixel-level land mask using is_land() ─────────────────────────
+    # Resolution: one mask pixel per 0.5° grid cell (same as DB grid)
+    land_mask_2d = np.zeros((nla, nlo), dtype=bool)
+    for i, la in enumerate(lats):
+        for j, lo in enumerate(lons):
+            # Convert -180..180 lon to 0..360 for is_land
+            lo360 = lo + 360 if lo < 0 else lo
+            land_mask_2d[i, j] = _is_land_simple(float(la), float(lo360))
+    ocean_mask_2d = ~land_mask_2d
 
-    wave_img = ax.pcolormesh(
-        LON_G, LAT_G, wave_est,
-        cmap=_WAVE_CMAP, vmin=0, vmax=6,
-        shading='nearest', zorder=1, alpha=0.85
+    # ── 2. Wave height fill — ocean only, land = NaN ─────────────────────────
+    vms = wsp_s * 0.5144  # kts to m/s for PM formula
+    wave_est = np.clip(0.0248 * vms ** 2, 0, 6)
+    wave_ocean = np.where(ocean_mask_2d, wave_est, np.nan)
+
+    cmap = _WAVE_CMAP.copy()
+    cmap.set_bad('#1a2e44')  # land colour for NaN
+
+    # Use imshow for smooth rendering (flip vertically: imshow origin='lower')
+    im = ax.imshow(
+        wave_ocean,
+        extent=[min_lon, max_lon, min_lat, max_lat],
+        origin='lower', aspect='auto',
+        cmap=cmap, vmin=0, vmax=6,
+        interpolation='bilinear', zorder=1, alpha=0.9
     )
 
-    # ── 2. Isobar contours (MSLP) ─────────────────────────────────────────────
-    mslp_min = np.nanmin(mslp_raw[~np.isnan(mslp_raw)]) if not np.all(np.isnan(mslp_raw)) else 990
-    mslp_max = np.nanmax(mslp_raw[~np.isnan(mslp_raw)]) if not np.all(np.isnan(mslp_raw)) else 1030
-    p_min = int(math.floor(mslp_min / 4) * 4)
-    p_max = int(math.ceil(mslp_max  / 4) * 4)
-    levels = list(range(p_min, p_max + 4, 4))
+    # ── 3. Land colour overlay ────────────────────────────────────────────────
+    land_colour = np.where(land_mask_2d[:, :, np.newaxis],
+                           np.array([26, 46, 68], dtype=np.uint8),
+                           0).astype(np.uint8)
+    alpha_land = (land_mask_2d * 255).astype(np.uint8)
+    land_rgba = np.dstack([land_colour, alpha_land])
+    ax.imshow(land_rgba, extent=[min_lon, max_lon, min_lat, max_lat],
+              origin='lower', aspect='auto', zorder=2, interpolation='nearest')
 
-    # Draw contours with pressure-dependent colour
-    for level in levels:
-        if level <= 996:
-            col, lw = '#ff2244', 1.2
-        elif level <= 1004:
-            col, lw = '#ff6688', 0.9
-        elif level <= 1012:
-            col, lw = '#aaaaaa', 0.7
-        elif level <= 1020:
-            col, lw = '#666666', 0.8
-        else:
-            col, lw = '#333333', 1.0
-
-        try:
-            cs = ax.contour(LON_G, LAT_G, mslp_s,
-                            levels=[level], colors=[col],
-                            linewidths=lw, zorder=3)
-            # Label every 8 hPa on longer contours
-            if level % 8 == 0:
-                ax.clabel(cs, fmt='%d', fontsize=7, colors=[col],
-                          inline=True, inline_spacing=4)
-        except Exception:
-            pass
-
-    # ── 3. Wind barbs ─────────────────────────────────────────────────────────
-    # Sample every 4 grid points (~2° at 0.5° resolution)
-    step = max(1, min(nla, nlo) // 18)
-    barb_lats = lats[::step]
-    barb_lons = lons[::step]
-    BLO_G, BLA_G = np.meshgrid(barb_lons, barb_lats)
-
-    # Sample wind at barb positions
-    la_idx = [min(round((la - min_lat) / 0.5), nla-1) for la in barb_lats]
-    lo_idx = [min(round((lo - min_lon) / 0.5), nlo-1) for lo in barb_lons]
-
-    u_barbs = np.full((len(barb_lats), len(barb_lons)), np.nan)
-    v_barbs = np.full_like(u_barbs, np.nan)
-
-    for bi, li in enumerate(la_idx):
-        for bj, lj in enumerate(lo_idx):
-            ws  = wsp_raw[li, lj]
-            wd  = wdir_s[li, lj]
-            if not np.isnan(ws) and not np.isnan(wd) and ws > 0.5:
-                # Wind dir = direction FROM → convert to U,V components
-                wd_rad = math.radians(wd)
-                spd_ms = ws * 0.5144  # kt → m/s for barb scaling
-                u_barbs[bi, bj] = -spd_ms * math.sin(wd_rad)
-                v_barbs[bi, bj] = -spd_ms * math.cos(wd_rad)
-
-    valid = ~(np.isnan(u_barbs) | np.isnan(v_barbs))
-    if valid.any():
-        ax.barbs(
-            BLO_G[valid], BLA_G[valid],
-            u_barbs[valid], v_barbs[valid],
-            length=5, linewidth=0.7,
-            barb_increments={'half': 2.572, 'full': 5.144, 'flag': 25.72},  # m/s equivalents
-            color='#dddddd', zorder=5, alpha=0.85
-        )
-
-    # ── 4. Land fill (from embedded coastline data) ───────────────────────────
+    # ── 4. Coastline outlines ─────────────────────────────────────────────────
     coastlines = _load_coastlines()
-    from matplotlib.patches import Polygon as MplPolygon
-    from matplotlib.collections import PatchCollection
-
-    land_patches = []
     for line in coastlines:
-        # Only draw coastlines within view
-        visible = [(lo, la) for lo, la in line
-                   if min_lon - 10 <= lo <= max_lon + 10
-                   and min_lat - 5  <= la <= max_lat + 5]
-        if len(visible) >= 3:
+        xs, ys = [], []
+        for lo, la in line:
+            if min_lon - 5 <= lo <= max_lon + 5 and min_lat - 3 <= la <= max_lat + 3:
+                xs.append(lo); ys.append(la)
+        if len(xs) >= 2:
+            ax.plot(xs, ys, color='#4a7aa0', linewidth=0.7, zorder=3, solid_capstyle='round')
+
+    # ── 5. Isobar contours ────────────────────────────────────────────────────
+    mslp_data = mslp_raw[~np.isnan(mslp_raw)]
+    if len(mslp_data) >= 4:
+        p_min = int(math.floor(np.min(mslp_data) / 4) * 4)
+        p_max = int(math.ceil( np.max(mslp_data) / 4) * 4)
+        levels = list(range(p_min, p_max + 4, 4))
+
+        for level in levels:
+            if   level <= 996:  col, lw = '#ff2244', 1.3
+            elif level <= 1004: col, lw = '#ff7799', 0.9
+            elif level <= 1012: col, lw = '#999999', 0.7
+            elif level <= 1020: col, lw = '#666666', 0.8
+            else:               col, lw = '#444444', 1.0
             try:
-                patch = MplPolygon(visible, closed=True)
-                land_patches.append(patch)
+                cs = ax.contour(LON_G, LAT_G, mslp_s,
+                                levels=[level], colors=[col],
+                                linewidths=lw, zorder=4)
+                if level % 8 == 0:
+                    ax.clabel(cs, fmt='%d', fontsize=7.5, colors=[col],
+                              inline=True, inline_spacing=3)
             except Exception:
                 pass
 
-    if land_patches:
-        pc = PatchCollection(land_patches, facecolor='#1a2e44',
-                             edgecolor='#2a4a6a', linewidth=0.6, zorder=4)
-        ax.add_collection(pc)
-
-    # ── 5. Route overlay ──────────────────────────────────────────────────────
+    # ── 6. Route overlay ──────────────────────────────────────────────────────
     if waypoints and len(waypoints) >= 2:
-        route_lons = [p[0] for p in waypoints]
-        route_lats = [p[1] for p in waypoints]
+        # Subsample for display clarity
+        step_wp = max(1, len(waypoints) // 80)
+        disp_wps = waypoints[::step_wp]
+        if waypoints[-1] not in disp_wps:
+            disp_wps = list(disp_wps) + [waypoints[-1]]
 
-        ax.plot(route_lons, route_lats,
-                color='#00ff9d', linewidth=1.8, linestyle='--',
-                dashes=(8, 5), zorder=6, alpha=0.9, solid_capstyle='round')
+        rlo = [normLon180(p[0]) for p in disp_wps]
+        rla = [p[1] for p in disp_wps]
 
-        # Origin marker
-        ax.plot(route_lons[0], route_lats[0], 'o',
-                color='#00ff9d', markersize=8, zorder=7,
-                markeredgecolor='white', markeredgewidth=1.5)
-        # Destination marker
-        ax.plot(route_lons[-1], route_lats[-1], 'o',
-                color='#ff4466', markersize=8, zorder=7,
-                markeredgecolor='white', markeredgewidth=1.5)
+        ax.plot(rlo, rla, color='#00ff9d', linewidth=2.0,
+                linestyle='--', dashes=(10, 6),
+                zorder=6, alpha=0.95, solid_capstyle='round',
+                marker=None)
 
-    # ── 6. Vessel position marker ─────────────────────────────────────────────
+        # Departure: green circle
+        ax.plot(rlo[0], rla[0], 'o', color='#00ff9d', markersize=9,
+                zorder=7, markeredgecolor='white', markeredgewidth=1.5)
+        # Destination: red circle
+        ax.plot(rlo[-1], rla[-1], 'o', color='#ff4466', markersize=9,
+                zorder=7, markeredgecolor='white', markeredgewidth=1.5)
+
+    # ── 8. Vessel position ────────────────────────────────────────────────────
     if vessel_pos:
-        vlo, vla = vessel_pos
-        ax.plot(vlo, vla, marker='D', color='#ffdd00', markersize=9,
-                zorder=8, markeredgecolor='#0c1829', markeredgewidth=1.5)
+        vlo, vla = normLon180(vessel_pos[0]), vessel_pos[1]
+        ax.plot(vlo, vla, 'D', color='#ffdd00', markersize=10, zorder=8,
+                markeredgecolor='#0c1829', markeredgewidth=1.5)
 
-    # ── 7. Graticule ──────────────────────────────────────────────────────────
+    # ── 9. Graticule ──────────────────────────────────────────────────────────
     lon_span = max_lon - min_lon
     lat_span = max_lat - min_lat
     lon_step = 30 if lon_span > 90 else 20 if lon_span > 50 else 10
-    lat_step = 20 if lat_span > 50 else 10
+    lat_step = 20 if lat_span > 50 else 10 if lat_span > 25 else 5
 
     for glo in range(int(math.ceil(min_lon / lon_step)) * lon_step,
-                     int(math.ceil(max_lon / lon_step)) * lon_step + 1, lon_step):
-        ax.axvline(glo, color='#1e3050', linewidth=0.4, zorder=2)
-        label = f"{abs(glo)}{'W' if glo < 0 else 'E'}"
-        ax.text(glo, min_lat + 0.5, label, fontsize=6.5,
-                color='#4a6a8a', ha='center', va='bottom', zorder=9)
+                     int(math.floor(max_lon / lon_step)) * lon_step + 1, lon_step):
+        if min_lon <= glo <= max_lon:
+            ax.axvline(glo, color='#1e3050', linewidth=0.4, zorder=2)
+            lbl = f"{abs(glo)}{'W' if glo < 0 else 'E'}"
+            ax.text(glo, min_lat + (lat_span * 0.02), lbl,
+                    fontsize=6.5, color='#4a6a8a', ha='center', va='bottom', zorder=9)
 
     for gla in range(int(math.ceil(min_lat / lat_step)) * lat_step,
-                     int(math.ceil(max_lat / lat_step)) * lat_step + 1, lat_step):
-        ax.axhline(gla, color='#1e3050', linewidth=0.4, zorder=2)
-        label = f"{abs(gla)}{'S' if gla < 0 else 'N'}"
-        ax.text(min_lon + 0.5, gla, label, fontsize=6.5,
-                color='#4a6a8a', ha='left', va='center', zorder=9)
+                     int(math.floor(max_lat / lat_step)) * lat_step + 1, lat_step):
+        if min_lat <= gla <= max_lat:
+            ax.axhline(gla, color='#1e3050', linewidth=0.4, zorder=2)
+            lbl = f"{abs(gla)}{'S' if gla < 0 else 'N'}"
+            ax.text(min_lon + (lon_span * 0.01), gla, lbl,
+                    fontsize=6.5, color='#4a6a8a', ha='left', va='center', zorder=9)
 
-    # ── 8. Colour bar ─────────────────────────────────────────────────────────
-    cbar = fig.colorbar(wave_img, ax=ax, orientation='horizontal',
-                        pad=0.04, fraction=0.025, aspect=50)
+    # ── 10. Colour bar ────────────────────────────────────────────────────────
+    cbar = fig.colorbar(im, ax=ax, orientation='horizontal',
+                        pad=0.03, fraction=0.022, aspect=55)
     cbar.set_label('Estimated Wave Height (m)', fontsize=8, color='#94a3b8')
     cbar.ax.tick_params(labelsize=7, colors='#94a3b8')
     cbar.outline.set_edgecolor('#334466')
     cbar.set_ticks([0, 1, 2, 3, 4, 5, 6])
 
-    # ── 9. Title and axes ─────────────────────────────────────────────────────
+    # ── 11. Title ─────────────────────────────────────────────────────────────
     ts_label = snap_dt.strftime('%d %b %Y, %H:%M UTC')
     title_line1 = 'Sea Condition - Visual overview of Total Wave height, Wind speed and Pressure'
     title_line2 = 'at ' + ts_label + ((' - ' + title_suffix) if title_suffix else '')
-    ax.set_title(
-        title_line1 + '\n' + title_line2,
-        fontsize=9, color='#94a3b8', pad=8, loc='left'
-    )
+    ax.set_title(title_line1 + '\n' + title_line2,
+                 fontsize=8.5, color='#94a3b8', pad=6, loc='left')
+
     ax.tick_params(colors='#4a6a8a', labelsize=7)
     for spine in ax.spines.values():
         spine.set_edgecolor('#1e3050')
 
-    plt.tight_layout(pad=0.8)
+    plt.tight_layout(pad=0.6)
 
-    # ── Encode to base64 PNG ──────────────────────────────────────────────────
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
                 facecolor='#0c1829', edgecolor='none')
     plt.close(fig)
     buf.seek(0)
-    b64 = base64.b64encode(buf.read()).decode('utf-8')
-    return b64
+    return base64.b64encode(buf.read()).decode('utf-8')
 
 
 def generate_sea_condition_geojson(bbox, timestamp_iso):
