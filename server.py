@@ -1216,7 +1216,7 @@ def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
     epoch = d.timestamp()
     snapped = round(epoch / 21600) * 21600
     snap_dt = datetime.fromtimestamp(snapped, tz=timezone.utc)
-    snap_str = snap_dt.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    snap_str = snap_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     base_url = (
         f"{SUPABASE_URL}/rest/v1/weather_grid"
