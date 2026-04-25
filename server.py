@@ -1237,7 +1237,7 @@ def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
         url = base_url + f"&limit={page}&offset={offset}"
         r = req_lib.get(url, headers=headers, timeout=20)
         if r.status_code != 200:
-            raise RuntimeError(f"Supabase query failed: HTTP {r.status_code} — {r.text[:200]}")
+            raise RuntimeError(f"Supabase query failed: HTTP {r.status_code} - {r.text[:200]}")
         rows = r.json()
         all_rows.extend(rows)
         if len(rows) < page:
@@ -1509,10 +1509,10 @@ def generate_sea_condition_png(
 
     # ── 9. Title and axes ─────────────────────────────────────────────────────
     ts_label = snap_dt.strftime('%d %b %Y, %H:%M UTC')
+    title_line1 = 'Sea Condition - Visual overview of Total Wave height, Wind speed and Pressure'
+    title_line2 = 'at ' + ts_label + ((' - ' + title_suffix) if title_suffix else '')
     ax.set_title(
-        f'Sea Condition — Visual overview of Total Wave height, Wind speed and Pressure
-'
-        f'at {ts_label}{(" · " + title_suffix) if title_suffix else ""}',
+        title_line1 + '\n' + title_line2,
         fontsize=9, color='#94a3b8', pad=8, loc='left'
     )
     ax.tick_params(colors='#4a6a8a', labelsize=7)
