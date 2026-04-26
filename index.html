@@ -17553,17 +17553,8 @@ async function calculateRoute(){
       goToRouteView();
     }
 
-    // ── Background route map generation ─────────────────────────────────────
-    // Fetches a server-rendered SVG of the route for PDF embedding.
-    // Runs silently in background — doesn't block the UI.
+    // Route map now served via MapTiler Static Maps API at PDF time — no background fetch needed.
     window._routeMapSVG = null;
-    fetch('/api/route-map', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ waypoints: wpCoords, width: 1200, height: 520 })
-    }).then(r => r.ok ? r.json() : null)
-      .then(d => { if(d?.svg) window._routeMapSVG = d.svg; })
-      .catch(() => {}); // silent — map is optional, PDF generates fine without it
   } catch(e){
     hideProgress();
     notify('Route error: '+e.message,'err');
@@ -18319,7 +18310,7 @@ function _renderIsobarLayer(geojson) {
 
 // ── Wind barb canvas overlay ────────────────────────────────────────────────
 // Rendered as MapLibre custom layer for performance
-// Exposed on window so PDF capture can temporarily hide it during toDataURL()
+// Exposed on window so external code can reference the wind barb canvas element
 window._windBarbsEl = null;
 let _windBarbsEl = null;   // local alias
 function _renderWindBarbs(windPts) {
@@ -19223,12 +19214,7 @@ async function fetchRouteWeather(){
 
   // ── Auto-trigger sea condition overlay after weather loads ──────────────────
   // Defer slightly so route colouring completes first.
-  // Guard: do NOT load if PDF canvas capture is in progress — it mutates the map
-  // (addSource/addLayer) which fires 'idle' and breaks the capture timing.
-  setTimeout(() => {
-    if (!window._pdfCaptureInProgress) loadSeaConditionOverlay();
-    else window._seaCondPendingAfterCapture = true;  // will be loaded after capture
-  }, 400);
+  setTimeout(() => loadSeaConditionOverlay(), 400);
 
   // Compute delay
   const orderedTotalH  = legs.reduce((s,l) => s + l.distNm / orderedKn, 0);
@@ -20975,133 +20961,105 @@ async function generateVoyageReport(){
   // ── Weather data is already fully loaded by fetchRouteWeather ──────────────
   const wxResults = window._wxResults || [];
 
-  // ── Capture route map BEFORE showing progress overlay ─────────────────────
-  // Three sources of interference we guard against:
-  //   1. backdrop-filter: blur() on the progress overlay corrupts WebGL toDataURL()
-  //      → capture BEFORE showProgress() is called (this block runs first).
-  //   2. Sea condition overlay (loadSeaConditionOverlay) calls addSource/addLayer
-  //      which fires map 'idle' and can resolve our wait promise prematurely,
-  //      and also adds a wind-barb <canvas> on top of the map canvas.
-  //      → set _pdfCaptureInProgress flag so the 400ms auto-trigger defers.
-  //   3. Wind barb overlay canvas sits on top of map canvas but is NOT captured
-  //      by map.getCanvas().toDataURL() — temporarily hide it during capture.
-
-  window._pdfCaptureInProgress  = true;   // blocks sea-cond auto-trigger
-  window._seaCondPendingAfterCapture = false;
-
-  // Temporarily hide wind barb overlay so it doesn't interfere with WebGL state
-  if (window._windBarbsEl) window._windBarbsEl.style.display = 'none';
-
+  // ── Route chart: MapTiler Static Maps API ─────────────────────────────────
+  // Replaces all WebGL canvas capture attempts. The Static Maps API is called
+  // directly from the browser (same origin/key domain as the live map), returns
+  // a real PNG with MapTiler tiles + route path + markers. Zero WebGL issues,
+  // completely independent of sea condition overlay state.
   let routeMapPng = null;
-  const routeMapSVG = window._routeMapSVG || null;
+
+  // ── Douglas-Peucker path simplification ────────────────────────────────────
+  // Reduces wpCoords to ~60 points so the path fits in the URL (<8 KB limit).
+  function _dpSimplify(pts, tolerance) {
+    if (pts.length <= 2) return pts;
+    let maxDist = 0, maxIdx = 0;
+    const [x1, y1] = pts[0];
+    const [x2, y2] = pts[pts.length - 1];
+    const dx = x2 - x1, dy = y2 - y1;
+    const linelen = Math.sqrt(dx * dx + dy * dy);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [px, py] = pts[i];
+      const dist = linelen === 0
+        ? Math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+        : Math.abs(dy * px - dx * py + x2 * y1 - y2 * x1) / linelen;
+      if (dist > maxDist) { maxDist = dist; maxIdx = i; }
+    }
+    if (maxDist > tolerance) {
+      const left  = _dpSimplify(pts.slice(0, maxIdx + 1), tolerance);
+      const right = _dpSimplify(pts.slice(maxIdx), tolerance);
+      return [...left.slice(0, -1), ...right];
+    }
+    return [pts[0], pts[pts.length - 1]];
+  }
+
+  // ── Build and fetch the static map ─────────────────────────────────────────
   try {
-    if (window.map && typeof window.map.getCanvas === 'function') {
-      // Fit map to route bounds (instant, no animation)
-      // Ensure canvas dimensions match current container size (can be stale after tab switches)
-      window.map.resize();
-      await new Promise(r => setTimeout(r, 50)); // let resize propagate
+    if (!wpCoords || wpCoords.length < 2) throw new Error('No route coordinates');
 
-      if (wpCoords && wpCoords.length >= 2) {
-        let minLon=180, maxLon=-180, minLat=90, maxLat=-90;
-        wpCoords.forEach(([lo,la]) => {
-          minLon=Math.min(minLon,lo); maxLon=Math.max(maxLon,lo);
-          minLat=Math.min(minLat,la); maxLat=Math.max(maxLat,la);
-        });
-        window.map.fitBounds([[minLon,minLat],[maxLon,maxLat]], {
-          padding: {top:40, bottom:40, left:40, right:40},
-          duration: 0, maxZoom: 12
-        });
-      }
-
-      // Wait for map idle + tiles fully loaded.
-      // IMPORTANT: we do NOT use map.once('idle') because addSource/addLayer
-      // from the sea condition overlay (if it loads concurrently) also fires idle.
-      // Instead: wait a minimum time, then POLL areTilesLoaded() aggressively.
-      await new Promise(resolve => {
-        const HARD_CAP_MS   = 6000;   // absolute maximum wait
-        const MIN_WAIT_MS   = 800;    // always wait at least this long after fitBounds
-        const started = Date.now();
-
-        const poll = () => {
-          const elapsed = Date.now() - started;
-          if (elapsed >= HARD_CAP_MS) {
-            console.warn('[PDF] Hard cap hit, capturing anyway');
-            resolve();
-            return;
-          }
-          if (elapsed >= MIN_WAIT_MS && window.map.areTilesLoaded()) {
-            // Tiles confirmed loaded — one extra rAF to let WebGL flush
-            requestAnimationFrame(() => requestAnimationFrame(resolve));
-          } else {
-            setTimeout(poll, 150);
-          }
-        };
-        poll();
-      });
-
-      // Force a WebGL redraw before reading pixels
-      window.map.triggerRepaint();
-      // Two rAFs: first lets the browser process the repaint request,
-      // second ensures the GPU has flushed to the framebuffer.
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-      const mapCanvas = window.map.getCanvas();
-      if (!mapCanvas.width || !mapCanvas.height) {
-        throw new Error(`Canvas dimensions invalid: ${mapCanvas.width}×${mapCanvas.height}`);
-      }
-      console.log('[PDF] MapLibre canvas size:', mapCanvas.width, '×', mapCanvas.height);
-
-      // ── Robust capture: copy WebGL canvas → 2D canvas → PNG ────────────────
-      // Direct toDataURL() on a WebGL canvas can return a blank image because
-      // the WebGL framebuffer is read AFTER the browser compositor has already
-      // cleared it (even with preserveDrawingBuffer:true, some drivers clear on
-      // context switch). The fix: draw the WebGL canvas into a 2D canvas first —
-      // this forces the browser to read the pixels synchronously before any clear.
-      const captureCanvas = document.createElement('canvas');
-      captureCanvas.width  = mapCanvas.width;
-      captureCanvas.height = mapCanvas.height;
-      const ctx2d = captureCanvas.getContext('2d');
-
-      // Force one more repaint and read pixels within the same task
-      window.map.triggerRepaint();
-      // Tiny sync delay — give GPU a tick to flush
-      await new Promise(r => setTimeout(r, 50));
-      await new Promise(r => requestAnimationFrame(r));
-
-      ctx2d.drawImage(mapCanvas, 0, 0);
-      const rawPng = captureCanvas.toDataURL('image/png');
-      console.log('[PDF] Canvas capture (via 2D copy) length:', rawPng.length);
-
-      if (rawPng && rawPng.length > 20000) {
-        routeMapPng = rawPng;
-        console.log('[PDF] Route map canvas capture OK ✓');
-      } else {
-        // Last resort: try direct toDataURL on the WebGL canvas
-        console.warn('[PDF] 2D copy appears blank (' + (rawPng?.length||0) + ' bytes). Trying direct toDataURL...');
-        window.map.triggerRepaint();
-        await new Promise(r => setTimeout(r, 300));
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const directPng = window.map.getCanvas().toDataURL('image/png');
-        console.log('[PDF] Direct toDataURL length:', directPng?.length);
-        if (directPng && directPng.length > 20000) {
-          routeMapPng = directPng;
-          console.log('[PDF] Route map direct capture OK ✓');
-        } else {
-          console.warn('[PDF] Both capture methods returned blank — SVG fallback will be used');
-        }
-      }
+    // Simplify: start at tolerance 0.3°, increase until ≤ 70 points
+    let simplified = wpCoords;
+    for (const tol of [0.1, 0.3, 0.6, 1.0, 1.5, 2.0]) {
+      simplified = _dpSimplify(wpCoords, tol);
+      if (simplified.length <= 70) break;
     }
-  } catch(mapErr) {
-    console.warn('[PDF] Map canvas capture failed:', mapErr);
-  } finally {
-    // Always: restore wind barb overlay visibility and release capture lock
-    if (window._windBarbsEl) window._windBarbsEl.style.display = '';
-    window._pdfCaptureInProgress = false;
-    // If sea condition was deferred, load it now that capture is done
-    if (window._seaCondPendingAfterCapture) {
-      window._seaCondPendingAfterCapture = false;
-      setTimeout(() => loadSeaConditionOverlay(), 200);
+    // Hard cap: evenly subsample if still too many
+    if (simplified.length > 70) {
+      const step = Math.ceil(simplified.length / 68);
+      const sub = simplified.filter((_, i) => i % step === 0);
+      if (sub[sub.length-1] !== simplified[simplified.length-1]) sub.push(simplified[simplified.length-1]);
+      simplified = sub;
     }
+    console.log('[PDF] Static map: simplified route to', simplified.length, 'points from', wpCoords.length);
+
+    // Path parameter: strokeColor|strokeWidth|lon,lat|lon,lat|...
+    // MapTiler uses: fill:COLOR|stroke:COLOR|width:N|lon,lat|...
+    // Colors are 6-char hex without #
+    const pathCoords  = simplified.map(([lo, la]) => `${lo.toFixed(4)},${la.toFixed(4)}`).join('|');
+    const pathParam   = `stroke:0ea5e9|width:3|fill:00000000|${pathCoords}`;
+
+    // Origin marker (green) and destination marker (red)
+    const [oLon, oLat] = wpCoords[0];
+    const [dLon, dLat] = wpCoords[wpCoords.length - 1];
+    const markerOrigin = `${oLon.toFixed(4)},${oLat.toFixed(4)},pin-s-circle+16a34a`;
+    const markerDest   = `${dLon.toFixed(4)},${dLat.toFixed(4)},pin-s-circle+dc2626`;
+
+    // Use 'auto' positioning so MapTiler fits the bounds automatically
+    // Style: streets-v2-dark matches the app's dark theme
+    const W = 1200, H = 500;
+    const url = new URL(
+      `https://api.maptiler.com/maps/streets-v2-dark/static/auto/${W}x${H}.png`
+    );
+    url.searchParams.set('key',    MAPTILER_KEY);
+    url.searchParams.set('path',   pathParam);
+    url.searchParams.set('marker', markerOrigin);
+    url.searchParams.set('marker', markerDest);   // append second marker
+    url.searchParams.set('padding', '40');
+
+    console.log('[PDF] Fetching static map, URL length:', url.toString().length);
+
+    // Fetch as blob then convert to data URL (avoids CORS issues with img src)
+    const resp = await fetch(url.toString());
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => resp.status);
+      throw new Error(`Static Maps API ${resp.status}: ${errText}`);
+    }
+    const blob    = await resp.blob();
+    const dataUrl = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload  = () => res(reader.result);
+      reader.onerror = () => rej(new Error('FileReader failed'));
+      reader.readAsDataURL(blob);
+    });
+
+    if (dataUrl && dataUrl.length > 5000) {
+      routeMapPng = dataUrl;
+      console.log('[PDF] Static map fetch OK ✓ (' + Math.round(dataUrl.length / 1024) + ' KB)');
+    } else {
+      throw new Error('Static map response too small: ' + dataUrl?.length);
+    }
+  } catch (staticErr) {
+    console.error('[PDF] Static Maps API failed:', staticErr.message);
+    // routeMapPng stays null — route chart section omitted from PDF
   }
 
   showProgress({
@@ -21345,17 +21303,14 @@ async function generateVoyageReport(){
   </div>
   ${hasWeatherData ? buildHeavyWeatherRiskBlock(wxResults, orderedKn) : ''}
 
-  ${(routeMapPng || routeMapSVG) ? `
+  ${routeMapPng ? `
   <div style="margin-top:14px;border-radius:10px;overflow:hidden;border:1px solid #d0d7e3;page-break-inside:avoid;box-shadow:0 2px 8px rgba(12,22,40,.08)">
     <div style="background:#0c1628;padding:7px 14px;display:flex;align-items:center;justify-content:space-between">
       <span style="font-size:10px;font-weight:700;color:#60a5fa;letter-spacing:.8px;text-transform:uppercase">🗺 Route Chart</span>
       <span style="font-size:9px;color:#94a3b8">${originName} → ${destName} · ${Math.round(dist).toLocaleString()} nm</span>
     </div>
     <div style="line-height:0">
-      ${routeMapPng
-        ? `<img src="${routeMapPng}" style="width:100%;display:block" alt="Route map"/>`
-        : `<div style="background:#0c1829">${routeMapSVG}</div>`
-      }
+      <img src="${routeMapPng}" style="width:100%;display:block" alt="Route map"/>
     </div>
   </div>` : ''}
 
