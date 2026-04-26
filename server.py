@@ -1519,6 +1519,96 @@ def _is_land_simple(lat, lon):
     return False
 
 
+def _build_tile_land_mask(tile_canvas, tx_min, ty_min, canvas_w, canvas_h,
+                          TILE_SIZE, min_lon, max_lon, min_lat, max_lat,
+                          lats, lons, lon_to_tx_fn, lat_to_ty_fn, z):
+    """
+    Build a land mask at DB-grid resolution using the Esri Ocean tile colours.
+    Esri Ocean land pixels are warm tones (R>G, R>B, R>150).
+    Ocean pixels are cool blue tones (B>R, B>G).
+    Returns a 2D bool array (nla x nlo): True = land, False = ocean.
+    """
+    import numpy as np
+    arr = np.array(tile_canvas.convert('RGB'))   # (canvas_h, canvas_w, 3)
+
+    nla, nlo = len(lats), len(lons)
+    land_mask = np.zeros((nla, nlo), dtype=bool)
+
+    for i, la in enumerate(lats):
+        for j, lo in enumerate(lons):
+            # Map grid cell centre → pixel on tile canvas
+            px = int((lon_to_tx_fn(lo, z) - tx_min) * TILE_SIZE)
+            py = int((lat_to_ty_fn(la, z) - ty_min) * TILE_SIZE)
+            px = max(0, min(canvas_w - 1, px))
+            py = max(0, min(canvas_h - 1, py))
+            r, g, b = int(arr[py, px, 0]), int(arr[py, px, 1]), int(arr[py, px, 2])
+            # Esri Ocean: land = warm beige/green (R high, B low relative to R)
+            # Ocean = cool blue (B dominant)
+            is_land = (r > b + 30) and (r > 130)
+            land_mask[i, j] = is_land
+
+    return land_mask
+
+
+def _fetch_marine_gap_fill(missing_cells, timestamp_iso):
+    """
+    Fetch wave_height from Open-Meteo marine API for grid cells missing from DB.
+    missing_cells: list of (lat, lon) tuples (ocean cells with no DB data).
+    timestamp_iso: ISO8601 string e.g. '2026-04-29T06:00:00Z'
+    Returns dict: {(lat, lon): wave_height_m} for successfully fetched cells.
+    """
+    import concurrent.futures, datetime
+    import requests as req_lib
+
+    if not missing_cells:
+        return {}
+
+    # Parse date from timestamp
+    try:
+        dt = datetime.datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00'))
+        date_str = dt.strftime('%Y-%m-%d')
+        target_hour = dt.hour
+    except Exception:
+        return {}
+
+    results = {}
+
+    def fetch_one(cell):
+        lat, lon = cell
+        # Normalise lon to -180..180 for Open-Meteo
+        nlon = lon if lon <= 180 else lon - 360
+        url = (
+            f'https://marine-api.open-meteo.com/v1/marine'
+            f'?latitude={lat:.3f}&longitude={nlon:.3f}'
+            f'&hourly=wave_height'
+            f'&timezone=UTC'
+            f'&start_date={date_str}&end_date={date_str}'
+        )
+        try:
+            r = req_lib.get(url, timeout=6)
+            if r.status_code == 200:
+                d = r.json()
+                wh = d.get('hourly', {}).get('wave_height', [None] * 24)
+                val = wh[target_hour] if target_hour < len(wh) else None
+                if val is not None:
+                    return cell, float(val)
+        except Exception:
+            pass
+        return cell, None
+
+    # Limit concurrency to avoid hammering the API
+    # Cap at 80 cells — beyond that, nearest-neighbour interpolation is fine
+    cells_to_fetch = missing_cells[:80]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+        for cell, val in pool.map(fetch_one, cells_to_fetch):
+            if val is not None:
+                results[cell] = val
+
+    log.info('[sea-cond] gap-fill: fetched %d/%d cells from Open-Meteo marine',
+             len(results), len(cells_to_fetch))
+    return results
+
+
 def generate_sea_condition_png(
     bbox, timestamp_iso, waypoints=None,
     vessel_pos=None, width_px=1200, height_px=680,
@@ -1526,8 +1616,14 @@ def generate_sea_condition_png(
 ):
     """
     Render a professional sea condition chart PNG.
-    Layer stack: Esri Ocean tiles → wave heatmap (ocean-only) →
-                 isobars (ocean-only) → route/vessel → title/colorbar.
+
+    Layer stack:
+      1. Esri Ocean tile basemap
+      2. Tile-pixel land mask (pixel-accurate, from actual rendered tiles)
+      3. Wave heatmap — ocean only, DB data + Open-Meteo gap-fill
+      4. Isobars — ocean only
+      5. Route + vessel
+      6. Title + colorbar
     """
     if not HAS_SCIPY:
         raise RuntimeError("scipy/matplotlib not installed")
@@ -1539,12 +1635,13 @@ def generate_sea_condition_png(
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
-    from scipy.ndimage import gaussian_filter
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+    from scipy.ndimage import gaussian_filter, distance_transform_edt
 
     min_lon, min_lat, max_lon, max_lat = bbox
 
-    # ── 1. Fetch + build grid ─────────────────────────────────────────────────
+    # ── 1. Fetch + build DB grid ──────────────────────────────────────────────
     rows, snap_dt = _fetch_mslp_wind_grid(bbox, timestamp_iso)
     if not rows:
         raise RuntimeError(f"No data in DB for {timestamp_iso} / {bbox}")
@@ -1553,15 +1650,7 @@ def generate_sea_condition_png(
     nla, nlo = len(lats), len(lons)
     LON_G, LAT_G = np.meshgrid(lons, lats)
 
-    # Land mask at DB grid resolution
-    land_mask_2d = np.zeros((nla, nlo), dtype=bool)
-    for i, la in enumerate(lats):
-        for j, lo in enumerate(lons):
-            lo360 = lo + 360 if lo < 0 else lo
-            land_mask_2d[i, j] = _is_land_simple(float(la), float(lo360))
-    ocean_mask_2d = ~land_mask_2d
-
-    # ── 2. Stitch tile basemap ────────────────────────────────────────────────
+    # ── 2. Stitch Esri Ocean tile basemap ────────────────────────────────────
     TILE_PROVIDERS = [
         'https://services.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
         'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
@@ -1632,31 +1721,64 @@ def generate_sea_condition_png(
             (lat_to_ty(lat, z) - ty_min) * TILE_SIZE,
         )
 
-    # ── 3. Wave heatmap on transparent layer ──────────────────────────────────
-    # PM wave estimate; cap at 15m to match reference colour scale
-    vms = wsp_s * 0.5144
-    wave_est = np.clip(0.0248 * vms**2, 0, 15)
+    # ── 3. Pixel-accurate land mask from tile colours ─────────────────────────
+    # Esri Ocean tiles: land = warm beige/green (R > B+30, R > 130)
+    #                   ocean = cool blue (B dominant)
+    # This is pixel-perfect — uses exactly what's rendered, handles all islands.
+    tile_arr = np.array(tile_canvas.convert('RGB'))   # (H, W, 3)
+    land_mask_2d  = np.zeros((nla, nlo), dtype=bool)
+    ocean_mask_2d = np.zeros((nla, nlo), dtype=bool)
 
-    # Key fix for rectangular gap artefacts:
-    # The DB only has ocean points — missing cells (land + edge gaps) are NaN.
-    # We fill ALL NaNs with nearest-ocean values, smooth, THEN re-apply the
-    # ocean mask so land shows transparent. This removes hard rectangle edges.
-    from scipy.ndimage import distance_transform_edt
-    wave_raw = np.where(ocean_mask_2d, wave_est, np.nan)
-    nan_mask = np.isnan(wave_raw)
-    if nan_mask.any():
+    for i, la in enumerate(lats):
+        for j, lo in enumerate(lons):
+            px = int((lon_to_tx(lo, z) - tx_min) * TILE_SIZE)
+            py = int((lat_to_ty(la, z) - ty_min) * TILE_SIZE)
+            px = max(0, min(canvas_w - 1, px))
+            py = max(0, min(canvas_h - 1, py))
+            r, g, b = int(tile_arr[py, px, 0]), int(tile_arr[py, px, 1]), int(tile_arr[py, px, 2])
+            # Land: warm tone — red channel dominates over blue
+            is_land = (r > b + 30) and (r > 130)
+            land_mask_2d[i, j]  = is_land
+            ocean_mask_2d[i, j] = not is_land
+
+    # ── 4. Wave data: DB + Open-Meteo gap-fill for missing ocean cells ─────────
+    # PM estimate from DB wind speed
+    vms = wsp_s * 0.5144
+    wave_db = np.clip(0.0248 * vms**2, 0, 15)
+
+    # Identify missing ocean cells: ocean but wsp_raw is NaN (not in DB)
+    db_missing = np.isnan(wsp_raw) & ocean_mask_2d
+    missing_cells = [(float(lats[i]), float(lons[j]))
+                     for i in range(nla) for j in range(nlo)
+                     if db_missing[i, j]]
+
+    # Fetch real wave height from Open-Meteo for missing ocean cells
+    gap_data = _fetch_marine_gap_fill(missing_cells, timestamp_iso)
+
+    # Build combined wave grid
+    wave_grid = wave_db.copy()
+    for (la, lo), wh in gap_data.items():
+        i_idx = round((la - lats[0]) / (lats[1] - lats[0])) if len(lats) > 1 else 0
+        j_idx = round((lo - lons[0]) / (lons[1] - lons[0])) if len(lons) > 1 else 0
+        if 0 <= i_idx < nla and 0 <= j_idx < nlo:
+            wave_grid[i_idx, j_idx] = min(wh, 15.0)
+
+    # For still-missing ocean cells: nearest-neighbour fill from known ocean data
+    wave_ocean_raw = np.where(ocean_mask_2d, wave_grid, np.nan)
+    nan_mask = np.isnan(wave_ocean_raw)
+    if nan_mask.any() and (~nan_mask).any():
         ind = distance_transform_edt(nan_mask, return_distances=False, return_indices=True)
-        wave_filled = wave_raw.copy()
-        wave_filled[nan_mask] = wave_raw[tuple([idx[nan_mask] for idx in ind])]
-        # Handle remaining NaNs (all-NaN rows/cols at edges)
+        wave_filled = wave_ocean_raw.copy()
+        wave_filled[nan_mask] = wave_ocean_raw[tuple([idx[nan_mask] for idx in ind])]
         wave_filled = np.nan_to_num(wave_filled, nan=0.0)
     else:
-        wave_filled = wave_raw.copy()
-    wave_smooth = gaussian_filter(wave_filled, sigma=1.5)
-    # Re-apply ocean mask — land stays NaN → transparent in colormap
-    wave_ocean = np.where(ocean_mask_2d, wave_smooth, np.nan)
+        wave_filled = np.nan_to_num(wave_ocean_raw, nan=0.0)
 
-    # Render wave on transparent figure aligned to tile canvas geo extent
+    wave_smooth = gaussian_filter(wave_filled, sigma=1.5)
+    # Final mask: land = NaN (transparent), ocean = smoothed wave height
+    wave_final = np.where(ocean_mask_2d, wave_smooth, np.nan)
+
+    # ── 5. Wave heatmap on transparent layer ──────────────────────────────────
     fig_w, fig_h = canvas_w / 100, canvas_h / 100
     fig_wave, ax_wave = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
     fig_wave.patch.set_alpha(0)
@@ -1667,46 +1789,49 @@ def generate_sea_condition_png(
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     cmap_wave = _WAVE_CMAP.copy()
-    cmap_wave.set_bad((0, 0, 0, 0))   # transparent for NaN (land + no-data)
+    cmap_wave.set_bad((0, 0, 0, 0))   # NaN (land) → fully transparent
 
     ax_wave.imshow(
-        wave_ocean,
+        wave_final,
         extent=[min_lon, max_lon, min_lat, max_lat],
         origin='lower', aspect='auto',
         cmap=cmap_wave, vmin=0, vmax=15,
-        interpolation='bilinear', alpha=0.80,
+        interpolation='bilinear', alpha=0.78,
     )
+
+    # Save wave layer at EXACT canvas pixel dimensions (no bbox_inches='tight')
     buf_wave = _io.BytesIO()
     fig_wave.savefig(buf_wave, format='png', dpi=100, transparent=True,
-                     bbox_inches='tight', pad_inches=0)
+                     bbox_inches=None, pad_inches=0)
     plt.close(fig_wave)
     buf_wave.seek(0)
-    wave_layer = _Image.open(buf_wave).convert('RGBA').resize((canvas_w, canvas_h), _Image.LANCZOS)
+    wave_layer_raw = _Image.open(buf_wave).convert('RGBA')
+    # Force exact canvas size to avoid resize artefacts
+    if wave_layer_raw.size != (canvas_w, canvas_h):
+        wave_layer_raw = wave_layer_raw.resize((canvas_w, canvas_h), _Image.LANCZOS)
 
     combined = tile_canvas.copy()
-    combined.paste(wave_layer, (0, 0), wave_layer)
+    combined.paste(wave_layer_raw, (0, 0), wave_layer_raw)
 
-    # ── 4. Isobar overlay — ocean-only, transparent figure ───────────────────
+    # ── 6. Isobar overlay — ocean-only ────────────────────────────────────────
     mslp_data = mslp_raw[~np.isnan(mslp_raw)]
     if len(mslp_data) >= 4:
         p_min = int(_math.floor(np.nanmin(mslp_data) / 4) * 4)
         p_max = int(_math.ceil( np.nanmax(mslp_data) / 4) * 4)
         levels = list(range(p_min, p_max + 4, 4))
 
-        # Fill + smooth MSLP for continuous contours, then mask land
-        mslp_nan = mslp_raw.copy().astype(float)
-        mslp_nan[land_mask_2d] = np.nan
-        mslp_nan_mask = np.isnan(mslp_nan)
-        if mslp_nan_mask.any():
-            ind2 = distance_transform_edt(mslp_nan_mask, return_distances=False, return_indices=True)
-            mslp_filled = mslp_nan.copy()
-            mslp_filled[mslp_nan_mask] = mslp_nan[tuple([idx[mslp_nan_mask] for idx in ind2])]
-            mslp_filled = np.nan_to_num(mslp_filled, nan=float(np.nanmean(mslp_data)))
+        # Fill + smooth MSLP, then re-mask land to NaN → contours stop at coast
+        mslp_for_fill = np.where(ocean_mask_2d, mslp_raw, np.nan)
+        nan_m = np.isnan(mslp_for_fill)
+        if nan_m.any() and (~nan_m).any():
+            ind2 = distance_transform_edt(nan_m, return_distances=False, return_indices=True)
+            mslp_f = mslp_for_fill.copy()
+            mslp_f[nan_m] = mslp_for_fill[tuple([idx[nan_m] for idx in ind2])]
+            mslp_f = np.nan_to_num(mslp_f, nan=float(np.nanmean(mslp_data)))
         else:
-            mslp_filled = mslp_nan.copy()
-        mslp_for_contour = gaussian_filter(mslp_filled, sigma=1.2)
-        # Re-mask land to NaN so contours don't cross land
-        mslp_ocean = np.where(ocean_mask_2d, mslp_for_contour, np.nan)
+            mslp_f = np.nan_to_num(mslp_for_fill, nan=float(np.nanmean(mslp_data) if len(mslp_data) else 1013))
+        mslp_smooth_contour = gaussian_filter(mslp_f, sigma=1.2)
+        mslp_ocean = np.where(ocean_mask_2d, mslp_smooth_contour, np.nan)
 
         fig_iso, ax_iso = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
         fig_iso.patch.set_alpha(0)
@@ -1717,33 +1842,32 @@ def generate_sea_condition_png(
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
         for level in levels:
-            # Bold, visible isobars matching professional reference style
-            if   level <= 996:  col, lw, ls = '#cc0022', 1.8, 'solid'
-            elif level <= 1004: col, lw, ls = '#ee4466', 1.3, 'solid'
-            elif level <= 1016: col, lw, ls = '#555566', 1.1, 'solid'
-            elif level <= 1024: col, lw, ls = '#444455', 1.2, 'solid'
-            else:               col, lw, ls = '#333344', 1.4, 'solid'
+            if   level <= 996:  col, lw = '#cc0022', 1.8
+            elif level <= 1004: col, lw = '#ee4466', 1.3
+            elif level <= 1016: col, lw = '#555566', 1.1
+            elif level <= 1024: col, lw = '#444455', 1.2
+            else:               col, lw = '#333344', 1.4
             try:
                 cs = ax_iso.contour(LON_G, LAT_G, mslp_ocean,
                                     levels=[level], colors=[col],
-                                    linewidths=lw, linestyles=ls, alpha=0.92)
-                # Label every 4 hPa for readability
+                                    linewidths=lw, alpha=0.92)
                 if level % 4 == 0:
                     ax_iso.clabel(cs, fmt='%d', fontsize=8.5, colors=[col],
-                                  inline=True, inline_spacing=4,
-                                  fontproperties={'weight': 'bold'})
+                                  inline=True, inline_spacing=4)
             except Exception:
                 pass
 
         buf_iso = _io.BytesIO()
         fig_iso.savefig(buf_iso, format='png', dpi=100, transparent=True,
-                        bbox_inches='tight', pad_inches=0)
+                        bbox_inches=None, pad_inches=0)
         plt.close(fig_iso)
         buf_iso.seek(0)
-        iso_layer = _Image.open(buf_iso).convert('RGBA').resize((canvas_w, canvas_h), _Image.LANCZOS)
+        iso_layer = _Image.open(buf_iso).convert('RGBA')
+        if iso_layer.size != (canvas_w, canvas_h):
+            iso_layer = iso_layer.resize((canvas_w, canvas_h), _Image.LANCZOS)
         combined.paste(iso_layer, (0, 0), iso_layer)
 
-    # ── 5. Route + vessel drawn with PIL ─────────────────────────────────────
+    # ── 7. Route + vessel ─────────────────────────────────────────────────────
     draw = _ImageDraw.Draw(combined, 'RGBA')
 
     if waypoints and len(waypoints) >= 2:
@@ -1751,40 +1875,15 @@ def generate_sea_condition_png(
         disp_wps = waypoints[::step_wp]
         if waypoints[-1] not in disp_wps:
             disp_wps = list(disp_wps) + [waypoints[-1]]
-        route_px = [(int(x), int(y)) for x, y in
-                    (geo_to_px(normLon180(p[0]), p[1]) for p in disp_wps)]
+        route_px = [(int(geo_to_px(normLon180(p[0]), p[1])[0]),
+                     int(geo_to_px(normLon180(p[0]), p[1])[1])) for p in disp_wps]
         if len(route_px) >= 2:
-            # Thin dashed-style: draw full line then overdraw gaps
-            draw.line(route_px, fill=(0, 220, 130, 60),  width=6)   # glow
-            draw.line(route_px, fill=(0, 220, 130, 200), width=2)   # main
-            # Dashes: overdraw with transparent gaps every ~15px
-            seg_len = 12; gap_len = 8
-            acc = 0
-            drawing = True
-            for i in range(1, len(route_px)):
-                x0, y0 = route_px[i-1]; x1, y1 = route_px[i]
-                seg = _math.hypot(x1-x0, y1-y0)
-                if seg < 1: continue
-                dx, dy = (x1-x0)/seg, (y1-y0)/seg
-                pos = 0.0
-                while pos < seg:
-                    remaining = seg - pos
-                    chunk = seg_len - acc if drawing else gap_len - acc
-                    chunk = min(chunk, remaining)
-                    if not drawing:
-                        # overdraw with basemap color to simulate gap
-                        draw.line([
-                            (int(x0 + dx*(pos)), int(y0 + dy*(pos))),
-                            (int(x0 + dx*(pos+chunk)), int(y0 + dy*(pos+chunk)))
-                        ], fill=(0, 0, 0, 0), width=3)
-                    acc += chunk; pos += chunk
-                    if (drawing and acc >= seg_len) or (not drawing and acc >= gap_len):
-                        drawing = not drawing; acc = 0
-
+            draw.line(route_px, fill=(0, 220, 130, 50),  width=6)   # glow
+            draw.line(route_px, fill=(0, 220, 130, 200), width=2)   # line
         ox, oy = route_px[0]
-        draw.ellipse([ox-9, oy-9, ox+9, oy+9], fill=(0,210,120,255), outline=(255,255,255,220), width=2)
         dx2, dy2 = route_px[-1]
-        draw.ellipse([dx2-9, dy2-9, dx2+9, dy2+9], fill=(220,40,60,255), outline=(255,255,255,220), width=2)
+        draw.ellipse([ox-9,  oy-9,  ox+9,  oy+9],   fill=(0,210,120,255),  outline=(255,255,255,220), width=2)
+        draw.ellipse([dx2-9, dy2-9, dx2+9, dy2+9],  fill=(220,40,60,255),  outline=(255,255,255,220), width=2)
 
     if vessel_pos:
         vlo, vla = normLon180(vessel_pos[0]), vessel_pos[1]
@@ -1793,40 +1892,31 @@ def generate_sea_condition_png(
         draw.polygon([(vx,vy-s),(vx+s,vy),(vx,vy+s),(vx-s,vy)],
                      fill=(255,221,0,255), outline=(20,30,50,255))
 
-    # ── 6. Crop to bbox ───────────────────────────────────────────────────────
+    # ── 8. Crop to bbox ───────────────────────────────────────────────────────
     cx0, cy1 = geo_to_px(min_lon, min_lat)
     cx1, cy0 = geo_to_px(max_lon, max_lat)
     cx0 = max(0, int(cx0)); cx1 = min(canvas_w, int(cx1))
     cy0 = max(0, int(cy0)); cy1 = min(canvas_h, int(cy1))
-    cropped = combined.crop((cx0, cy0, cx1, cy1))
-
-    chart_h_px = height_px - 90   # reserve 90px for title bar + colorbar
+    cropped  = combined.crop((cx0, cy0, cx1, cy1))
+    chart_h_px = height_px - 90
     chart_img  = cropped.resize((width_px, chart_h_px), _Image.LANCZOS).convert('RGB')
     chart_arr  = np.array(chart_img)
 
-    # ── 7. Final figure: embed chart + colorbar + title ───────────────────────
-    # Use ScalarMappable for a proper, visible colorbar
-    from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import Normalize
-
+    # ── 9. Final figure: chart + title + colorbar ─────────────────────────────
     fig_final = plt.figure(figsize=(width_px/100, height_px/100), dpi=100,
                            facecolor='#0c1829')
-    # Axes layout: chart takes most space, colorbar strip at bottom
-    ax_chart = fig_final.add_axes([0, 90/height_px, 1, (height_px-90)/height_px])
+    ax_chart = fig_final.add_axes([0, 90/height_px, 1, chart_h_px/height_px])
     ax_chart.imshow(chart_arr, aspect='auto', interpolation='lanczos')
     ax_chart.axis('off')
 
-    # Title — two lines, left-aligned, white
+    # Fix 3: title no longer mentions Wind
     ts_label = snap_dt.strftime('%d %b %Y, %H:%M UTC')
-    title_line1 = 'Sea Condition — Wave Height, Wind & Pressure'
+    title_line1 = 'Sea Condition — Wave Height & Pressure'
     title_line2 = ts_label + ((' — ' + title_suffix) if title_suffix else '')
     ax_chart.set_title(title_line1 + '\n' + title_line2,
-                       fontsize=9, color='#e2e8f0', pad=5, loc='left',
-                       fontweight='bold')
+                       fontsize=9, color='#e2e8f0', pad=5, loc='left', fontweight='bold')
 
-    # Colorbar using ScalarMappable (always works, no imshow reference needed)
     ax_cbar = fig_final.add_axes([0.05, 0.01, 0.90, 0.06])
-    ax_cbar.set_facecolor('#0c1829')
     sm = ScalarMappable(cmap=_WAVE_CMAP, norm=Normalize(vmin=0, vmax=15))
     sm.set_array([])
     cbar = fig_final.colorbar(sm, cax=ax_cbar, orientation='horizontal')
