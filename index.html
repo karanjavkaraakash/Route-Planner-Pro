@@ -20997,6 +20997,10 @@ async function generateVoyageReport(){
   try {
     if (window.map && typeof window.map.getCanvas === 'function') {
       // Fit map to route bounds (instant, no animation)
+      // Ensure canvas dimensions match current container size (can be stale after tab switches)
+      window.map.resize();
+      await new Promise(r => setTimeout(r, 50)); // let resize propagate
+
       if (wpCoords && wpCoords.length >= 2) {
         let minLon=180, maxLon=-180, minLat=90, maxLat=-90;
         wpCoords.forEach(([lo,la]) => {
@@ -21037,35 +21041,53 @@ async function generateVoyageReport(){
 
       // Force a WebGL redraw before reading pixels
       window.map.triggerRepaint();
+      // Two rAFs: first lets the browser process the repaint request,
+      // second ensures the GPU has flushed to the framebuffer.
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
       const mapCanvas = window.map.getCanvas();
-      // Sanity-check canvas has non-zero dimensions
       if (!mapCanvas.width || !mapCanvas.height) {
         throw new Error(`Canvas dimensions invalid: ${mapCanvas.width}×${mapCanvas.height}`);
       }
+      console.log('[PDF] MapLibre canvas size:', mapCanvas.width, '×', mapCanvas.height);
 
-      const rawPng = mapCanvas.toDataURL('image/png');
-      console.log('[PDF] Canvas capture raw length:', rawPng.length,
-                  'canvas size:', mapCanvas.width, '×', mapCanvas.height);
+      // ── Robust capture: copy WebGL canvas → 2D canvas → PNG ────────────────
+      // Direct toDataURL() on a WebGL canvas can return a blank image because
+      // the WebGL framebuffer is read AFTER the browser compositor has already
+      // cleared it (even with preserveDrawingBuffer:true, some drivers clear on
+      // context switch). The fix: draw the WebGL canvas into a 2D canvas first —
+      // this forces the browser to read the pixels synchronously before any clear.
+      const captureCanvas = document.createElement('canvas');
+      captureCanvas.width  = mapCanvas.width;
+      captureCanvas.height = mapCanvas.height;
+      const ctx2d = captureCanvas.getContext('2d');
 
-      // Validate: a blank/empty canvas produces a ~2-3 KB data URL; real map is 200 KB+
+      // Force one more repaint and read pixels within the same task
+      window.map.triggerRepaint();
+      // Tiny sync delay — give GPU a tick to flush
+      await new Promise(r => setTimeout(r, 50));
+      await new Promise(r => requestAnimationFrame(r));
+
+      ctx2d.drawImage(mapCanvas, 0, 0);
+      const rawPng = captureCanvas.toDataURL('image/png');
+      console.log('[PDF] Canvas capture (via 2D copy) length:', rawPng.length);
+
       if (rawPng && rawPng.length > 20000) {
         routeMapPng = rawPng;
         console.log('[PDF] Route map canvas capture OK ✓');
       } else {
-        console.warn('[PDF] Canvas appears blank (' + (rawPng?.length||0) + ' bytes). ' +
-                     'Retrying with triggerRepaint...');
-        // One more attempt after explicit repaint
+        // Last resort: try direct toDataURL on the WebGL canvas
+        console.warn('[PDF] 2D copy appears blank (' + (rawPng?.length||0) + ' bytes). Trying direct toDataURL...');
         window.map.triggerRepaint();
-        await new Promise(r => setTimeout(r, 500));
-        const retryPng = window.map.getCanvas().toDataURL('image/png');
-        if (retryPng && retryPng.length > 20000) {
-          routeMapPng = retryPng;
-          console.log('[PDF] Route map canvas capture OK on retry ✓');
+        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const directPng = window.map.getCanvas().toDataURL('image/png');
+        console.log('[PDF] Direct toDataURL length:', directPng?.length);
+        if (directPng && directPng.length > 20000) {
+          routeMapPng = directPng;
+          console.log('[PDF] Route map direct capture OK ✓');
         } else {
-          console.warn('[PDF] Canvas still blank after retry (' + (retryPng?.length||0) +
-                       ' bytes) — SVG fallback will be used');
+          console.warn('[PDF] Both capture methods returned blank — SVG fallback will be used');
         }
       }
     }
