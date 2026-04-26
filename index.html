@@ -20993,12 +20993,13 @@ async function generateVoyageReport(){
         if (window.map.isStyleLoaded()) { window.map.once('idle', done); }
         else { setTimeout(done, 2000); }
       });
-      routeMapPng = window.map.getCanvas().toDataURL('image/png');
-      if (routeMapPng && routeMapPng.length > 10000) {
-        console.log('[PDF] Route map captured from MapLibre canvas:', routeMapPng.length, 'bytes');
+      const rawPng = window.map.getCanvas().toDataURL('image/png');
+      // Reject truly blank canvas (< 5KB = empty white/black image)
+      if (rawPng && rawPng.length > 5000) {
+        routeMapPng = rawPng;
+        console.log('[PDF] Route map captured from MapLibre canvas:', rawPng.length, 'bytes');
       } else {
-        routeMapPng = null; // reject blank captures
-        console.warn('[PDF] Canvas capture returned blank, falling back to SVG');
+        console.warn('[PDF] Canvas returned blank image (' + (rawPng?.length||0) + ' bytes), using SVG fallback');
       }
     }
   } catch(mapErr) {
