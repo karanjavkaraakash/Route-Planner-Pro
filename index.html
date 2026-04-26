@@ -21023,22 +21023,21 @@ async function generateVoyageReport(){
     const markerOrigin = `${oLon.toFixed(4)},${oLat.toFixed(4)},pin-s-circle+16a34a`;
     const markerDest   = `${dLon.toFixed(4)},${dLat.toFixed(4)},pin-s-circle+dc2626`;
 
-    // Use 'auto' positioning so MapTiler fits the bounds automatically
-    // Style: streets-v2-dark matches the app's dark theme
-    const W = 1200, H = 500;
-    const url = new URL(
-      `https://api.maptiler.com/maps/streets-v2-dark/static/auto/${W}x${H}.png`
-    );
-    url.searchParams.set('key',    MAPTILER_KEY);
-    url.searchParams.set('path',   pathParam);
-    url.searchParams.set('marker', markerOrigin);
-    url.searchParams.set('marker', markerDest);   // append second marker
-    url.searchParams.set('padding', '40');
-
-    console.log('[PDF] Fetching static map, URL length:', url.toString().length);
-
-    // Fetch as blob then convert to data URL (avoids CORS issues with img src)
-    const resp = await fetch(url.toString());
+    // Proxy through server.py — avoids MapTiler API key domain restrictions
+    // that block direct browser→MapTiler Static Maps calls (403).
+    console.log('[PDF] Fetching static map via server proxy...');
+    const resp = await fetch('/api/static-map', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path:    pathParam,
+        markers: [markerOrigin, markerDest],
+        width:   1200,
+        height:  500,
+        style:   'streets-v2-dark',
+        padding: 40,
+      }),
+    });
     if (!resp.ok) {
       const errText = await resp.text().catch(() => resp.status);
       throw new Error(`Static Maps API ${resp.status}: ${errText}`);
