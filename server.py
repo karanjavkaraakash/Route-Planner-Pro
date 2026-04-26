@@ -1526,212 +1526,307 @@ def generate_sea_condition_png(
 ):
     """
     Render a professional sea condition chart PNG.
-    Elements:
-      - Wave height gradient fill (PM-estimated, ocean only, land masked)
-      - Smooth isobar contour lines (4 hPa interval, colour-coded by pressure)
-      - Route overlay as dashed line with departure/arrival markers
-      - Vessel position marker (optional)
-      - Land fill + coastline outlines
-      - Proper Mercator aspect ratio
+
+    Architecture:
+      1. Stitch Esri Ocean Basemap tiles (same as route chart — real tiles, no API key)
+      2. Render wave heatmap on transparent RGBA layer; land pixels = fully transparent
+      3. Composite wave layer over tile basemap
+      4. Draw isobars on transparent matplotlib figure; composite over result
+      5. Draw route, vessel, graticule labels, title, colorbar on top
+
+    This gives: real map tiles basemap + ocean-only wave overlay + ocean-only isobars.
     """
     if not HAS_SCIPY:
         raise RuntimeError("scipy/matplotlib not installed")
 
+    import io as _io, math as _math, concurrent.futures
     import numpy as np
+    import requests as req_lib
+    from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFilter
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
 
+    min_lon, min_lat, max_lon, max_lat = bbox
+
+    # ── 1. Fetch weather data from DB ─────────────────────────────────────────
     rows, snap_dt = _fetch_mslp_wind_grid(bbox, timestamp_iso)
     if not rows:
-        raise RuntimeError(f"No data in DB for timestamp {timestamp_iso} / bbox {bbox}")
+        raise RuntimeError(f"No data in DB for {timestamp_iso} / {bbox}")
 
     lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s = _build_regular_grid(rows, bbox)
-
     nla, nlo = len(lats), len(lons)
-    min_lon, min_lat, max_lon, max_lat = bbox
-    mid_lat = (min_lat + max_lat) / 2.0
-
-    # ── Figure setup ──────────────────────────────────────────────────────────
-    fig_w = width_px / 100.0
-    fig_h = height_px / 100.0
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
-    fig.patch.set_facecolor('#0c1829')
-    ax.set_facecolor('#0c1829')
-    ax.set_xlim(min_lon, max_lon)
-    ax.set_ylim(min_lat, max_lat)
-
-    # No set_aspect — let the figure dimensions control proportions.
-    # set_aspect() with adjustable='box' shrinks the axes leaving grey borders.
-    # The figsize (width_px x height_px) already controls the output proportions.
-
     LON_G, LAT_G = np.meshgrid(lons, lats)
 
-    # ── 1. Build pixel-level land mask using is_land() ─────────────────────────
-    # Resolution: one mask pixel per 0.5° grid cell (same as DB grid)
+    # ── 2. Stitch Esri Ocean tile basemap ─────────────────────────────────────
+    TILE_PROVIDERS = [
+        'https://services.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    ]
+    TILE_SIZE    = 256
+    TILE_TIMEOUT = 8
+    UA = 'RoutePlannerPro/2.4 (maritime voyage planning)'
+
+    def lon_to_tx(lon, z): return (lon + 180) / 360 * (2 ** z)
+    def lat_to_ty(lat, z):
+        lr = _math.radians(max(-85.05, min(85.05, lat)))
+        return (1 - _math.log(_math.tan(lr) + 1/_math.cos(lr)) / _math.pi) / 2 * (2**z)
+
+    # Pick zoom for ~1200px wide
+    z = 3
+    for zoom in range(2, 7):
+        z = zoom
+        if (lon_to_tx(max_lon, zoom) - lon_to_tx(min_lon, zoom)) * TILE_SIZE >= 900:
+            break
+
+    n_tiles = 2 ** z
+    tx_min = int(_math.floor(lon_to_tx(min_lon, z)))
+    tx_max = int(_math.floor(lon_to_tx(max_lon, z)))
+    ty_min = int(_math.floor(lat_to_ty(max_lat, z)))
+    ty_max = int(_math.floor(lat_to_ty(min_lat, z)))
+    tiles_x = tx_max - tx_min + 1
+    tiles_y = ty_max - ty_min + 1
+    canvas_w = tiles_x * TILE_SIZE
+    canvas_h = tiles_y * TILE_SIZE
+
+    def fetch_tile(args):
+        tx, ty, url_tpl = args
+        url = url_tpl.format(z=z, x=tx % n_tiles, y=ty)
+        try:
+            r = req_lib.get(url, timeout=TILE_TIMEOUT, headers={'User-Agent': UA})
+            if r.status_code == 200 and r.content:
+                return (tx, ty, _Image.open(_io.BytesIO(r.content)).convert('RGBA'))
+        except Exception:
+            pass
+        return (tx, ty, None)
+
+    tile_map = {}
+    for provider in TILE_PROVIDERS:
+        tasks = [(tx, ty, provider)
+                 for ty in range(ty_min, ty_max+1)
+                 for tx in range(tx_min, tx_max+1)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(fetch_tile, tasks))
+        ok = sum(1 for _, _, img in results if img)
+        if ok >= max(1, len(tasks) * 0.5):
+            tile_map = {(tx, ty): img for tx, ty, img in results if img}
+            log.info('[sea-cond-png] tiles OK: %d/%d from %s', ok, len(tasks), provider.split('/')[5])
+            break
+
+    # Stitch tile canvas
+    tile_canvas = _Image.new('RGBA', (canvas_w, canvas_h), (20, 40, 70, 255))
+    for (tx, ty), img in tile_map.items():
+        tile_canvas.paste(img, ((tx-tx_min)*TILE_SIZE, (ty-ty_min)*TILE_SIZE))
+
+    # ── 3. Geo ↔ pixel helpers for the tile canvas ────────────────────────────
+    def geo_to_px_canvas(lon, lat):
+        """Map lon/lat → pixel coords on the stitched tile canvas."""
+        return (
+            (lon_to_tx(lon, z) - tx_min) * TILE_SIZE,
+            (lat_to_ty(lat, z) - ty_min) * TILE_SIZE,
+        )
+
+    # Canvas geographic extent (for matplotlib axes alignment)
+    def tile_nw_lon(tx, z): return tx / (2**z) * 360 - 180
+    def tile_nw_lat(ty, z):
+        n = _math.pi - 2*_math.pi*ty/(2**z)
+        return _math.degrees(_math.atan(_math.sinh(n)))
+
+    canvas_lon_min = tile_nw_lon(tx_min, z)
+    canvas_lon_max = tile_nw_lon(tx_max + 1, z)
+    canvas_lat_max = tile_nw_lat(ty_min, z)
+    canvas_lat_min = tile_nw_lat(ty_max + 1, z)
+
+    # ── 4. Wave heatmap — ocean only, transparent land ────────────────────────
+    # Build land mask at full DB resolution
     land_mask_2d = np.zeros((nla, nlo), dtype=bool)
     for i, la in enumerate(lats):
         for j, lo in enumerate(lons):
-            # Convert -180..180 lon to 0..360 for is_land
             lo360 = lo + 360 if lo < 0 else lo
             land_mask_2d[i, j] = _is_land_simple(float(la), float(lo360))
     ocean_mask_2d = ~land_mask_2d
 
-    # ── 2. Wave height fill — ocean only, land = NaN ─────────────────────────
-    vms = wsp_s * 0.5144  # kts to m/s for PM formula
-    wave_est = np.clip(0.0248 * vms ** 2, 0, 6)
+    # Pierson-Moskowitz wave estimate (kts → m/s → wave height)
+    vms = wsp_s * 0.5144
+    wave_est = np.clip(0.0248 * vms**2, 0, 6)
     wave_ocean = np.where(ocean_mask_2d, wave_est, np.nan)
 
-    cmap = _WAVE_CMAP.copy()
-    cmap.set_bad('#1a2e44')  # land colour for NaN
+    # Render wave heatmap onto a transparent RGBA matplotlib figure
+    # sized to match the tile canvas exactly
+    fig_wave, ax_wave = plt.subplots(figsize=(canvas_w/100, canvas_h/100), dpi=100)
+    fig_wave.patch.set_alpha(0)
+    ax_wave.set_facecolor((0,0,0,0))
+    ax_wave.set_xlim(canvas_lon_min, canvas_lon_max)
+    ax_wave.set_ylim(canvas_lat_min, canvas_lat_max)
+    ax_wave.axis('off')
+    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    # Use imshow for smooth rendering (flip vertically: imshow origin='lower')
-    im = ax.imshow(
+    cmap_wave = _WAVE_CMAP.copy()
+    cmap_wave.set_bad((0, 0, 0, 0))   # NaN (land) = fully transparent
+
+    im_wave = ax_wave.imshow(
         wave_ocean,
         extent=[min_lon, max_lon, min_lat, max_lat],
         origin='lower', aspect='auto',
-        cmap=cmap, vmin=0, vmax=6,
-        interpolation='bilinear', zorder=1, alpha=0.9
+        cmap=cmap_wave, vmin=0, vmax=6,
+        interpolation='bilinear', alpha=0.82,
     )
 
-    # ── 3. Land fill + coastlines via polygon patches ───────────────────────────
-    # Use matplotlib Polygon patches from the coastline data — smooth, not blocky.
-    # This replaces the pixelated land_mask imshow approach.
-    from matplotlib.patches import Polygon as MplPolygon
-    from matplotlib.collections import PatchCollection
+    buf_wave = _io.BytesIO()
+    fig_wave.savefig(buf_wave, format='png', dpi=100, transparent=True, bbox_inches='tight', pad_inches=0)
+    plt.close(fig_wave)
+    buf_wave.seek(0)
+    wave_layer = _Image.open(buf_wave).convert('RGBA').resize((canvas_w, canvas_h), _Image.LANCZOS)
 
-    coastlines = _load_coastlines()
-    land_patches = []
-    coast_lines_x = []
-    coast_lines_y = []
+    # Composite wave over tile basemap
+    combined = tile_canvas.copy()
+    combined.paste(wave_layer, (0, 0), wave_layer)
 
-    for line in coastlines:
-        # Filter to points within extended view
-        pts = [(lo, la) for lo, la in line
-               if min_lon - 15 <= lo <= max_lon + 15 and min_lat - 8 <= la <= max_lat + 8]
-        if len(pts) >= 3:
-            try:
-                patch = MplPolygon(pts, closed=True)
-                land_patches.append(patch)
-            except Exception:
-                pass
-        if len(pts) >= 2:
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            coast_lines_x.append(xs)
-            coast_lines_y.append(ys)
-
-    # Fill land polygons
-    if land_patches:
-        pc = PatchCollection(land_patches, facecolor='#1a2e44',
-                             edgecolor='none', linewidth=0, zorder=2)
-        ax.add_collection(pc)
-
-    # Coastline outlines on top of land fill
-    for xs, ys in zip(coast_lines_x, coast_lines_y):
-        ax.plot(xs, ys, color='#3a5a78', linewidth=0.6, zorder=3,
-                solid_capstyle='round', solid_joinstyle='round')
-
-    # ── 5. Isobar contours ────────────────────────────────────────────────────
+    # ── 5. Isobar overlay — ocean-only, on transparent matplotlib figure ──────
     mslp_data = mslp_raw[~np.isnan(mslp_raw)]
     if len(mslp_data) >= 4:
-        p_min = int(math.floor(np.min(mslp_data) / 4) * 4)
-        p_max = int(math.ceil( np.max(mslp_data) / 4) * 4)
+        p_min = int(_math.floor(np.nanmin(mslp_data) / 4) * 4)
+        p_max = int(_math.ceil( np.nanmax(mslp_data) / 4) * 4)
         levels = list(range(p_min, p_max + 4, 4))
 
+        # Isobar figure — transparent, same pixel dimensions as tile canvas
+        fig_iso, ax_iso = plt.subplots(figsize=(canvas_w/100, canvas_h/100), dpi=100)
+        fig_iso.patch.set_alpha(0)
+        ax_iso.set_facecolor((0, 0, 0, 0))
+        ax_iso.set_xlim(canvas_lon_min, canvas_lon_max)
+        ax_iso.set_ylim(canvas_lat_min, canvas_lat_max)
+        ax_iso.axis('off')
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+        # Mask MSLP over land once — isobars only drawn through ocean cells
+        mslp_ocean = np.where(ocean_mask_2d, mslp_s, np.nan)
+
         for level in levels:
-            if   level <= 996:  col, lw = '#ff2244', 1.3
-            elif level <= 1004: col, lw = '#ff7799', 0.9
-            elif level <= 1012: col, lw = '#999999', 0.7
-            elif level <= 1020: col, lw = '#666666', 0.8
-            else:               col, lw = '#444444', 1.0
+            if   level <= 996:  col, lw = '#ff2244', 1.4
+            elif level <= 1004: col, lw = '#ff7799', 1.0
+            elif level <= 1012: col, lw = '#aaaaaa', 0.7
+            elif level <= 1020: col, lw = '#777777', 0.8
+            else:               col, lw = '#555555', 1.0
             try:
-                cs = ax.contour(LON_G, LAT_G, mslp_s,
-                                levels=[level], colors=[col],
-                                linewidths=lw, zorder=4)
+                cs = ax_iso.contour(LON_G, LAT_G, mslp_ocean,
+                                    levels=[level], colors=[col],
+                                    linewidths=lw, alpha=0.88)
                 if level % 8 == 0:
-                    ax.clabel(cs, fmt='%d', fontsize=7.5, colors=[col],
-                              inline=True, inline_spacing=3)
+                    ax_iso.clabel(cs, fmt='%d', fontsize=8, colors=[col],
+                                  inline=True, inline_spacing=3)
             except Exception:
                 pass
 
-    # ── 6. Route overlay ──────────────────────────────────────────────────────
-    if waypoints and len(waypoints) >= 2:
-        # Subsample for display clarity
-        step_wp = max(1, len(waypoints) // 80)
-        disp_wps = waypoints[::step_wp]
-        if waypoints[-1] not in disp_wps:
-            disp_wps = list(disp_wps) + [waypoints[-1]]
+        buf_iso = _io.BytesIO()
+        fig_iso.savefig(buf_iso, format='png', dpi=100, transparent=True, bbox_inches='tight', pad_inches=0)
+        plt.close(fig_iso)
+        buf_iso.seek(0)
+        iso_layer = _Image.open(buf_iso).convert('RGBA').resize((canvas_w, canvas_h), _Image.LANCZOS)
+        combined.paste(iso_layer, (0, 0), iso_layer)
 
-        rlo = [normLon180(p[0]) for p in disp_wps]
-        rla = [p[1] for p in disp_wps]
+    # ── 6. Route, vessel, graticule — draw on final combined image with PIL ───
+    draw = _ImageDraw.Draw(combined, 'RGBA')
 
-        ax.plot(rlo, rla, color='#00ff9d', linewidth=2.0,
-                linestyle='--', dashes=(10, 6),
-                zorder=6, alpha=0.95, solid_capstyle='round',
-                marker=None)
-
-        # Departure: green circle
-        ax.plot(rlo[0], rla[0], 'o', color='#00ff9d', markersize=9,
-                zorder=7, markeredgecolor='white', markeredgewidth=1.5)
-        # Destination: red circle
-        ax.plot(rlo[-1], rla[-1], 'o', color='#ff4466', markersize=9,
-                zorder=7, markeredgecolor='white', markeredgewidth=1.5)
-
-    # ── 8. Vessel position ────────────────────────────────────────────────────
-    if vessel_pos:
-        vlo, vla = normLon180(vessel_pos[0]), vessel_pos[1]
-        ax.plot(vlo, vla, 'D', color='#ffdd00', markersize=10, zorder=8,
-                markeredgecolor='#0c1829', markeredgewidth=1.5)
-
-    # ── 9. Graticule ──────────────────────────────────────────────────────────
+    # Graticule labels (light, subtle)
     lon_span = max_lon - min_lon
     lat_span = max_lat - min_lat
     lon_step = 30 if lon_span > 90 else 20 if lon_span > 50 else 10
     lat_step = 20 if lat_span > 50 else 10 if lat_span > 25 else 5
 
-    for glo in range(int(math.ceil(min_lon / lon_step)) * lon_step,
-                     int(math.floor(max_lon / lon_step)) * lon_step + 1, lon_step):
+    for glo in range(int(_math.ceil(min_lon/lon_step))*lon_step,
+                     int(_math.floor(max_lon/lon_step))*lon_step+1, lon_step):
         if min_lon <= glo <= max_lon:
-            ax.axvline(glo, color='#1e3050', linewidth=0.4, zorder=2)
-            lbl = f"{abs(glo)}{'W' if glo < 0 else 'E'}"
-            ax.text(glo, min_lat + (lat_span * 0.02), lbl,
-                    fontsize=6.5, color='#4a6a8a', ha='center', va='bottom', zorder=9)
+            px, py = geo_to_px_canvas(glo, min_lat + lat_span*0.02)
+            # Subtle vertical grid line
+            px_top, _ = geo_to_px_canvas(glo, max_lat)
+            draw.line([(int(px), 0), (int(px), canvas_h)], fill=(30,50,80,60), width=1)
 
-    for gla in range(int(math.ceil(min_lat / lat_step)) * lat_step,
-                     int(math.floor(max_lat / lat_step)) * lat_step + 1, lat_step):
+    for gla in range(int(_math.ceil(min_lat/lat_step))*lat_step,
+                     int(_math.floor(max_lat/lat_step))*lat_step+1, lat_step):
         if min_lat <= gla <= max_lat:
-            ax.axhline(gla, color='#1e3050', linewidth=0.4, zorder=2)
-            lbl = f"{abs(gla)}{'S' if gla < 0 else 'N'}"
-            ax.text(min_lon + (lon_span * 0.01), gla, lbl,
-                    fontsize=6.5, color='#4a6a8a', ha='left', va='center', zorder=9)
+            _, py = geo_to_px_canvas(min_lon, gla)
+            draw.line([(0, int(py)), (canvas_w, int(py))], fill=(30,50,80,60), width=1)
 
-    # ── 10. Colour bar ────────────────────────────────────────────────────────
-    cbar = fig.colorbar(im, ax=ax, orientation='horizontal',
-                        pad=0.03, fraction=0.022, aspect=55)
+    # Route overlay
+    if waypoints and len(waypoints) >= 2:
+        step_wp = max(1, len(waypoints) // 100)
+        disp_wps = waypoints[::step_wp]
+        if waypoints[-1] not in disp_wps:
+            disp_wps = list(disp_wps) + [waypoints[-1]]
+        route_px = [geo_to_px_canvas(normLon180(p[0]), p[1]) for p in disp_wps]
+        route_px_i = [(int(x), int(y)) for x, y in route_px]
+        if len(route_px_i) >= 2:
+            draw.line(route_px_i, fill=(0, 255, 157, 80), width=7)
+            draw.line(route_px_i, fill=(0, 255, 157, 220), width=3)
+        # Departure
+        ox, oy = route_px_i[0]
+        draw.ellipse([ox-9, oy-9, ox+9, oy+9], fill=(0,255,157,255), outline=(255,255,255,255), width=2)
+        # Destination
+        dx, dy = route_px_i[-1]
+        draw.ellipse([dx-9, dy-9, dx+9, dy+9], fill=(255,68,102,255), outline=(255,255,255,255), width=2)
+
+    # Vessel position
+    if vessel_pos:
+        vlo, vla = normLon180(vessel_pos[0]), vessel_pos[1]
+        vx, vy = geo_to_px_canvas(vlo, vla)
+        vx, vy = int(vx), int(vy)
+        s = 10
+        diamond = [(vx, vy-s), (vx+s, vy), (vx, vy+s), (vx-s, vy)]
+        draw.polygon(diamond, fill=(255,221,0,255), outline=(12,24,41,255))
+
+    # ── 7. Crop canvas to bbox, then add title + colorbar via matplotlib ──────
+    # Crop tile canvas to the requested bbox (it may be slightly larger due to tile boundaries)
+    crop_x0, crop_y1 = geo_to_px_canvas(min_lon, min_lat)
+    crop_x1, crop_y0 = geo_to_px_canvas(max_lon, max_lat)
+    crop_x0 = max(0, int(crop_x0)); crop_x1 = min(canvas_w, int(crop_x1))
+    crop_y0 = max(0, int(crop_y0)); crop_y1 = min(canvas_h, int(crop_y1))
+    cropped = combined.crop((crop_x0, crop_y0, crop_x1, crop_y1))
+
+    # Resize to requested output
+    chart_img = cropped.resize((width_px, height_px - 90), _Image.LANCZOS).convert('RGB')
+
+    # Convert chart_img to numpy array for matplotlib embedding
+    chart_arr = np.array(chart_img)
+
+    # Final figure with title + colorbar
+    fig_final, axes = plt.subplots(2, 1, figsize=(width_px/100, height_px/100), dpi=100,
+                                   gridspec_kw={'height_ratios': [height_px-90, 90], 'hspace': 0})
+    ax_chart, ax_cbar = axes
+
+    fig_final.patch.set_facecolor('#0c1829')
+    ax_chart.imshow(chart_arr, aspect='auto', interpolation='lanczos')
+    ax_chart.axis('off')
+
+    # Title
+    ts_label = snap_dt.strftime('%d %b %Y, %H:%M UTC')
+    title_line1 = 'Sea Condition — Wave Height, Wind & Pressure'
+    title_line2 = ts_label + ((' — ' + title_suffix) if title_suffix else '')
+    ax_chart.set_title(title_line1 + '\n' + title_line2,
+                       fontsize=9, color='#94a3b8', pad=6, loc='left', fontweight='bold')
+
+    # Colorbar in the bottom axes
+    ax_cbar.set_facecolor('#0c1829')
+    ax_cbar.axis('off')
+    # Create a dummy imshow for the colorbar
+    dummy = ax_cbar.imshow(np.array([[0, 6]]), cmap=_WAVE_CMAP, vmin=0, vmax=6,
+                            aspect='auto', alpha=0)
+    cbar = fig_final.colorbar(dummy, ax=ax_cbar, orientation='horizontal',
+                               fraction=0.6, pad=0.05, aspect=60)
     cbar.set_label('Estimated Wave Height (m)', fontsize=8, color='#94a3b8')
-    cbar.ax.tick_params(labelsize=7, colors='#94a3b8')
+    cbar.ax.tick_params(labelsize=7.5, colors='#94a3b8')
     cbar.outline.set_edgecolor('#334466')
     cbar.set_ticks([0, 1, 2, 3, 4, 5, 6])
 
-    # ── 11. Title ─────────────────────────────────────────────────────────────
-    ts_label = snap_dt.strftime('%d %b %Y, %H:%M UTC')
-    title_line1 = 'Sea Condition - Visual overview of Total Wave height, Wind speed and Pressure'
-    title_line2 = 'at ' + ts_label + ((' - ' + title_suffix) if title_suffix else '')
-    ax.set_title(title_line1 + '\n' + title_line2,
-                 fontsize=8.5, color='#94a3b8', pad=6, loc='left')
+    plt.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.02)
 
-    ax.tick_params(colors='#4a6a8a', labelsize=7)
-    for spine in ax.spines.values():
-        spine.set_edgecolor('#1e3050')
-
-    # Remove axes margins/padding so image fills the figure fully
-    ax.margins(0)
-    plt.subplots_adjust(left=0, right=1, top=0.93, bottom=0.07)
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
-                facecolor='#0c1829', edgecolor='none')
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode('utf-8')
+    buf_final = _io.BytesIO()
+    fig_final.savefig(buf_final, format='png', dpi=100, facecolor='#0c1829', edgecolor='none')
+    plt.close(fig_final)
+    buf_final.seek(0)
+    return base64.b64encode(buf_final.read()).decode('utf-8')
 
 
 def generate_sea_condition_geojson(bbox, timestamp_iso):
