@@ -20968,74 +20968,16 @@ async function generateVoyageReport(){
   // completely independent of sea condition overlay state.
   let routeMapPng = null;
 
-  // ── Douglas-Peucker path simplification ────────────────────────────────────
-  // Reduces wpCoords to ~60 points so the path fits in the URL (<8 KB limit).
-  function _dpSimplify(pts, tolerance) {
-    if (pts.length <= 2) return pts;
-    let maxDist = 0, maxIdx = 0;
-    const [x1, y1] = pts[0];
-    const [x2, y2] = pts[pts.length - 1];
-    const dx = x2 - x1, dy = y2 - y1;
-    const linelen = Math.sqrt(dx * dx + dy * dy);
-    for (let i = 1; i < pts.length - 1; i++) {
-      const [px, py] = pts[i];
-      const dist = linelen === 0
-        ? Math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
-        : Math.abs(dy * px - dx * py + x2 * y1 - y2 * x1) / linelen;
-      if (dist > maxDist) { maxDist = dist; maxIdx = i; }
-    }
-    if (maxDist > tolerance) {
-      const left  = _dpSimplify(pts.slice(0, maxIdx + 1), tolerance);
-      const right = _dpSimplify(pts.slice(maxIdx), tolerance);
-      return [...left.slice(0, -1), ...right];
-    }
-    return [pts[0], pts[pts.length - 1]];
-  }
-
-  // ── Build and fetch the static map ─────────────────────────────────────────
   try {
     if (!wpCoords || wpCoords.length < 2) throw new Error('No route coordinates');
-
-    // Simplify: start at tolerance 0.3°, increase until ≤ 70 points
-    let simplified = wpCoords;
-    for (const tol of [0.1, 0.3, 0.6, 1.0, 1.5, 2.0]) {
-      simplified = _dpSimplify(wpCoords, tol);
-      if (simplified.length <= 70) break;
-    }
-    // Hard cap: evenly subsample if still too many
-    if (simplified.length > 70) {
-      const step = Math.ceil(simplified.length / 68);
-      const sub = simplified.filter((_, i) => i % step === 0);
-      if (sub[sub.length-1] !== simplified[simplified.length-1]) sub.push(simplified[simplified.length-1]);
-      simplified = sub;
-    }
-    console.log('[PDF] Static map: simplified route to', simplified.length, 'points from', wpCoords.length);
-
-    // Path parameter: strokeColor|strokeWidth|lon,lat|lon,lat|...
-    // MapTiler uses: fill:COLOR|stroke:COLOR|width:N|lon,lat|...
-    // Colors are 6-char hex without #
-    const pathCoords  = simplified.map(([lo, la]) => `${lo.toFixed(4)},${la.toFixed(4)}`).join('|');
-    const pathParam   = `stroke:0ea5e9|width:3|fill:00000000|${pathCoords}`;
-
-    // Origin marker (green) and destination marker (red)
-    const [oLon, oLat] = wpCoords[0];
-    const [dLon, dLat] = wpCoords[wpCoords.length - 1];
-    const markerOrigin = `${oLon.toFixed(4)},${oLat.toFixed(4)},pin-s-circle+16a34a`;
-    const markerDest   = `${dLon.toFixed(4)},${dLat.toFixed(4)},pin-s-circle+dc2626`;
-
-    // Proxy through server.py — avoids MapTiler API key domain restrictions
-    // that block direct browser→MapTiler Static Maps calls (403).
-    console.log('[PDF] Fetching static map via server proxy...');
+    console.log('[PDF] Fetching route chart via server (' + wpCoords.length + ' waypoints)...');
     const resp = await fetch('/api/static-map', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        path:    pathParam,
-        markers: [markerOrigin, markerDest],
-        width:   1200,
-        height:  500,
-        style:   'streets-v2-dark',
-        padding: 40,
+        waypoints: wpCoords,
+        width:     1200,
+        height:    500,
       }),
     });
     if (!resp.ok) {
