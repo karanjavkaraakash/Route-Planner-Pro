@@ -1446,24 +1446,43 @@ def generate_sea_condition_png(
         interpolation='bilinear', zorder=1, alpha=0.9
     )
 
-    # ── 3. Land colour overlay ────────────────────────────────────────────────
-    land_colour = np.where(land_mask_2d[:, :, np.newaxis],
-                           np.array([26, 46, 68], dtype=np.uint8),
-                           0).astype(np.uint8)
-    alpha_land = (land_mask_2d * 255).astype(np.uint8)
-    land_rgba = np.dstack([land_colour, alpha_land])
-    ax.imshow(land_rgba, extent=[min_lon, max_lon, min_lat, max_lat],
-              origin='lower', aspect='auto', zorder=2, interpolation='nearest')
+    # ── 3. Land fill + coastlines via polygon patches ───────────────────────────
+    # Use matplotlib Polygon patches from the coastline data — smooth, not blocky.
+    # This replaces the pixelated land_mask imshow approach.
+    from matplotlib.patches import Polygon as MplPolygon
+    from matplotlib.collections import PatchCollection
 
-    # ── 4. Coastline outlines ─────────────────────────────────────────────────
     coastlines = _load_coastlines()
+    land_patches = []
+    coast_lines_x = []
+    coast_lines_y = []
+
     for line in coastlines:
-        xs, ys = [], []
-        for lo, la in line:
-            if min_lon - 5 <= lo <= max_lon + 5 and min_lat - 3 <= la <= max_lat + 3:
-                xs.append(lo); ys.append(la)
-        if len(xs) >= 2:
-            ax.plot(xs, ys, color='#4a7aa0', linewidth=0.7, zorder=3, solid_capstyle='round')
+        # Filter to points within extended view
+        pts = [(lo, la) for lo, la in line
+               if min_lon - 15 <= lo <= max_lon + 15 and min_lat - 8 <= la <= max_lat + 8]
+        if len(pts) >= 3:
+            try:
+                patch = MplPolygon(pts, closed=True)
+                land_patches.append(patch)
+            except Exception:
+                pass
+        if len(pts) >= 2:
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            coast_lines_x.append(xs)
+            coast_lines_y.append(ys)
+
+    # Fill land polygons
+    if land_patches:
+        pc = PatchCollection(land_patches, facecolor='#1a2e44',
+                             edgecolor='none', linewidth=0, zorder=2)
+        ax.add_collection(pc)
+
+    # Coastline outlines on top of land fill
+    for xs, ys in zip(coast_lines_x, coast_lines_y):
+        ax.plot(xs, ys, color='#3a5a78', linewidth=0.6, zorder=3,
+                solid_capstyle='round', solid_joinstyle='round')
 
     # ── 5. Isobar contours ────────────────────────────────────────────────────
     mslp_data = mslp_raw[~np.isnan(mslp_raw)]
