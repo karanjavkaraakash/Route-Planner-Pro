@@ -1413,9 +1413,9 @@ def generate_sea_condition_png(
     ax.set_xlim(min_lon, max_lon)
     ax.set_ylim(min_lat, max_lat)
 
-    # Mercator aspect: 1 degree lon = cos(midlat) degrees lat in distance
-    mercator_aspect = 1.0 / math.cos(math.radians(mid_lat))
-    ax.set_aspect(mercator_aspect, adjustable='box')
+    # No set_aspect — let the figure dimensions control proportions.
+    # set_aspect() with adjustable='box' shrinks the axes leaving grey borders.
+    # The figsize (width_px x height_px) already controls the output proportions.
 
     LON_G, LAT_G = np.meshgrid(lons, lats)
 
@@ -1558,7 +1558,9 @@ def generate_sea_condition_png(
     for spine in ax.spines.values():
         spine.set_edgecolor('#1e3050')
 
-    plt.tight_layout(pad=0.6)
+    # Remove axes margins/padding so image fills the figure fully
+    ax.margins(0)
+    plt.subplots_adjust(left=0, right=1, top=0.93, bottom=0.07)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
