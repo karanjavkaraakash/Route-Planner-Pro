@@ -959,6 +959,148 @@ def _load_coastlines():
     return lines
 
 
+def generate_route_png(waypoints, width=1200, height=500):
+    """
+    Generate a professional PNG route chart by stitching real map tiles.
+    Uses Esri Ocean Basemap (free, no API key) — matching the maritime chart
+    style expected. Falls back to CartoDB Positron then OSM if unavailable.
+    Overlays route with glow, waypoint dots, and port markers via PIL.
+    Handles antimeridian (Pacific) crossings. Returns PNG bytes.
+    """
+    import io, math, concurrent.futures
+    import requests as req_lib
+    from PIL import Image, ImageDraw
+
+    TILE_PROVIDERS = [
+        'https://services.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    ]
+    TILE_SIZE    = 256
+    TILE_TIMEOUT = 8
+    UA = 'RoutePlannerPro/2.4 (maritime voyage planning)'
+
+    def lon_to_tx(lon, z): return (lon + 180) / 360 * (2 ** z)
+    def lat_to_ty(lat, z):
+        lat_r = math.radians(max(-85.05, min(85.05, lat)))
+        return (1 - math.log(math.tan(lat_r) + 1/math.cos(lat_r)) / math.pi) / 2 * (2**z)
+    def tile_nw_lat(ty, z):
+        n = math.pi - 2*math.pi*ty/(2**z)
+        return math.degrees(math.atan(math.sinh(n)))
+
+    route_lons = [p[0] for p in waypoints]
+    route_lats = [p[1] for p in waypoints]
+    has_pos = any(lo > 90 for lo in route_lons)
+    has_neg = any(lo < -90 for lo in route_lons)
+    cross_anti = has_pos and has_neg
+    route_lons_r = [lo + 360 if (cross_anti and lo < 0) else lo for lo in route_lons]
+
+    lon_min = min(route_lons_r); lon_max = max(route_lons_r)
+    lat_min = min(route_lats);   lat_max = max(route_lats)
+    pad_lon = max((lon_max - lon_min) * 0.15, 3.0)
+    pad_lat = max((lat_max - lat_min) * 0.20, 2.5)
+    vlon_min = lon_min - pad_lon; vlon_max = lon_max + pad_lon
+    vlat_min = max(lat_min - pad_lat, -85.0)
+    vlat_max = min(lat_max + pad_lat,  85.0)
+
+    # Pick zoom so canvas is ~1200px wide
+    z = 3
+    for zoom in range(2, 8):
+        z = zoom
+        if (lon_to_tx(vlon_max, zoom) - lon_to_tx(vlon_min, zoom)) * TILE_SIZE >= 900:
+            break
+
+    n_tiles = 2 ** z
+    tx_min = int(math.floor(lon_to_tx(vlon_min, z)))
+    tx_max = int(math.floor(lon_to_tx(vlon_max, z)))
+    ty_min = int(math.floor(lat_to_ty(vlat_max, z)))
+    ty_max = int(math.floor(lat_to_ty(vlat_min, z)))
+    tiles_x = tx_max - tx_min + 1
+    tiles_y = ty_max - ty_min + 1
+    canvas_w = tiles_x * TILE_SIZE
+    canvas_h = tiles_y * TILE_SIZE
+
+    def fetch_tile(args):
+        tx, ty, url_tpl = args
+        url = url_tpl.format(z=z, x=tx % n_tiles, y=ty)
+        try:
+            r = req_lib.get(url, timeout=TILE_TIMEOUT, headers={'User-Agent': UA})
+            if r.status_code == 200 and r.content:
+                return (tx, ty, Image.open(io.BytesIO(r.content)).convert('RGBA'))
+        except Exception:
+            pass
+        return (tx, ty, None)
+
+    tile_map = {}
+    for provider in TILE_PROVIDERS:
+        tasks = [(tx, ty, provider)
+                 for ty in range(ty_min, ty_max+1)
+                 for tx in range(tx_min, tx_max+1)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(fetch_tile, tasks))
+        ok = sum(1 for _, _, img in results if img)
+        if ok >= max(1, len(tasks) * 0.5):
+            tile_map = {(tx, ty): img for tx, ty, img in results if img}
+            log.info('[route-png] %s — %d/%d tiles OK', provider.split('/')[5], ok, len(tasks))
+            break
+        log.warning('[route-png] provider failed %d/%d: %s', ok, len(tasks), provider[:60])
+
+    # Stitch
+    canvas = Image.new('RGBA', (canvas_w, canvas_h), (20, 40, 70, 255))
+    for (tx, ty), img in tile_map.items():
+        canvas.paste(img, ((tx-tx_min)*TILE_SIZE, (ty-ty_min)*TILE_SIZE))
+
+    # Geo → pixel
+    def geo_to_px(lon, lat):
+        lo = lon + 360 if (cross_anti and lon < 0) else lon
+        return (
+            (lon_to_tx(lo, z)  - tx_min) * TILE_SIZE,
+            (lat_to_ty(lat, z) - ty_min) * TILE_SIZE,
+        )
+
+    route_px = [geo_to_px(lo, la) for lo, la in zip(route_lons, route_lats)]
+
+    draw = ImageDraw.Draw(canvas, 'RGBA')
+    if len(route_px) >= 2:
+        # Glow layers
+        draw.line([(int(x), int(y)) for x, y in route_px], fill=(3, 105, 161, 80),  width=11)
+        draw.line([(int(x), int(y)) for x, y in route_px], fill=(56, 189, 248, 140), width=6)
+        draw.line([(int(x), int(y)) for x, y in route_px], fill=(56, 189, 248, 230), width=3)
+
+    # Waypoint dots
+    step = max(1, len(route_px) // 40)
+    for i in range(1, len(route_px)-1, step):
+        cx, cy = int(route_px[i][0]), int(route_px[i][1])
+        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill=(125, 211, 252, 200), outline=(255,255,255,120), width=1)
+
+    # Origin (green) + Destination (red)
+    for (px, py), col in [(route_px[0], (22,163,74,255)), (route_px[-1], (220,38,38,255))]:
+        cx, cy = int(px), int(py)
+        draw.ellipse([cx-10, cy-10, cx+10, cy+10], fill=col, outline=(255,255,255,255), width=2)
+
+    # Crop to route bounds with padding, maintain aspect ratio
+    px_xs = [p[0] for p in route_px]; px_ys = [p[1] for p in route_px]
+    pad_px = 70
+    x0 = max(0, min(px_xs)-pad_px); x1 = min(canvas_w, max(px_xs)+pad_px)
+    y0 = max(0, min(px_ys)-pad_px); y1 = min(canvas_h, max(px_ys)+pad_px)
+    aspect = width / height
+    cw, ch = x1-x0, y1-y0
+    if cw/max(ch,1) < aspect:
+        extra = ch*aspect - cw
+        x0 = max(0, x0-extra/2); x1 = min(canvas_w, x1+extra/2)
+    else:
+        extra = cw/aspect - ch
+        y0 = max(0, y0-extra/2); y1 = min(canvas_h, y1+extra/2)
+
+    final = canvas.crop((int(x0), int(y0), int(x1), int(y1)))
+    final = final.resize((width, height), Image.LANCZOS).convert('RGB')
+
+    buf = io.BytesIO()
+    final.save(buf, format='PNG')
+    buf.seek(0)
+    return buf.read()
+
+
 def generate_route_svg(waypoints, width=1200, height=520):
     """
     Generate an SVG world map with the route overlaid.
@@ -1770,47 +1912,24 @@ def route_map():
 @app.route("/api/static-map", methods=["POST"])
 def static_map():
     """
-    Proxy for MapTiler Static Maps API.
-    Bypasses browser API-key domain restrictions by making the request server-side.
-    Body: {
-        "path":    "stroke:0ea5e9|width:3|fill:00000000|lon,lat|lon,lat|...",
-        "markers": ["lon,lat,pin-s-circle+16a34a", "lon,lat,pin-s-circle+dc2626"],
-        "width":   1200,
-        "height":  500,
-        "style":   "streets-v2-dark",   # optional
-        "padding": 40                   # optional
-    }
+    Generate a route chart PNG by stitching real map tiles server-side.
+    Uses Esri Ocean Basemap (free, no API key) — professional maritime style.
+    Body: {"waypoints": [[lon, lat], ...], "width": 1200, "height": 500}
     Returns: PNG image bytes (Content-Type: image/png)
     """
     try:
-        data    = request.get_json(force=True)
-        path    = data.get('path', '')
-        markers = data.get('markers', [])
-        width   = min(int(data.get('width',  1200)), 2048)
-        height  = min(int(data.get('height',  500)), 2048)
-        style   = data.get('style', 'streets-v2-dark')
-        padding = int(data.get('padding', 40))
+        data      = request.get_json(force=True)
+        waypoints = data.get('waypoints', [])
+        width     = min(int(data.get('width',  1200)), 2048)
+        height    = min(int(data.get('height',  500)), 2048)
 
-        if not path:
-            return jsonify({"error": "path is required"}), 400
+        if len(waypoints) < 2:
+            return jsonify({"error": "Need at least 2 waypoints"}), 400
 
-        url = (
-            f"https://api.maptiler.com/maps/{style}/static/auto/{width}x{height}.png"
-            f"?key={MAPTILER_KEY}"
-            f"&padding={padding}"
-            f"&path={req_lib.utils.quote(path, safe=':,|.')}"
-        )
-        for m in markers:
-            url += f"&marker={req_lib.utils.quote(m, safe=',+')}"
+        log.info('[static-map] generating route PNG: %d waypoints %dx%d', len(waypoints), width, height)
+        png_bytes = generate_route_png(waypoints, width, height)
 
-        log.info('[static-map] fetching: %s chars, %d markers', len(url), len(markers))
-        resp = req_lib.get(url, timeout=20)
-
-        if resp.status_code != 200:
-            log.error('[static-map] MapTiler error %s: %s', resp.status_code, resp.text[:200])
-            return jsonify({"error": f"MapTiler {resp.status_code}"}), 502
-
-        return resp.content, 200, {
+        return png_bytes, 200, {
             'Content-Type': 'image/png',
             'Cache-Control': 'no-cache',
             'Access-Control-Allow-Origin': '*',
