@@ -18319,10 +18319,12 @@ function _renderIsobarLayer(geojson) {
 
 // ── Wind barb canvas overlay ────────────────────────────────────────────────
 // Rendered as MapLibre custom layer for performance
-let _windBarbsEl = null;
+// Exposed on window so PDF capture can temporarily hide it during toDataURL()
+window._windBarbsEl = null;
+let _windBarbsEl = null;   // local alias
 function _renderWindBarbs(windPts) {
   // Remove old canvas
-  if (_windBarbsEl) { _windBarbsEl.remove(); _windBarbsEl = null; }
+  if (_windBarbsEl) { _windBarbsEl.remove(); _windBarbsEl = null; window._windBarbsEl = null; }
   if (!windPts.length || !window.map) return;
 
   // Draw wind barbs on an overlay canvas using map.project()
@@ -18333,6 +18335,7 @@ function _renderWindBarbs(windPts) {
   canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:2;';
   mapCanvas.parentElement.appendChild(canvas);
   _windBarbsEl = canvas;
+  window._windBarbsEl = canvas;  // expose for PDF capture to hide/show
 
   _drawBarbsOnCanvas(canvas, windPts);
 
@@ -18506,7 +18509,7 @@ function removeSeaConditionOverlay() {
     try { if (window.map?.getLayer(id)) window.map.removeLayer(id); } catch(_){}
   });
   try { if (window.map?.getSource(SEA_COND_SOURCE)) window.map.removeSource(SEA_COND_SOURCE); } catch(_){}
-  if (_windBarbsEl) { _windBarbsEl.remove(); _windBarbsEl = null; }
+  if (_windBarbsEl) { _windBarbsEl.remove(); _windBarbsEl = null; window._windBarbsEl = null; }
   if (_seaCondVessel) { _seaCondVessel.remove(); _seaCondVessel = null; }
   document.getElementById('sea-cond-scrubber').style.display = 'none';
 }
@@ -19219,8 +19222,13 @@ async function fetchRouteWeather(){
   setWxaStep(6);
 
   // ── Auto-trigger sea condition overlay after weather loads ──────────────────
-  // Defer slightly so route colouring completes first
-  setTimeout(() => loadSeaConditionOverlay(), 400);
+  // Defer slightly so route colouring completes first.
+  // Guard: do NOT load if PDF canvas capture is in progress — it mutates the map
+  // (addSource/addLayer) which fires 'idle' and breaks the capture timing.
+  setTimeout(() => {
+    if (!window._pdfCaptureInProgress) loadSeaConditionOverlay();
+    else window._seaCondPendingAfterCapture = true;  // will be loaded after capture
+  }, 400);
 
   // Compute delay
   const orderedTotalH  = legs.reduce((s,l) => s + l.distNm / orderedKn, 0);
@@ -20968,8 +20976,22 @@ async function generateVoyageReport(){
   const wxResults = window._wxResults || [];
 
   // ── Capture route map BEFORE showing progress overlay ─────────────────────
-  // backdrop-filter: blur() on the progress overlay corrupts WebGL toDataURL()
-  // so we capture the MapLibre canvas NOW, before showProgress() is called.
+  // Three sources of interference we guard against:
+  //   1. backdrop-filter: blur() on the progress overlay corrupts WebGL toDataURL()
+  //      → capture BEFORE showProgress() is called (this block runs first).
+  //   2. Sea condition overlay (loadSeaConditionOverlay) calls addSource/addLayer
+  //      which fires map 'idle' and can resolve our wait promise prematurely,
+  //      and also adds a wind-barb <canvas> on top of the map canvas.
+  //      → set _pdfCaptureInProgress flag so the 400ms auto-trigger defers.
+  //   3. Wind barb overlay canvas sits on top of map canvas but is NOT captured
+  //      by map.getCanvas().toDataURL() — temporarily hide it during capture.
+
+  window._pdfCaptureInProgress  = true;   // blocks sea-cond auto-trigger
+  window._seaCondPendingAfterCapture = false;
+
+  // Temporarily hide wind barb overlay so it doesn't interfere with WebGL state
+  if (window._windBarbsEl) window._windBarbsEl.style.display = 'none';
+
   let routeMapPng = null;
   const routeMapSVG = window._routeMapSVG || null;
   try {
@@ -20982,45 +21004,82 @@ async function generateVoyageReport(){
           minLat=Math.min(minLat,la); maxLat=Math.max(maxLat,la);
         });
         window.map.fitBounds([[minLon,minLat],[maxLon,maxLat]], {
-          padding: {top:30, bottom:30, left:30, right:30},
+          padding: {top:40, bottom:40, left:40, right:40},
           duration: 0, maxZoom: 12
         });
       }
-      // Wait for map idle + additional tile settling time
-      // MapLibre fires 'idle' when camera stops but tiles may still be loading.
-      // We wait for idle, then poll areTilesLoaded() with a max wait.
+
+      // Wait for map idle + tiles fully loaded.
+      // IMPORTANT: we do NOT use map.once('idle') because addSource/addLayer
+      // from the sea condition overlay (if it loads concurrently) also fires idle.
+      // Instead: wait a minimum time, then POLL areTilesLoaded() aggressively.
       await new Promise(resolve => {
-        const hardCap = setTimeout(resolve, 4000);
-        const onIdle = () => {
-          // Poll until tiles are loaded or 2s extra elapsed
-          const start = Date.now();
-          const poll = () => {
-            if (window.map.areTilesLoaded() || Date.now() - start > 2000) {
-              clearTimeout(hardCap);
-              setTimeout(resolve, 200); // one more frame flush
-            } else {
-              setTimeout(poll, 100);
-            }
-          };
-          poll();
+        const HARD_CAP_MS   = 6000;   // absolute maximum wait
+        const MIN_WAIT_MS   = 800;    // always wait at least this long after fitBounds
+        const started = Date.now();
+
+        const poll = () => {
+          const elapsed = Date.now() - started;
+          if (elapsed >= HARD_CAP_MS) {
+            console.warn('[PDF] Hard cap hit, capturing anyway');
+            resolve();
+            return;
+          }
+          if (elapsed >= MIN_WAIT_MS && window.map.areTilesLoaded()) {
+            // Tiles confirmed loaded — one extra rAF to let WebGL flush
+            requestAnimationFrame(() => requestAnimationFrame(resolve));
+          } else {
+            setTimeout(poll, 150);
+          }
         };
-        if (window.map.isStyleLoaded()) {
-          window.map.once('idle', onIdle);
-        } else {
-          setTimeout(resolve, 4000);
-        }
+        poll();
       });
-      const rawPng = window.map.getCanvas().toDataURL('image/png');
-      console.log('[PDF] Canvas capture:', rawPng.length, 'bytes');
-      if (rawPng && rawPng.length > 5000) {
+
+      // Force a WebGL redraw before reading pixels
+      window.map.triggerRepaint();
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const mapCanvas = window.map.getCanvas();
+      // Sanity-check canvas has non-zero dimensions
+      if (!mapCanvas.width || !mapCanvas.height) {
+        throw new Error(`Canvas dimensions invalid: ${mapCanvas.width}×${mapCanvas.height}`);
+      }
+
+      const rawPng = mapCanvas.toDataURL('image/png');
+      console.log('[PDF] Canvas capture raw length:', rawPng.length,
+                  'canvas size:', mapCanvas.width, '×', mapCanvas.height);
+
+      // Validate: a blank/empty canvas produces a ~2-3 KB data URL; real map is 200 KB+
+      if (rawPng && rawPng.length > 20000) {
         routeMapPng = rawPng;
         console.log('[PDF] Route map canvas capture OK ✓');
       } else {
-        console.warn('[PDF] Canvas too small (' + (rawPng?.length||0) + ' bytes) - using SVG fallback');
+        console.warn('[PDF] Canvas appears blank (' + (rawPng?.length||0) + ' bytes). ' +
+                     'Retrying with triggerRepaint...');
+        // One more attempt after explicit repaint
+        window.map.triggerRepaint();
+        await new Promise(r => setTimeout(r, 500));
+        const retryPng = window.map.getCanvas().toDataURL('image/png');
+        if (retryPng && retryPng.length > 20000) {
+          routeMapPng = retryPng;
+          console.log('[PDF] Route map canvas capture OK on retry ✓');
+        } else {
+          console.warn('[PDF] Canvas still blank after retry (' + (retryPng?.length||0) +
+                       ' bytes) — SVG fallback will be used');
+        }
       }
     }
   } catch(mapErr) {
     console.warn('[PDF] Map canvas capture failed:', mapErr);
+  } finally {
+    // Always: restore wind barb overlay visibility and release capture lock
+    if (window._windBarbsEl) window._windBarbsEl.style.display = '';
+    window._pdfCaptureInProgress = false;
+    // If sea condition was deferred, load it now that capture is done
+    if (window._seaCondPendingAfterCapture) {
+      window._seaCondPendingAfterCapture = false;
+      setTimeout(() => loadSeaConditionOverlay(), 200);
+    }
   }
 
   showProgress({
