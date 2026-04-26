@@ -20986,20 +20986,37 @@ async function generateVoyageReport(){
           duration: 0, maxZoom: 12
         });
       }
-      // Wait for map to finish rendering (tiles loaded, route drawn)
+      // Wait for map idle + additional tile settling time
+      // MapLibre fires 'idle' when camera stops but tiles may still be loading.
+      // We wait for idle, then poll areTilesLoaded() with a max wait.
       await new Promise(resolve => {
-        const done = () => { clearTimeout(fallback); resolve(); };
-        const fallback = setTimeout(done, 2000);
-        if (window.map.isStyleLoaded()) { window.map.once('idle', done); }
-        else { setTimeout(done, 2000); }
+        const hardCap = setTimeout(resolve, 4000);
+        const onIdle = () => {
+          // Poll until tiles are loaded or 2s extra elapsed
+          const start = Date.now();
+          const poll = () => {
+            if (window.map.areTilesLoaded() || Date.now() - start > 2000) {
+              clearTimeout(hardCap);
+              setTimeout(resolve, 200); // one more frame flush
+            } else {
+              setTimeout(poll, 100);
+            }
+          };
+          poll();
+        };
+        if (window.map.isStyleLoaded()) {
+          window.map.once('idle', onIdle);
+        } else {
+          setTimeout(resolve, 4000);
+        }
       });
       const rawPng = window.map.getCanvas().toDataURL('image/png');
-      // Reject truly blank canvas (< 5KB = empty white/black image)
+      console.log('[PDF] Canvas capture:', rawPng.length, 'bytes');
       if (rawPng && rawPng.length > 5000) {
         routeMapPng = rawPng;
-        console.log('[PDF] Route map captured from MapLibre canvas:', rawPng.length, 'bytes');
+        console.log('[PDF] Route map canvas capture OK ✓');
       } else {
-        console.warn('[PDF] Canvas returned blank image (' + (rawPng?.length||0) + ' bytes), using SVG fallback');
+        console.warn('[PDF] Canvas too small (' + (rawPng?.length||0) + ' bytes) - using SVG fallback');
       }
     }
   } catch(mapErr) {
