@@ -25,6 +25,9 @@ GRAPH  = None
 SUPABASE_URL  = os.environ.get('SUPABASE_URL',  '')
 SUPABASE_ANON = os.environ.get('SUPABASE_ANON', '')
 
+# ── MAPTILER CONFIG ───────────────────────────────────────────────────────────
+MAPTILER_KEY = os.environ.get('MAPTILER_KEY', 'XaQgaXRnIoyC1qZKH1xl')
+
 # ── COPERNICUS MARINE CONFIG ──────────────────────────────────────────────────
 CMEMS_USER = os.environ.get('CMEMS_USER', '')
 CMEMS_PASS = os.environ.get('CMEMS_PASS', '')
@@ -1761,6 +1764,60 @@ def route_map():
 
     except Exception as e:
         log.error('route-map error: %s', e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/static-map", methods=["POST"])
+def static_map():
+    """
+    Proxy for MapTiler Static Maps API.
+    Bypasses browser API-key domain restrictions by making the request server-side.
+    Body: {
+        "path":    "stroke:0ea5e9|width:3|fill:00000000|lon,lat|lon,lat|...",
+        "markers": ["lon,lat,pin-s-circle+16a34a", "lon,lat,pin-s-circle+dc2626"],
+        "width":   1200,
+        "height":  500,
+        "style":   "streets-v2-dark",   # optional
+        "padding": 40                   # optional
+    }
+    Returns: PNG image bytes (Content-Type: image/png)
+    """
+    try:
+        data    = request.get_json(force=True)
+        path    = data.get('path', '')
+        markers = data.get('markers', [])
+        width   = min(int(data.get('width',  1200)), 2048)
+        height  = min(int(data.get('height',  500)), 2048)
+        style   = data.get('style', 'streets-v2-dark')
+        padding = int(data.get('padding', 40))
+
+        if not path:
+            return jsonify({"error": "path is required"}), 400
+
+        url = (
+            f"https://api.maptiler.com/maps/{style}/static/auto/{width}x{height}.png"
+            f"?key={MAPTILER_KEY}"
+            f"&padding={padding}"
+            f"&path={req_lib.utils.quote(path, safe=':,|.')}"
+        )
+        for m in markers:
+            url += f"&marker={req_lib.utils.quote(m, safe=',+')}"
+
+        log.info('[static-map] fetching: %s chars, %d markers', len(url), len(markers))
+        resp = req_lib.get(url, timeout=20)
+
+        if resp.status_code != 200:
+            log.error('[static-map] MapTiler error %s: %s', resp.status_code, resp.text[:200])
+            return jsonify({"error": f"MapTiler {resp.status_code}"}), 502
+
+        return resp.content, 200, {
+            'Content-Type': 'image/png',
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+        }
+
+    except Exception as e:
+        log.error('static-map error: %s', e)
         return jsonify({"error": str(e)}), 500
 
 
