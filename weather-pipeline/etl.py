@@ -266,50 +266,71 @@ def upsert_rows(sb, rows, label):
 
 # ── Storage guard ─────────────────────────────────────────────────────────────
 def check_db_size(sb, threshold_mb: int = 480) -> float:
-    """
-    Returns current DB size in MB. Raises if >= threshold_mb AFTER truncate.
-    Call this AFTER truncate — if still large, something is wrong (bloat/vacuum lag).
-    """
+    """Returns current DB size in MB. Logs warning if still large after truncate+reindex."""
     try:
         res = sb.rpc("get_weather_grid_size_mb", {}).execute()
         size_mb = float(res.data)
-        log.info(f"DB1 size post-truncate: {size_mb:.0f}MB")
+        log.info(f"DB1 size: {size_mb:.0f}MB")
         if size_mb >= threshold_mb:
-            log.error(
-                f"DB1 size {size_mb:.0f}MB >= {threshold_mb}MB even after TRUNCATE. "
-                f"Index bloat suspected — run REINDEX TABLE weather_grid; in Supabase SQL Editor. "
-                f"Continuing anyway to avoid blocking pipeline."
+            log.warning(
+                f"DB1 size {size_mb:.0f}MB >= {threshold_mb}MB even after TRUNCATE+REINDEX. "
+                f"Continuing — inserts will still work."
             )
-            # NOTE: We log the warning but do NOT abort — truncate already freed data rows.
-            # Index bloat doesn't prevent inserts; autovacuum will clean it up.
         return size_mb
     except Exception as e:
         log.warning(f"Size check failed (non-fatal): {e}")
         return 0.0
 
 
-# ── Truncate via RPC ──────────────────────────────────────────────────────────
+# ── Truncate + Reindex via RPC ────────────────────────────────────────────────
 def truncate_table(sb):
     """
-    TRUNCATE weather_grid via RPC — instant space reclaim, no index bloat.
-    Requires this function in Supabase SQL Editor:
+    TRUNCATE then REINDEX weather_grid via RPC.
+
+    TRUNCATE removes all data rows instantly.
+    REINDEX reclaims index page bloat — critical on Supabase free tier where
+    index bloat alone can push the DB over 500MB between runs.
+
+    Requires these functions in Supabase SQL Editor (run once):
 
       CREATE OR REPLACE FUNCTION truncate_weather_grid()
       RETURNS void LANGUAGE plpgsql SECURITY DEFINER
       AS $$ BEGIN TRUNCATE TABLE weather_grid; END; $$;
+
+      CREATE OR REPLACE FUNCTION reindex_weather_grid()
+      RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+      AS $$ BEGIN REINDEX TABLE weather_grid; END; $$;
     """
+    # Step 1: TRUNCATE — removes all rows, immediate
     for attempt in range(1, 4):
         try:
             sb.rpc("truncate_weather_grid", {}).execute()
-            log.info("weather_grid TRUNCATED via RPC")
+            log.info("weather_grid TRUNCATED ✓")
+            break
+        except Exception as e:
+            if attempt < 3:
+                log.warning(f"TRUNCATE attempt {attempt} failed: {e} — retrying")
+                time.sleep(3)
+            else:
+                log.error(f"TRUNCATE failed after 3 attempts: {e}")
+                raise
+
+    # Step 2: REINDEX — reclaims index bloat, may take 10-30s
+    log.info("Reindexing weather_grid to reclaim index bloat...")
+    for attempt in range(1, 4):
+        try:
+            sb.rpc("reindex_weather_grid", {}).execute()
+            log.info("weather_grid REINDEXED ✓")
             return
         except Exception as e:
             if attempt < 3:
-                log.warning(f"TRUNCATE RPC attempt {attempt} failed: {e} — retrying")
-                time.sleep(3)
+                log.warning(f"REINDEX attempt {attempt} failed: {e} — retrying")
+                time.sleep(5)
             else:
-                log.error(f"TRUNCATE RPC failed: {e}")
-                raise
+                # Non-fatal: REINDEX failure doesn't block the pipeline
+                # Data was truncated, inserts will still work, just slightly larger DB
+                log.warning(f"REINDEX failed (non-fatal): {e}. Autovacuum will clean up.")
+                return
 
 # ── Pipeline log ──────────────────────────────────────────────────────────────
 def log_run(sb, source, records, duration, status, error=None):
