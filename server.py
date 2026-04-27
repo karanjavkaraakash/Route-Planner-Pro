@@ -1548,8 +1548,7 @@ def _build_tile_land_mask(tile_canvas, tx_min, ty_min, canvas_w, canvas_h,
             r, g, b = int(arr[py, px, 0]), int(arr[py, px, 1]), int(arr[py, px, 2])
             # Esri Ocean: land = warm beige/green (R high, B low relative to R)
             # Ocean = cool blue (B dominant)
-            is_land = (r > b + 30) and (r > 130)
-            land_mask[i, j] = is_land
+            is_ocean = (b > r + 10) and (b > g + 5); land_mask[i, j] = not is_ocean
 
     return land_mask
 
@@ -1730,9 +1729,9 @@ def generate_sea_condition_png(
             px = max(0, min(canvas_w - 1, px))
             py = max(0, min(canvas_h - 1, py))
             r, g, b = int(tile_arr[py, px, 0]), int(tile_arr[py, px, 1]), int(tile_arr[py, px, 2])
-            is_land = (r > b + 30) and (r > 130)
-            land_mask_2d[i, j]  = is_land
-            ocean_mask_2d[i, j] = not is_land
+            is_ocean = (b > r + 10) and (b > g + 5)
+            land_mask_2d[i, j]  = not is_ocean
+            ocean_mask_2d[i, j] = is_ocean
     log.info('[sea-cond-png] land cells: %d, ocean cells: %d',
              land_mask_2d.sum(), ocean_mask_2d.sum())
 
@@ -1942,7 +1941,7 @@ def generate_sea_condition_geojson(bbox, timestamp_iso):
     if not rows:
         return {'type': 'FeatureCollection', 'features': [], 'timestamp': timestamp_iso}
 
-    lats, lons, mslp_s, mslp_raw, wsp_s, _, wdir_s =         _build_regular_grid(rows, bbox)
+    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s = _build_regular_grid(rows, bbox)
 
     mslp_data = mslp_raw[~np.isnan(mslp_raw)]
     if len(mslp_data) == 0:
