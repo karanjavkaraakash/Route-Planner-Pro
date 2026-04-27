@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <title>RoutePlannerPro — Professional Voyage Planning</title>
 <link href="https://cdn.maptiler.com/maptiler-sdk-js/v3.11.1/maptiler-sdk.css" rel="stylesheet"/>
 <script src="https://cdn.maptiler.com/maptiler-sdk-js/v3.11.1/maptiler-sdk.umd.min.js"></script>
@@ -90,7 +90,7 @@ html, body {
 }
 
 /* ── SCREEN SYSTEM ──────────────────────────────────────────────*/
-.screen { display: none; height: 100vh; }
+.screen { display: none; height: 100vh; height: 100dvh; }
 .screen.active { display: flex; }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -814,11 +814,13 @@ html, body {
 /* Action strip */
 #rs-actions {
   padding: 12px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom, 12px));
   border-top: 1.5px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 7px;
   background: var(--bg2);
+  flex-shrink: 0;
 }
 
 /* Action buttons */
@@ -995,12 +997,16 @@ html, body {
   display: none; position: fixed; inset: 0;
   background: rgba(12,22,40,.5); backdrop-filter: blur(4px);
   z-index: 8000; align-items: center; justify-content: center;
+  padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
+           env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
 }
 .modal-backdrop.open { display: flex; }
 .modal {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 14px; padding: 26px; min-width: 380px; max-width: 480px;
   width: 90%; position: relative; box-shadow: var(--shadow-lg);
+  max-height: 90vh; max-height: 90dvh;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
 }
 .modal h2 { font-family: var(--f-display); font-size: 18px; font-weight: 600; margin-bottom: 18px; color: var(--navy); }
 .close-btn {
@@ -1377,7 +1383,7 @@ html, body {
 
   /* ── Plan screen ── */
   #screen-plan { flex-direction: column; }
-  #plan-panel  { width: 100%; max-height: 100vh; overflow-y: auto; }
+  #plan-panel  { width: 100%; max-height: 100vh; max-height: 100dvh; overflow-y: auto; }
   #plan-visual { display: none; } /* hide map preview on mobile */
 
   /* ── Route view topbar ── */
@@ -1465,7 +1471,10 @@ html, body {
   #wind-hover-tile { max-width: 140px; }
 
   /* ── Modals full-width on mobile ── */
-  .modal { min-width: unset; width: 96vw; padding: 20px 16px; }
+  .modal {
+    min-width: unset; width: 96vw; padding: 20px 16px;
+    max-height: 85vh; max-height: 85dvh;
+  }
 
   /* ── Welcome upload dropzone ── */
   .upload-drop-inner { width: 90vw; padding: 28px 20px; }
