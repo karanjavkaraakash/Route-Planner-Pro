@@ -1369,7 +1369,7 @@ def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
 
     base_url = (
         f"{SUPABASE_URL}/rest/v1/weather_grid"
-        f"?select=lat,lon,mslp,wind_speed,wind_dir"
+        f"?select=lat,lon,mslp,wind_speed,wind_dir,wave_height"
         f"&lat=gte.{min_lat:.1f}&lat=lte.{max_lat:.1f}"
         f"&lon=gte.{min_lon:.1f}&lon=lte.{max_lon:.1f}"
         f"&valid_time=eq.{snap_str}"
@@ -1397,11 +1397,13 @@ def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
     decoded = []
     for row in all_rows:
         decoded.append({
-            'lat':        float(row['lat']),
-            'lon':        float(row['lon']),
-            'mslp':       (float(row['mslp']) + 950.0) if row['mslp'] is not None else None,
-            'wind_speed': (float(row['wind_speed']) / 10.0) if row['wind_speed'] is not None else None,
-            'wind_dir':   float(row['wind_dir']) if row['wind_dir'] is not None else None,
+            'lat':         float(row['lat']),
+            'lon':         float(row['lon']),
+            'mslp':        (float(row['mslp']) + 950.0) if row['mslp'] is not None else None,
+            'wind_speed':  (float(row['wind_speed']) / 10.0) if row['wind_speed'] is not None else None,
+            'wind_dir':    float(row['wind_dir']) if row['wind_dir'] is not None else None,
+            # wave_height stored as centimetres (×100) → decode to metres
+            'wave_height': (float(row['wave_height']) / 100.0) if row.get('wave_height') is not None else None,
         })
     log.info(f"Sea condition: fetched {len(decoded)} grid points for {snap_str}")
     return decoded, snap_dt
@@ -1410,42 +1412,38 @@ def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
 def _build_regular_grid(rows, bbox, resolution=0.5):
     """
     Convert sparse ocean-masked rows into a regular rectangular grid.
-    Land points (missing from ocean mask) are filled with NaN,
-    then smoothed with gaussian_filter to produce continuous contours.
-    Returns (lats_1d, lons_1d, mslp_grid_2d, wind_speed_2d, wind_dir_2d)
+    Returns (lats, lons, mslp_smooth, mslp_raw,
+             wsp_smooth, wsp_raw, wdir_smooth, wave_raw)
+    wave_raw: actual GFS wave height in metres (NaN where not in DB).
     """
     import numpy as np
 
     min_lon, min_lat, max_lon, max_lat = bbox
-
-    # Build regular coordinate axes
     lats = np.arange(min_lat, max_lat + resolution/2, resolution)
     lons = np.arange(min_lon, max_lon + resolution/2, resolution)
     nla, nlo = len(lats), len(lons)
 
-    mslp_g  = np.full((nla, nlo), np.nan)
-    wsp_g   = np.full((nla, nlo), np.nan)
-    wdir_g  = np.full((nla, nlo), np.nan)
+    mslp_g = np.full((nla, nlo), np.nan)
+    wsp_g  = np.full((nla, nlo), np.nan)
+    wdir_g = np.full((nla, nlo), np.nan)
+    wave_g = np.full((nla, nlo), np.nan)
 
-    # Index rows into grid
     for row in rows:
         la_idx = round((row['lat'] - min_lat) / resolution)
         lo_idx = round((row['lon'] - min_lon) / resolution)
         if 0 <= la_idx < nla and 0 <= lo_idx < nlo:
-            if row['mslp']       is not None: mslp_g[la_idx, lo_idx] = row['mslp']
-            if row['wind_speed'] is not None: wsp_g [la_idx, lo_idx] = row['wind_speed']
-            if row['wind_dir']   is not None: wdir_g[la_idx, lo_idx] = row['wind_dir']
+            if row['mslp']               is not None: mslp_g[la_idx, lo_idx] = row['mslp']
+            if row['wind_speed']         is not None: wsp_g [la_idx, lo_idx] = row['wind_speed']
+            if row['wind_dir']           is not None: wdir_g[la_idx, lo_idx] = row['wind_dir']
+            if row.get('wave_height')    is not None: wave_g[la_idx, lo_idx] = row['wave_height']
 
-    # Fill NaN land gaps via interpolation then smooth
-    # Strategy: replace NaN with nearest valid value, then gaussian smooth
-    from scipy.ndimage import gaussian_filter, label
+    from scipy.ndimage import gaussian_filter
 
     def fill_and_smooth(grid, sigma=1.5):
         filled = grid.copy()
         nan_mask = np.isnan(filled)
         if not nan_mask.any():
             return gaussian_filter(filled, sigma=sigma)
-        # Simple nearest-neighbour fill for NaN cells
         from scipy.ndimage import distance_transform_edt
         ind = distance_transform_edt(nan_mask, return_distances=False, return_indices=True)
         filled = filled[tuple(ind)]
@@ -1455,7 +1453,8 @@ def _build_regular_grid(rows, bbox, resolution=0.5):
     wsp_smooth  = fill_and_smooth(wsp_g,  sigma=0.8)
     wdir_smooth = fill_and_smooth(wdir_g, sigma=0.8)
 
-    return lats, lons, mslp_smooth, mslp_g, wsp_smooth, wsp_g, wdir_smooth
+    # wave_g kept raw (NaN for missing) — generate_sea_condition_png handles gap-fill
+    return lats, lons, mslp_smooth, mslp_g, wsp_smooth, wsp_g, wdir_smooth, wave_g
 
 
 def normLon180(lon):
@@ -1638,7 +1637,7 @@ def generate_sea_condition_png(
         raise RuntimeError(f"No data in DB for {timestamp_iso} / {bbox}")
     log.info('[sea-cond-png] DB rows: %d', len(rows))
 
-    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s = _build_regular_grid(rows, bbox)
+    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s, wave_raw = _build_regular_grid(rows, bbox)
     nla, nlo = len(lats), len(lons)
     LON_G, LAT_G = np.meshgrid(lons, lats)
     log.info('[sea-cond-png] grid: %dx%d', nla, nlo)
@@ -1764,21 +1763,30 @@ def generate_sea_condition_png(
     log.info('[sea-cond-png] land cells: %d, ocean cells: %d',
              land_mask_2d.sum(), ocean_mask_2d.sum())
 
-    # ── 4. Wave data: DB + Open-Meteo gap-fill ────────────────────────────────
+    # ── 4. Wave data: real GFS wave height from DB + gap-fill ─────────────────
     log.info('[sea-cond-png] Step 4: wave grid + gap-fill')
-    vms = wsp_s * 0.5144
-    wave_db = np.clip(0.0248 * vms**2, 0, 15)
 
-    db_missing = np.isnan(wsp_raw) & ocean_mask_2d
+    # Use actual GFS HTSGW wave height from DB (wave_raw).
+    # Fall back to PM estimate from wind speed only for cells where wave_raw is NaN.
+    has_real_wave = np.any(~np.isnan(wave_raw))
+    if has_real_wave:
+        log.info('[sea-cond-png] Using real GFS wave height from DB')
+        vms_fallback = np.clip(0.0248 * (wsp_s * 0.5144)**2, 0, 15)
+        wave_base = np.where(~np.isnan(wave_raw), wave_raw, vms_fallback)
+    else:
+        log.info('[sea-cond-png] wave_height not in DB yet — using PM estimate')
+        wave_base = np.clip(0.0248 * (wsp_s * 0.5144)**2, 0, 15)
+
+    # Gap-fill ocean cells still NaN in wave_base
+    db_missing = np.isnan(wave_base) & ocean_mask_2d
     missing_cells = [(float(lats[i]), float(lons[j]))
                      for i in range(nla) for j in range(nlo)
                      if db_missing[i, j]]
-    log.info('[sea-cond-png] missing ocean cells: %d', len(missing_cells))
+    log.info('[sea-cond-png] missing ocean cells for gap-fill: %d', len(missing_cells))
 
-    # Gap-fill: cap at 30 cells, 3s timeout to stay well within Render's limit
     gap_data = _fetch_marine_gap_fill(missing_cells[:30], timestamp_iso)
 
-    wave_grid = wave_db.copy()
+    wave_grid = wave_base.copy()
     lat_step = float(lats[1] - lats[0]) if len(lats) > 1 else 0.5
     lon_step = float(lons[1] - lons[0]) if len(lons) > 1 else 0.5
     for (la, lo), wh in gap_data.items():
@@ -1787,7 +1795,6 @@ def generate_sea_condition_png(
         if 0 <= i_idx < nla and 0 <= j_idx < nlo:
             wave_grid[i_idx, j_idx] = min(wh, 15.0)
 
-    # Fill remaining missing ocean cells via nearest-neighbour then smooth
     wave_ocean_raw = np.where(ocean_mask_2d, wave_grid, np.nan)
     nan_mask = np.isnan(wave_ocean_raw)
     if nan_mask.any() and (~nan_mask).any():
@@ -1799,6 +1806,7 @@ def generate_sea_condition_png(
         wave_filled = np.nan_to_num(wave_ocean_raw, nan=0.0)
 
     wave_smooth = gaussian_filter(wave_filled, sigma=1.5)
+
     wave_final  = np.where(ocean_mask_2d, wave_smooth, np.nan)
 
     # ── 5. Wave heatmap on transparent layer ──────────────────────────────────
@@ -1973,7 +1981,7 @@ def generate_sea_condition_geojson(bbox, timestamp_iso):
     if not rows:
         return {'type': 'FeatureCollection', 'features': [], 'timestamp': timestamp_iso}
 
-    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s = _build_regular_grid(rows, bbox)
+    lats, lons, mslp_s, mslp_raw, wsp_s, wsp_raw, wdir_s, wave_raw = _build_regular_grid(rows, bbox)
 
     mslp_data = mslp_raw[~np.isnan(mslp_raw)]
     if len(mslp_data) == 0:
