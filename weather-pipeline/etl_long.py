@@ -87,6 +87,17 @@ def gfs_wind_url(date: str, run: str, fhour: int) -> str:
         f"&dir=%2Fgfs.{date}%2F{run}%2Fatmos"
     )
 
+def gfs_wave_url(date: str, run: str, fhour: int) -> str:
+    """GFS significant wave height (HTSGW) at surface level."""
+    fstr = f"{fhour:03d}"
+    return (
+        f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl?"
+        f"file=gfs.t{run}z.pgrb2full.0p50.f{fstr}"
+        f"&lev_surface=on&var_HTSGW=on"
+        f"&leftlon=0&rightlon=360&toplat=90&bottomlat=-90"
+        f"&dir=%2Fgfs.{date}%2F{run}%2Fatmos"
+    )
+
 # ── Download ──────────────────────────────────────────────────────────────────
 def download_grib(url: str, label: str) -> bytes | None:
     for attempt in range(1, MAX_RETRIES + 1):
@@ -165,6 +176,10 @@ def scale_wind_speed(ms: float) -> int:
 def scale_dir(deg: float) -> int:
     return max(0, min(360, round(float(deg) % 360)))
 
+def scale_wave_height(metres: float) -> int:
+    """Store wave height as integer centimetres (×100). Range: 0–327m."""
+    return max(0, min(32767, round(float(metres) * 100)))
+
 # ── Extract variable ──────────────────────────────────────────────────────────
 def extract_var(parsed: dict, varname: str, ocean_mask: set) -> dict:
     if varname not in parsed:
@@ -179,10 +194,15 @@ def extract_var(parsed: dict, varname: str, ocean_mask: set) -> dict:
     return pts
 
 # ── Build rows ────────────────────────────────────────────────────────────────
-def build_rows(wind_parsed: dict, valid_time: datetime,
+def build_rows(wind_parsed: dict, wave_parsed: dict, valid_time: datetime,
                fhour: int, run_time: datetime, ocean_mask: set) -> list:
-    u_pts = extract_var(wind_parsed, "10u", ocean_mask)
-    v_pts = extract_var(wind_parsed, "10v", ocean_mask)
+    u_pts    = extract_var(wind_parsed, "10u",  ocean_mask)
+    v_pts    = extract_var(wind_parsed, "10v",  ocean_mask)
+    wave_pts = extract_var(wave_parsed, "shww", ocean_mask) if wave_parsed else {}
+    if not wave_pts:
+        wave_pts = extract_var(wave_parsed, "swh",   ocean_mask) if wave_parsed else {}
+    if not wave_pts:
+        wave_pts = extract_var(wave_parsed, "htsgw", ocean_mask) if wave_parsed else {}
 
     rows = {}
     for key in set(u_pts) | set(v_pts):
@@ -192,7 +212,7 @@ def build_rows(wind_parsed: dict, valid_time: datetime,
         if u is None or v is None:
             continue
         spd, drn = uv_to_speed_dir(u, v)
-        rows[key] = {
+        row = {
             "lat":           lat,
             "lon":           lon,
             "valid_time":    valid_time.isoformat(),
@@ -201,8 +221,13 @@ def build_rows(wind_parsed: dict, valid_time: datetime,
             "wind_speed":    scale_wind_speed(spd),
             "wind_dir":      scale_dir(drn),
         }
+        wh = wave_pts.get(key)
+        if wh is not None:
+            row["wave_height"] = scale_wave_height(wh)
+        rows[key] = row
 
-    log.info(f"  Built {len(rows):,} rows for fhour={fhour}")
+    log.info(f"  Built {len(rows):,} rows for fhour={fhour} "
+             f"(wave_height: {len(wave_pts):,} pts)")
     return list(rows.values())
 
 # ── Upsert ────────────────────────────────────────────────────────────────────
@@ -273,7 +298,10 @@ def run_pipeline():
         wind_data   = download_grib(gfs_wind_url(date, run, fhour), f"GFS f{fhour:03d}")
         wind_parsed = parse_grib(wind_data, "wind") if wind_data else {}
 
-        rows = build_rows(wind_parsed, valid_time, fhour, run_time, ocean_mask)
+        wave_data   = download_grib(gfs_wave_url(date, run, fhour), f"GFS-wave f{fhour:03d}")
+        wave_parsed = parse_grib(wave_data, "wave") if wave_data else {}
+
+        rows = build_rows(wind_parsed, wave_parsed, valid_time, fhour, run_time, ocean_mask)
         total += upsert_rows(sb, rows)
 
         time.sleep(1)
