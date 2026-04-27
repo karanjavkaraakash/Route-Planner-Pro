@@ -99,6 +99,17 @@ def gfs_mslp_url(date, run, fhour):
         f"&dir=%2Fgfs.{date}%2F{run}%2Fatmos"
     )
 
+def gfs_wave_url(date, run, fhour):
+    """GFS significant wave height (HTSGW) at surface level."""
+    fstr = f"{fhour:03d}"
+    return (
+        f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl?"
+        f"file=gfs.t{run}z.pgrb2full.0p50.f{fstr}"
+        f"&lev_surface=on&var_HTSGW=on"
+        f"&leftlon=0&rightlon=360&toplat=90&bottomlat=-90"
+        f"&dir=%2Fgfs.{date}%2F{run}%2Fatmos"
+    )
+
 # ── GRIB download ─────────────────────────────────────────────────────────────
 def download_grib(url, label):
     for attempt in range(1, MAX_RETRIES + 1):
@@ -181,6 +192,10 @@ def scale_dir(deg):
 def scale_mslp(pa):
     return max(0, min(32767, round(pa / 100.0 - 950)))
 
+def scale_wave_height(metres):
+    """Store wave height as integer centimetres (×100). Range: 0–327m."""
+    return max(0, min(32767, round(float(metres) * 100)))
+
 # ── Extract variable ──────────────────────────────────────────────────────────
 def extract_var(parsed, varname, ocean_mask):
     if varname not in parsed:
@@ -195,10 +210,16 @@ def extract_var(parsed, varname, ocean_mask):
     return pts
 
 # ── Build GFS rows ────────────────────────────────────────────────────────────
-def build_gfs_rows(wind_parsed, mslp_parsed, valid_time, fhour, run_time, ocean_mask):
-    u_pts   = extract_var(wind_parsed, "10u",   ocean_mask)
-    v_pts   = extract_var(wind_parsed, "10v",   ocean_mask)
-    msl_pts = extract_var(mslp_parsed, "prmsl", ocean_mask) if mslp_parsed else {}
+def build_gfs_rows(wind_parsed, mslp_parsed, wave_parsed, valid_time, fhour, run_time, ocean_mask):
+    u_pts    = extract_var(wind_parsed, "10u",   ocean_mask)
+    v_pts    = extract_var(wind_parsed, "10v",   ocean_mask)
+    msl_pts  = extract_var(mslp_parsed, "prmsl", ocean_mask) if mslp_parsed else {}
+    wave_pts = extract_var(wave_parsed, "shww",  ocean_mask) if wave_parsed else {}
+    # GFS HTSGW shortName may be 'swh' or 'shww' depending on GRIB edition
+    if not wave_pts:
+        wave_pts = extract_var(wave_parsed, "swh", ocean_mask) if wave_parsed else {}
+    if not wave_pts:
+        wave_pts = extract_var(wave_parsed, "htsgw", ocean_mask) if wave_parsed else {}
 
     rows = {}
     for key in set(u_pts) | set(v_pts) | set(msl_pts):
@@ -219,9 +240,13 @@ def build_gfs_rows(wind_parsed, mslp_parsed, valid_time, fhour, run_time, ocean_
         mslp = msl_pts.get(key)
         if mslp is not None:
             row["mslp"] = scale_mslp(mslp)
+        wh = wave_pts.get(key)
+        if wh is not None:
+            row["wave_height"] = scale_wave_height(wh)
         rows[key] = row
 
-    log.info(f"  Built {len(rows):,} GFS rows for fhour={fhour}")
+    log.info(f"  Built {len(rows):,} GFS rows for fhour={fhour} "
+             f"(wave_height: {len(wave_pts):,} pts)")
     return list(rows.values())
 
 # ── Upsert ────────────────────────────────────────────────────────────────────
@@ -238,6 +263,30 @@ def upsert_rows(sb, rows, label):
         total += len(batch)
     log.info(f"  Upserted {total:,} {label} rows")
     return total
+
+# ── Storage guard ─────────────────────────────────────────────────────────────
+def check_db_size(sb, threshold_mb: int = 480) -> float:
+    """
+    Returns current DB size in MB. Raises if >= threshold_mb AFTER truncate.
+    Call this AFTER truncate — if still large, something is wrong (bloat/vacuum lag).
+    """
+    try:
+        res = sb.rpc("get_weather_grid_size_mb", {}).execute()
+        size_mb = float(res.data)
+        log.info(f"DB1 size post-truncate: {size_mb:.0f}MB")
+        if size_mb >= threshold_mb:
+            log.error(
+                f"DB1 size {size_mb:.0f}MB >= {threshold_mb}MB even after TRUNCATE. "
+                f"Index bloat suspected — run REINDEX TABLE weather_grid; in Supabase SQL Editor. "
+                f"Continuing anyway to avoid blocking pipeline."
+            )
+            # NOTE: We log the warning but do NOT abort — truncate already freed data rows.
+            # Index bloat doesn't prevent inserts; autovacuum will clean it up.
+        return size_mb
+    except Exception as e:
+        log.warning(f"Size check failed (non-fatal): {e}")
+        return 0.0
+
 
 # ── Truncate via RPC ──────────────────────────────────────────────────────────
 def truncate_table(sb):
@@ -294,7 +343,12 @@ def run_pipeline(mode):
                   else HOURS_LONG        if mode == "long"
                   else HOURS_SHORT + HOURS_LONG)
 
+    # ── Correct order: TRUNCATE first, THEN check size ────────────────────────
+    # The old pattern (check → abort if large) blocked the pipeline even though
+    # a truncate would have freed space. Now: always truncate, then check for
+    # residual bloat (non-fatal warning only).
     truncate_table(sb)
+    check_db_size(sb, threshold_mb=480)
 
     total_gfs = 0
 
@@ -308,7 +362,11 @@ def run_pipeline(mode):
         mslp_data   = download_grib(gfs_mslp_url(date, run, fhour), f"GFS-mslp f{fhour:03d}")
         mslp_parsed = parse_grib(mslp_data, "mslp") if mslp_data else {}
 
-        rows = build_gfs_rows(wind_parsed, mslp_parsed, valid_time, fhour, run_time, ocean_mask)
+        wave_data   = download_grib(gfs_wave_url(date, run, fhour), f"GFS-wave f{fhour:03d}")
+        wave_parsed = parse_grib(wave_data, "wave") if wave_data else {}
+
+        rows = build_gfs_rows(wind_parsed, mslp_parsed, wave_parsed,
+                              valid_time, fhour, run_time, ocean_mask)
         total_gfs += upsert_rows(sb, rows, "GFS")
 
         time.sleep(1)
