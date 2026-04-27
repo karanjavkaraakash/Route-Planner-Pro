@@ -1719,19 +1719,48 @@ def generate_sea_condition_png(
 
     # ── 3. Pixel-accurate land mask from tile colours ─────────────────────────
     log.info('[sea-cond-png] Step 3: building land mask')
-    tile_arr = np.array(tile_canvas.convert('RGB'))
-    land_mask_2d  = np.zeros((nla, nlo), dtype=bool)
+    tile_arr = np.array(tile_canvas.convert('RGB')).astype(np.int16)  # H×W×3
+
+    # Vectorised: compute pixel coordinates for every grid cell at once
+    lon_arr = np.array(lons)
+    lat_arr = np.array(lats)
+    # px_grid[j] = pixel-x for each longitude
+    px_grid = np.clip(
+        ((lon_arr + 180) / 360 * (2**z) - tx_min) * TILE_SIZE,
+        0, canvas_w - 1
+    ).astype(int)
+    # py_grid[i] = pixel-y for each latitude (Mercator)
+    lat_r   = np.radians(np.clip(lat_arr, -85.05, 85.05))
+    py_grid = np.clip(
+        ((1 - np.log(np.tan(lat_r) + 1/np.cos(lat_r)) / np.pi) / 2 * (2**z) - ty_min) * TILE_SIZE,
+        0, canvas_h - 1
+    ).astype(int)
+
+    # Kernel: sample a 3×3 pixel neighbourhood to reduce single-pixel noise
+    # at coastlines. Ocean = majority of kernel pixels are blue-dominant.
+    KERNEL = 2   # ±2 pixels = 5×5 neighbourhood
     ocean_mask_2d = np.zeros((nla, nlo), dtype=bool)
-    for i, la in enumerate(lats):
-        for j, lo in enumerate(lons):
-            px = int((lon_to_tx(lo, z) - tx_min) * TILE_SIZE)
-            py = int((lat_to_ty(la, z) - ty_min) * TILE_SIZE)
-            px = max(0, min(canvas_w - 1, px))
-            py = max(0, min(canvas_h - 1, py))
-            r, g, b = int(tile_arr[py, px, 0]), int(tile_arr[py, px, 1]), int(tile_arr[py, px, 2])
-            is_ocean = (b > r + 10) and (b > g + 5)
-            land_mask_2d[i, j]  = not is_ocean
-            ocean_mask_2d[i, j] = is_ocean
+    for i in range(nla):
+        for j in range(nlo):
+            py0 = max(0, py_grid[i] - KERNEL); py1 = min(canvas_h, py_grid[i] + KERNEL + 1)
+            px0 = max(0, px_grid[j] - KERNEL); px1 = min(canvas_w, px_grid[j] + KERNEL + 1)
+            patch = tile_arr[py0:py1, px0:px1]   # shape (k, k, 3)
+            r_m = patch[:,:,0].astype(float).mean()
+            g_m = patch[:,:,1].astype(float).mean()
+            b_m = patch[:,:,2].astype(float).mean()
+            # Ocean: blue clearly dominates averaged over neighbourhood
+            ocean_mask_2d[i, j] = (b_m > r_m + 12) and (b_m > g_m + 6)
+
+    land_mask_2d = ~ocean_mask_2d
+
+    # Morphological cleanup: isolated land pixels inside ocean (islands < 0.5°)
+    # and isolated ocean pixels inside land (inland lakes) — smooth with erosion
+    from scipy.ndimage import binary_erosion, binary_dilation
+    # Remove isolated ocean specks on land (false ocean pixels in coastal areas)
+    ocean_cleaned = binary_dilation(binary_erosion(ocean_mask_2d, iterations=1), iterations=1)
+    ocean_mask_2d = ocean_cleaned
+    land_mask_2d  = ~ocean_mask_2d
+
     log.info('[sea-cond-png] land cells: %d, ocean cells: %d',
              land_mask_2d.sum(), ocean_mask_2d.sum())
 
@@ -1833,18 +1862,21 @@ def generate_sea_condition_png(
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
         for level in levels:
-            if   level <= 996:  col, lw = '#cc0022', 1.8
-            elif level <= 1004: col, lw = '#ee4466', 1.3
-            elif level <= 1016: col, lw = '#555566', 1.1
-            elif level <= 1024: col, lw = '#444455', 1.2
-            else:               col, lw = '#333344', 1.4
+            # High-contrast isobars: white outlines so visible against both
+            # blue ocean and warm wave colours. Low pressure = vivid red/pink.
+            if   level <= 996:  col, lw, zorder = '#ff3355', 2.2, 5
+            elif level <= 1004: col, lw, zorder = '#ff7799', 1.6, 4
+            elif level <= 1012: col, lw, zorder = '#ffffff', 1.2, 3
+            elif level <= 1020: col, lw, zorder = '#dddddd', 1.3, 3
+            else:               col, lw, zorder = '#bbbbbb', 1.5, 3
             try:
                 cs = ax_iso.contour(LON_G, LAT_G, mslp_ocean,
                                     levels=[level], colors=[col],
-                                    linewidths=lw, alpha=0.92)
+                                    linewidths=lw, alpha=0.95, zorder=zorder)
                 if level % 4 == 0:
-                    ax_iso.clabel(cs, fmt='%d', fontsize=8.5, colors=[col],
-                                  inline=True, inline_spacing=4)
+                    ax_iso.clabel(cs, fmt='%d', fontsize=9, colors=[col],
+                                  inline=True, inline_spacing=5,
+                                  fontweight='bold')
             except Exception:
                 pass
 
