@@ -1367,45 +1367,61 @@ def _fetch_mslp_wind_grid(bbox, snap_ts_iso):
     snap_dt = datetime.fromtimestamp(snapped, tz=timezone.utc)
     snap_str = snap_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    base_url = (
-        f"{SUPABASE_URL}/rest/v1/weather_grid"
-        f"?select=lat,lon,mslp,wind_speed,wind_dir,wave_height"
-        f"&lat=gte.{min_lat:.1f}&lat=lte.{max_lat:.1f}"
-        f"&lon=gte.{min_lon:.1f}&lon=lte.{max_lon:.1f}"
-        f"&valid_time=eq.{snap_str}"
-    )
     headers = {
         'apikey':        SUPABASE_ANON,
         'Authorization': f'Bearer {SUPABASE_ANON}',
         'Prefer':        'count=none',
     }
 
-    all_rows = []
-    offset, page = 0, 1000
-    while True:
-        url = base_url + f"&limit={page}&offset={offset}"
-        r = req_lib.get(url, headers=headers, timeout=20)
-        if r.status_code != 200:
-            raise RuntimeError(f"Supabase query failed: HTTP {r.status_code} - {r.text[:200]}")
-        rows = r.json()
-        all_rows.extend(rows)
-        if len(rows) < page:
-            break
-        offset += page
+    def _fetch_pages(select_cols):
+        base = (
+            f"{SUPABASE_URL}/rest/v1/weather_grid"
+            f"?select={select_cols}"
+            f"&lat=gte.{min_lat:.1f}&lat=lte.{max_lat:.1f}"
+            f"&lon=gte.{min_lon:.1f}&lon=lte.{max_lon:.1f}"
+            f"&valid_time=eq.{snap_str}"
+        )
+        rows_out = []
+        offset, page = 0, 1000
+        while True:
+            r = req_lib.get(base + f"&limit={page}&offset={offset}",
+                            headers=headers, timeout=20)
+            if r.status_code != 200:
+                raise RuntimeError(f"Supabase {r.status_code}: {r.text[:200]}")
+            batch = r.json()
+            rows_out.extend(batch)
+            if len(batch) < page:
+                break
+            offset += page
+        return rows_out
+
+    # Try with wave_height first; fall back gracefully if column not yet added
+    has_wave_col = True
+    try:
+        all_rows = _fetch_pages("lat,lon,mslp,wind_speed,wind_dir,wave_height")
+    except RuntimeError as e:
+        if '42703' in str(e) or 'wave_height' in str(e) or 'column' in str(e).lower():
+            log.warning("wave_height column not found in DB — run ALTER TABLE. Falling back.")
+            has_wave_col = False
+            all_rows = _fetch_pages("lat,lon,mslp,wind_speed,wind_dir")
+        else:
+            raise
 
     # Decode scaled values
     decoded = []
     for row in all_rows:
-        decoded.append({
-            'lat':         float(row['lat']),
-            'lon':         float(row['lon']),
-            'mslp':        (float(row['mslp']) + 950.0) if row['mslp'] is not None else None,
-            'wind_speed':  (float(row['wind_speed']) / 10.0) if row['wind_speed'] is not None else None,
-            'wind_dir':    float(row['wind_dir']) if row['wind_dir'] is not None else None,
-            # wave_height stored as centimetres (×100) → decode to metres
-            'wave_height': (float(row['wave_height']) / 100.0) if row.get('wave_height') is not None else None,
-        })
-    log.info(f"Sea condition: fetched {len(decoded)} grid points for {snap_str}")
+        entry = {
+            'lat':        float(row['lat']),
+            'lon':        float(row['lon']),
+            'mslp':       (float(row['mslp']) + 950.0) if row['mslp'] is not None else None,
+            'wind_speed': (float(row['wind_speed']) / 10.0) if row['wind_speed'] is not None else None,
+            'wind_dir':   float(row['wind_dir']) if row['wind_dir'] is not None else None,
+            # wave_height stored as centimetres (×100) → metres; None if column absent
+            'wave_height': (float(row['wave_height']) / 100.0)
+                           if has_wave_col and row.get('wave_height') is not None else None,
+        }
+        decoded.append(entry)
+    log.info("Sea condition: %d grid points for %s (wave_col=%s)", len(decoded), snap_str, has_wave_col)
     return decoded, snap_dt
 
 
